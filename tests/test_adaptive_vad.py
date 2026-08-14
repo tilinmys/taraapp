@@ -48,9 +48,13 @@ check(
 
 c.evaluate_agent_text("Is ten thirty tomorrow okay for you?")
 check("closed question -> TRANSACTIONAL", c.state == "TRANSACTIONAL")
+# Compare against the controller's own configured fast value, not a literal.
+# This previously hardcoded 0.35 and broke the moment MIN_ENDPOINTING_DELAY was
+# retuned to 0.3 - it was asserting the deployment's env, not the code.
 check(
     "fast delay restored",
-    session.update_options.call_args.kwargs["endpointing_opts"]["min_delay"] == 0.35,
+    session.update_options.call_args.kwargs["endpointing_opts"]["min_delay"]
+    == c._delays["TRANSACTIONAL"],
 )
 
 c.fragment_recovery()
@@ -75,12 +79,20 @@ c2.evaluate_agent_text("could you spell your name?")
 check("dead session fails safe, state unchanged", c2.state == "TRANSACTIONAL")
 
 # --- slow trigger coverage -------------------------------------------------------
+# Maternal-workflow triggers. The clinic phrasings that used to be tested here
+# ("what brings you in today", "do you have a specific doctor in mind") are gone
+# with the booking flow - Sakhi never says them. The cases that need a long
+# window now are readings, gestational age, names and villages, in all three
+# languages the pilot runs in.
 for t in [
     "Could you spell that for me?",
     "letter by letter please",
-    "what brings you in today?",
-    "do you have a specific doctor in mind?",
-    "please describe your concern",
+    "What is her blood pressure reading?",
+    "How many weeks pregnant is she?",
+    "please describe the symptoms",
+    "ತಾಯಿಯ ರಕ್ತದೊತ್ತಡ ಎಷ್ಟು?",      # Kannada: what is her blood pressure
+    "ಎಷ್ಟು ವಾರ ಗರ್ಭಿಣಿ?",             # Kannada: how many weeks pregnant
+    "उनका नाम क्या है?",               # Hindi: what is her name
 ]:
     c3 = agent.DynamicVADController(MagicMock())
     c3.evaluate_agent_text(t)
@@ -88,8 +100,8 @@ for t in [
 
 for t in [
     "Is that right?",
-    "Booked. Appointment ID 42.",
-    "Thank you... anything else?",
+    "I have recorded that.",
+    "ಸರಿ, ಧನ್ಯವಾದಗಳು.",               # Kannada: alright, thank you
 ]:
     c4 = agent.DynamicVADController(MagicMock())
     c4.evaluate_agent_text("your name please")  # push to slow first
@@ -99,34 +111,41 @@ for t in [
 
 # --- full hook integration --------------------------------------------------------
 async def hook_tests() -> None:
-    gracy = agent.GracyAgent(instructions="t", chat_ctx=agent.llm.ChatContext())
+    sakhi = agent.SakhiAgent(instructions="t", chat_ctx=agent.llm.ChatContext())
     mock_session = MagicMock()
-    mock_session.userdata = agent.CallState()
-    gracy._activity = MagicMock(session=mock_session)
+    mock_session.userdata = agent.SakhiCallState()
+    sakhi._activity = MagicMock(session=mock_session)
     vc = agent.DynamicVADController(MagicMock())
-    gracy._vad_controller = vc
+    sakhi._vad_controller = vc
 
-    tc = MagicMock()
-    tc.items = []
+    # FRAGMENT_RECOVERY is no longer reachable from a user turn: its only
+    # trigger was the fast path's English `looks_incomplete` detector, removed
+    # with the booking flow. The state and its timing still work when driven
+    # directly, which is what a future Kannada fragment detector would do.
+    vc.fragment_recovery()
+    check("fragment_recovery() still engages the long window",
+          vc.state == "FRAGMENT_RECOVERY")
+
+    # An ordinary user turn consumes the one-shot window.
     msg = MagicMock()
-    msg.text_content = "My name is."  # cut-off fragment
+    msg.text_content = "ಅವಳ ರಕ್ತದೊತ್ತಡ ನೂರ ಇಪ್ಪತ್ತು ಎಂಬತ್ತು"   # "her BP is 120 over 80"
+    tc = MagicMock()
+    tc.items = [MagicMock(role="assistant", text_content="ತಾಯಿಯ ರಕ್ತದೊತ್ತಡ ಎಷ್ಟು?")]
     try:
-        await gracy.on_user_turn_completed(tc, msg)
+        await sakhi.on_user_turn_completed(tc, msg)
     except agent.StopResponse:
         pass
-    check("incomplete fragment engages FRAGMENT_RECOVERY", vc.state == "FRAGMENT_RECOVERY")
+    check("user turn consumes the fragment window", vc.state == "TRANSACTIONAL")
 
-    # the continuation turn consumes the window; the fast-path name reply
-    # ("May I have your phone number?") is transactional
+    # A guardrail turn must still be answered deterministically and stop the LLM.
+    stopped = False
     msg2 = MagicMock()
-    msg2.text_content = "My name is Priya"
-    tc2 = MagicMock()
-    tc2.items = [MagicMock(role="assistant", text_content="May I please have your name?")]
+    msg2.text_content = "which tablet should she take for the headache?"
     try:
-        await gracy.on_user_turn_completed(tc2, msg2)
+        await sakhi.on_user_turn_completed(MagicMock(items=[]), msg2)
     except agent.StopResponse:
-        pass
-    check("continuation turn consumes fragment window", vc.state == "TRANSACTIONAL")
+        stopped = True
+    check("medical-advice turn is stopped before the LLM", stopped)
 
 
 asyncio.run(hook_tests())

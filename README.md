@@ -1,140 +1,314 @@
-# 🏥 MyStree Voice Care Coordinator
+# ಸಖಿ · Sakhi — Maternal Health Voice Agent
 
-A production-grade **voice AI receptionist** for MyStree Clinic, built on [LiveKit Agents](https://docs.livekit.io/agents/) with custom [Sarvam AI](https://sarvam.ai) STT/TTS integrations and a beautiful Next.js WebRTC frontend.
+A real-time, Kannada-first voice assistant that helps **ASHA workers** screen
+pregnant mothers for **pre-eclampsia** in rural Bidar, Karnataka.
 
----
-
-## ✨ Features
-
-- 🎙️ **Real-time Voice Conversations** via WebRTC (sub-400ms latency target)
-- 🧠 **GPT-4o-mini LLM** with Groq Llama fallback for resilience
-- 📝 **AssemblyAI Universal 3.5 Pro STT** with Sarvam AI fallback
-- 🔊 **Sarvam AI `bulbul:v2` TTS** with OpenAI TTS fallback
-- 🗄️ **SQLite Appointment Database** with full CRUD tools:
-  - Lookup patient appointments
-  - Book, cancel, register patients
-  - List doctors and available timings
-- 📊 **Per-turn Latency Metrics** (TTFB, audio duration, token counts)
-- 🚫 **Noise Cancellation** via LiveKit BVC plugin
-- 🌐 **Next.js WebRTC UI** with real-time System Logs Console
-
----
-
-## 🏗️ Architecture
+An ASHA worker calls Sakhi from a village, reads out a blood-pressure reading,
+answers three danger-symptom questions, and gets a decision — in Kannada, in
+about a second and a half. If the reading is dangerous, a specialist is
+connected automatically.
 
 ```
-Browser (Next.js) ──WebRTC──► LiveKit Cloud ──job dispatch──► Python Agent Worker
-                                                                      │
-                              AssemblyAI STT ◄───────────────────────┤
-                              OpenAI gpt-4o-mini LLM ◄───────────────┤
-                              Sarvam bulbul:v2 TTS ◄─────────────────┘
+ASHA worker speaks Kannada
+        │
+        ▼
+  Sarvam STT (kn-IN)  ──►  Groq LLM  ──►  clinical tools  ──►  TriageEngine
+        │                                                            │
+        │                                                    RiskAssessment
+        ▼                                                            │
+  Sarvam TTS (Kannada)  ◄────── what to say ◄─────────────────────────┘
+        │
+        ▼
+  ASHA worker hears the answer   (+ optional Tavus video avatar)
 ```
 
 ---
 
-## 📁 Project Structure
+## 1. The one design rule
 
-```
-├── agent.py               # Main LiveKit agent entrypoint
-├── db_helper.py           # SQLite database helpers
-├── sarvam_wrappers.py     # Custom Sarvam STT/TTS WebSocket adapters
-├── .env.example           # Environment variable template
-├── requirements.txt       # Python dependencies
-└── frontend/
-    ├── src/app/
-    │   ├── page.tsx       # WebRTC call UI with live logs console
-    │   ├── page.module.css
-    │   └── api/token/
-    │       └── route.ts   # Secure JWT token API endpoint
-    └── .env.local.example
-```
+> **The LLM collects the readings and speaks the outcome.
+> The code decides what the outcome is.**
+
+The pre-eclampsia decision is made by [`sakhi_triage.py`](sakhi_triage.py) — a
+pure function with 62 tests behind it — never by the language model. The model's
+job is to hear numbers, call a tool, and read the returned instruction aloud.
+
+This matters because the previous design had the entire triage matrix written as
+**prose inside a prompt**. A clinical safety rule that depends on a model
+remembering an instruction is not a safety rule.
+
+### The triage matrix, as implemented
+
+| Blood pressure | Danger symptoms | Outcome | Action |
+|---|---|---|---|
+| ≥140/90 | any | 🔴 `HIGH_RISK` | Refer to Bidar District Hospital, connect specialist **now** |
+| ≥140/90 | none | 🟡 `MODERATE` | Re-check within 48 hours |
+| normal | any | 🟡 `OBSERVATION` | Log and monitor |
+| normal | none | 🟢 `ROUTINE` | Confirm next ANC visit |
+
+Two additions beyond the base matrix:
+
+- **Severe-range BP (≥160/110) escalates on the reading alone**, per standard
+  obstetric practice. Toggle with `TRIAGE_ESCALATE_ON_SEVERE_BP`.
+- **Under 20 weeks' gestation**, raised BP is flagged as possibly *chronic
+  hypertension* rather than pre-eclampsia. It does **not** downgrade the risk —
+  a screening tool must never under-triage.
+
+### The safety net
+
+If triage returns `HIGH_RISK`, a specialist is connected **whether or not the
+model calls the tool**. `SakhiAgent` injects an urgent directive before
+generation, and if the turn still ends without the call, it invokes the tool
+directly. A red alert cannot depend on an LLM following a prompt.
 
 ---
 
-## 🚀 Getting Started
+## 2. Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Next.js UI (Kannada-first, ASHA-worker console)             │
+│  one big button · live status · risk banner · log rail       │
+└───────────────┬──────────────────────────────────────────────┘
+                │ WebRTC (LiveKit Cloud, India South)
+┌───────────────▼──────────────────────────────────────────────┐
+│  agent.py — LiveKit worker                                   │
+│                                                              │
+│   SakhiAgent(Agent)                                          │
+│     ├── on_user_turn_completed  → guardrails (input gate)    │
+│     ├── llm_node                → per-turn state injection    │
+│     └── tts_node                → clause chunking + safety net│
+│                                                              │
+│   DynamicVADController          → adaptive endpointing        │
+└───┬──────────┬──────────┬───────────┬────────────┬───────────┘
+    │          │          │           │            │
+    ▼          ▼          ▼           ▼            ▼
+ Sarvam     Groq →     Clinical    Triage      Avatar seam
+  STT       OpenAI     Toolset     Engine     (none/tavus/bey)
+ (kn-IN)   fallback       │           │
+                          ▼           │
+                  PatientRepository ◄──┘
+                     (SixtyDB)
+```
+
+### Modules
+
+| Module | Responsibility |
+|---|---|
+| [`agent.py`](agent.py) | LiveKit worker, `SakhiAgent`, provider construction, session lifecycle |
+| [`sakhi_domain.py`](sakhi_domain.py) | Value objects — `Language`, `RiskLevel`, `BloodPressure`, `SymptomSet`, `SakhiCallState` |
+| [`sakhi_triage.py`](sakhi_triage.py) | `TriageEngine` — the pre-eclampsia matrix, pure and testable |
+| [`sakhi_repository.py`](sakhi_repository.py) | `PatientRepository` ABC + async mock SixtyDB (in-memory reads, write-behind) |
+| [`sakhi_tools.py`](sakhi_tools.py) | `ClinicalToolset` — the five function tools the model may call |
+| [`sakhi_avatar.py`](sakhi_avatar.py) | `AvatarBackend` ABC — `none` / `tavus` / `bey` / `did` |
+| [`sarvam_wrappers.py`](sarvam_wrappers.py) | Sarvam STT + TTS providers |
+| [`guardrails.py`](guardrails.py) | Input/output safety gates (emergency, self-harm, medical advice, abuse) |
+| [`frontend/`](frontend/src/app) | Next.js ASHA console + token/dispatch API |
+
+### The clinical tools
+
+| Tool | What it does |
+|---|---|
+| `search_patient` | Look up a mother by name or phone |
+| `register_mother` | Create a SixtyDB record |
+| `record_bp` | Validate → triage → persist → return the decision |
+| `record_symptoms` | Merge symptoms, **re-triage** (a symptom can flip MODERATE → HIGH_RISK) |
+| `connect_smfmi_specialist` | Idempotent escalation + audit entry |
+
+Every tool returns a JSON block containing the decided `risk_level`, the
+`reasons`, and an `instruction` telling the model what to say.
+
+---
+
+## 3. How it was refined
+
+This repository began as a **clinic appointment-booking receptionist**. The
+refactor routed it to a maternal-health co-pilot. Full log in
+[`changed.md`](changed.md); OOP analysis in [`oops.md`](oops.md).
+
+### 3.1 The starting point
+
+`agent.py` was 4,239 lines of clinic receptionist — doctor lookup, slot search,
+appointment booking, SQLite — with **four Sakhi tools bolted on at line 3413**.
+Those four were the only tools registered. The twelve booking tools above them
+were defined, decorated, and **never registered**: dead weight that still pulled
+`db_helper`, `SlotCache` and a background SQLite refresh loop into every call.
+
+### 3.2 The defects that mattered
+
+| Defect | Impact |
+|---|---|
+| `build_llm()` built the whole Groq chain, then `return openai_fallback` unconditionally | Every Groq provider discarded. Dashboard said Groq; 100% of turns went to gpt-4o-mini |
+| Sarvam **WebSocket TTS never returns audio** | The 11-second dead air |
+| `record_bp` persisted nothing and computed no risk | The core clinical feature was a stub |
+| Triage matrix existed only as prompt prose | No deterministic safety path |
+| `extract_vad_flags` mutated the **process-shared** VAD | One caller's turn retuned turn-taking for every concurrent call |
+| Farewell regex was English-only | Auto-hangup could never fire on a Kannada goodbye |
+| Barge-in set to 5.0s / 15 words | Interruption effectively **disabled** |
+| Sample rate declared 24 kHz; API returns 22.05 kHz | Every reply played ~9% fast and pitched up |
+| `bulbul:v1` requested | Model does not exist — the API rejects it |
+
+### 3.3 Measurements that drove decisions
+
+Probed against the live Sarvam API rather than assumed:
+
+```
+WebSocket  bulbul:v2 / v3   →  TimeoutError, no audio in 12s   ← the dead air
+
+REST       bulbul:v2 manisha   clause  438ms   sentence   779ms
+           bulbul:v2 vidya     clause  451ms   sentence   764ms
+           bulbul:v3 pooja     clause 1012ms   sentence  2655ms
+```
+
+Result: TTS switched to REST with **clause buffering**, model pinned to
+`bulbul:v2`, sample rate corrected to 22050 Hz, and a 3-second timeout so a
+failure fails *fast* into the OpenAI fallback instead of hanging.
+
+### 3.4 Latency budget
+
+| Stage | Now |
+|---|---|
+| Endpointing | 0.30 s |
+| Sarvam STT | ~0.30 s |
+| LLM TTFT (Groq primary) | ~0.40 s |
+| TTS first clause | ~0.44 s |
+| **Total first response** | **≈ 1.4 s** |
+
+Prompt prefill went **484 → ~138 tokens per generation** (109 system + 29 state).
+
+> **Note:** a sub-150 ms TTFT is not physically reachable — that is below the
+> India→US network round-trip before a single token is generated. ~1.4 s
+> end-to-end is inside the 1.25–1.9 s design budget.
+
+### 3.5 Object model
+
+The infrastructure OOP was already sound (provider wrappers, agent subclass).
+The **domain** OOP was the gap — clinical subject matter lived as loose dicts,
+magic strings, and prompt prose.
+
+| Was | Now |
+|---|---|
+| `language: str` re-parsed in every builder | `Language` enum carrying `sarvam_code`, `honorific` |
+| `"NORMAL"` / `"HIGH"` / `"HIGH_RISK"` (two spellings, one concept) | `RiskLevel` enum, ordered, `requires_escalation` |
+| Two loose ints | `BloodPressure` — validates, rejects transposed/mis-transcribed readings |
+| Three positional bools | `SymptomSet` — keyword-only, accumulating |
+| `read_db()` / `write_db()` called directly from tools | `PatientRepository` ABC — swap mock → real SixtyDB with one subclass |
+| Global singletons mutated across concurrent calls | Per-call state in `AgentSession.userdata` |
+
+`agent.py`: **4,239 → 2,999 lines**. Every removal left a comment naming what
+was there and why it went.
+
+---
+
+## 4. Running it
 
 ### Prerequisites
-- Python 3.10+
-- Node.js 18+
-- A [LiveKit Cloud](https://cloud.livekit.io) project
-- API keys for: OpenAI, AssemblyAI, Groq, Sarvam AI
 
-### 1. Backend Setup
+Python 3.10+, Node 18+, and keys for LiveKit, Sarvam, and Groq/OpenAI.
 
-```powershell
-# Create virtual environment
-python -m venv .venv
-.venv\Scripts\activate
-
-# Install dependencies
+```bash
 pip install -r requirements.txt
-
-# Copy and fill in your credentials
-copy .env.example .env
+cd frontend && npm install && cd ..
+cp .env.example .env      # then fill in your keys
 ```
 
-### 2. Frontend Setup
+### Start
 
-```powershell
-cd frontend
-npm install
-
-# Copy and fill in LiveKit credentials
-copy .env.local.example .env.local
-
-npm run dev
-```
-
-### 3. Run the Agent
-
-**Terminal 1 — Python worker:**
-```powershell
-.venv\Scripts\activate
+```bash
 python agent.py dev
 ```
 
-**Terminal 2 — Next.js frontend:**
-```powershell
-cd frontend
-npm run dev
+```bash
+npm --prefix frontend run dev
 ```
 
-Open `http://localhost:3000` and click **Start Voice Call**!
+Open http://localhost:3000 and press **ಮಾತನಾಡಿ**.
 
----
+### Tests
 
-## 🧪 Console Mode Testing
-
-Test the full voice pipeline directly in your terminal (no UI needed):
-
-```powershell
-$env:PYTHONIOENCODING="utf-8"
-.venv\Scripts\python agent.py console
+```bash
+python -m pytest tests/ -q
 ```
 
-This lets you speak into your microphone and verify VAD → STT → LLM → TTS in real time, with per-turn latency logs in the terminal.
+**227 tests** — clinical core, agent wiring, guardrails, adaptive VAD, TTS payloads.
 
 ---
 
-## 📊 Metrics Logged Per Turn
+## 5. The ASHA-worker interface
 
-| Metric | Description |
-|--------|-------------|
-| `ttft` | Time to First Token (LLM) |
-| `ttfb` | Time to First Byte (TTS) |
-| `audio_duration` | Length of TTS audio output |
-| `prompt_tokens` | LLM input tokens used |
-| `completion_tokens` | LLM output tokens used |
-| `transcription_delay` | STT end-of-utterance delay |
+Built for one user: a health worker in a Bidar village, cheap Android phone,
+outdoors, Kannada-first, variable literacy, patchy 3G.
 
----
-
-## 🔐 Environment Variables
-
-See `.env.example` for a full list. **Never commit your `.env` file.**
+- **Kannada primary, English subtitle** — never English-only
+- **One obvious action** — a single 78 px button, `ಮಾತನಾಡಿ`
+- **State is icon + colour + word**, never colour alone — 👂 `ಕೇಳುತ್ತಿದ್ದೇನೆ`, 🗣️ `ಮಾತನಾಡುತ್ತಿದ್ದೇನೆ`
+- **Touch targets ≥64 px**, warm off-white background (greys wash out in sunlight)
+- **Risk banner** driven by the engine's decision, not the UI's guess
+- **Log rail** on the left — collapsible, quiet, for supervisors and debugging
 
 ---
 
-## 📄 License
+## 6. Avatar (optional)
 
-MIT
+Video is off by default (`SAKHI_AVATAR=none`). Audio is the product.
+
+Tavus runs in **echo mode** — it receives Sakhi's already-synthesised Sarvam
+audio and returns lip-synced video. It does **not** think or speak:
+
+```
+Sarvam Kannada TTS ──► Tavus (echo) ──► lip-synced video
+Groq LLM + TriageEngine ──► untouched; Tavus never sees them
+```
+
+Measured cost: **~6 s to join, ~4.6 s playback latency**. Enable only on good
+connectivity. An avatar failure can never end a call — every backend degrades to
+audio-only.
+
+---
+
+## 7. Safety boundaries
+
+- Sakhi is **decision support for a health worker**, never a practitioner. She
+  does not diagnose and never names a medicine or dose.
+- Emergency, self-harm, medical-advice and abuse turns are caught by
+  [`guardrails.py`](guardrails.py) **before the LLM sees them** and answered
+  with fixed approved scripts.
+- Implausible BP readings (STT hearing "ninety" as "nine hundred", transposed
+  numbers) are rejected and re-asked, never recorded.
+- Risk status **ratchets upward only** — a later normal reading cannot silently
+  clear a red alert already acted on.
+- Every escalation writes an immutable audit entry with the reasons behind it.
+
+---
+
+## 8. Status and known limits
+
+| Area | State |
+|---|---|
+| Kannada / Hindi voice pipeline | Working |
+| Clinical triage + persistence | Working, 227 tests |
+| Deterministic escalation | Working |
+| ASHA console | Working, mobile-verified |
+| Tavus avatar | Working, off by default (latency) |
+| D-ID backend | Stub — refuses to start rather than pretend |
+| Real SixtyDB | Not wired; mock implements the same interface |
+
+Open items:
+
+1. `GROQ_LLM_MODEL` is `qwen/qwen3-32b`, a reasoning model that can spend the
+   whole token budget on hidden reasoning and return nothing. The empty-completion
+   fallback catches it at the cost of a round-trip. Consider `llama-3.3-70b-versatile`.
+2. `/health` reads an append-only log, so it can report `ready` from a worker
+   that has died — and `api/token` gates on it.
+3. Post-call reports still write to the legacy clinic SQLite, not SixtyDB.
+4. Field latency has not been measured on a real 3G link in Bidar.
+
+---
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [`changed.md`](changed.md) | Full refactor log — every change, why, and what it affected |
+| [`oops.md`](oops.md) | Object-oriented design audit and target model |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Subsystem detail and call flow |

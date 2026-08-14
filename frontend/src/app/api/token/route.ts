@@ -2,7 +2,7 @@ import { AccessToken, AgentDispatchClient } from "livekit-server-sdk";
 import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 
-const WORKER_STATUS_URL = process.env.WORKER_STATUS_URL || "http://localhost:8080";
+const WORKER_STATUS_URL = process.env.WORKER_STATUS_URL || "http://127.0.0.1:8080";
 const AGENT_NAME = process.env.LIVEKIT_AGENT_NAME || "mystree-care";
 
 async function fetchWorkerStatus(): Promise<{ ready: boolean; reason?: string }> {
@@ -31,6 +31,7 @@ export async function GET(req: NextRequest) {
   const sttMinSilence = (req.nextUrl.searchParams.get("sttMinSilence") || "").trim();
   const sttMaxSilence = (req.nextUrl.searchParams.get("sttMaxSilence") || "").trim();
   const sttInterruptionDelay = (req.nextUrl.searchParams.get("sttInterruptionDelay") || "").trim();
+  const language = (req.nextUrl.searchParams.get("language") || "").trim();
 
   const apiKey = process.env.LIVEKIT_API_KEY;
   const apiSecret = process.env.LIVEKIT_API_SECRET;
@@ -64,6 +65,7 @@ export async function GET(req: NextRequest) {
   if (sttMinSilence) metadataPayload.stt_min_silence = sttMinSilence;
   if (sttMaxSilence) metadataPayload.stt_max_silence = sttMaxSilence;
   if (sttInterruptionDelay) metadataPayload.stt_interruption_delay = sttInterruptionDelay;
+  if (language) metadataPayload.language = language;
   const metadata = Object.keys(metadataPayload).length ? JSON.stringify(metadataPayload) : undefined;
 
   try {

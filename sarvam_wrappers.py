@@ -1,3 +1,4 @@
+import aiohttp
 import asyncio
 import base64
 import inspect
@@ -63,8 +64,19 @@ def _sarvam_tts_config_payload(tts_instance: "SarvamTTS") -> dict:
     speaker = str(tts_instance._speaker or "").strip().lower()
     if "v3" in tts_instance._model and speaker not in _SARVAM_V3_SPEAKERS:
         raise ValueError(f"Unsupported Sarvam bulbul:v3 speaker: {speaker!r}")
+    
+    lang = tts_instance._target_language_code.lower()
+    if lang == "kannada":
+        sarvam_lang = "kn-IN"
+    elif lang == "hindi":
+        sarvam_lang = "hi-IN"
+    elif lang == "english":
+        sarvam_lang = "en-IN"
+    else:
+        sarvam_lang = tts_instance._target_language_code
+
     data = {
-        "target_language_code": tts_instance._target_language_code,
+        "target_language_code": sarvam_lang,
         "speaker": speaker,
         "pace": tts_instance._pace,
         "max_chunk_length": tts_instance._max_chunk_length,
@@ -354,12 +366,70 @@ class SarvamSpeechStream(stt.SpeechStream):
             raise _to_api_error("Sarvam STT stream failed", e) from e
 
 
+# Speakers accepted by each model, read straight off the live API's own 400
+# response (2026-08-14). They do NOT overlap: sending a v3 speaker to v2 is a
+# hard 400, which is how a "voice" picked in the dashboard could silently kill
+# all audio for a call.
+SARVAM_V2_SPEAKERS = {
+    "anushka", "abhilash", "manisha", "vidya", "arya",
+    "karun", "hitesh", "aditya", "ritu",
+}
+
+# Measured against the live API, same Kannada text, 2026-08-14:
+#
+#   bulbul:v2 manisha   short clause  438ms   full sentence   779ms
+#   bulbul:v2 vidya     short clause  451ms   full sentence   764ms
+#   bulbul:v2 anushka   short clause  700ms   full sentence  1026ms
+#   bulbul:v3 pooja     short clause 1012ms   full sentence  2655ms
+#
+# v3 is 2.3-3.4x slower and, on a full sentence, alone eats more than the whole
+# audio-only latency budget. v2 is the default for the pilot. `bulbul:v1` is NOT
+# an option - the API rejects it: "model: Input should be 'bulbul:v2',
+# 'bulbul:v3-beta' or 'bulbul:v3'".
+SARVAM_DEFAULT_MODEL = "bulbul:v2"
+SARVAM_DEFAULT_SPEAKER = "manisha"
+
+# Both models return 22050 Hz WAV from the REST endpoint (verified by reading the
+# RIFF header). The previous `24000 if "v3" in model` guess declared a rate the
+# API never sends, so the emitter was told 24kHz while being fed 22.05kHz - every
+# v3 reply played ~9% fast and pitched up, and frame durations were wrong.
+SARVAM_SAMPLE_RATE = 22050
+
+
+def resolve_sarvam_voice(model: str, speaker: str | None) -> tuple[str, str]:
+    """Pair a model with a speaker it actually supports.
+
+    Returns (model, speaker). A speaker belonging to the other model family is
+    remapped rather than passed through, because the API answers 400 and the
+    caller hears nothing at all.
+    """
+    model = (model or SARVAM_DEFAULT_MODEL).strip()
+    requested = (speaker or "").strip().lower()
+
+    if model.startswith("bulbul:v2"):
+        if requested in SARVAM_V2_SPEAKERS:
+            return model, requested
+        if requested:
+            logger.warning(
+                "Speaker %r is not a bulbul:v2 voice; using %r. Valid: %s",
+                requested, SARVAM_DEFAULT_SPEAKER, ", ".join(sorted(SARVAM_V2_SPEAKERS)),
+            )
+        return model, SARVAM_DEFAULT_SPEAKER
+
+    # v3 / v3-beta
+    if requested in _SARVAM_V3_SPEAKERS:
+        return model, requested
+    if requested:
+        logger.warning("Speaker %r is not a %s voice; using 'ishita'", requested, model)
+    return model, "ishita"
+
+
 class SarvamTTS(tts.TTS):
     def __init__(
         self,
         api_key: str,
-        model: str = "bulbul:v3",
-        speaker: str = "ishita",
+        model: str = SARVAM_DEFAULT_MODEL,
+        speaker: str = SARVAM_DEFAULT_SPEAKER,
         target_language_code: str = "en-IN",
         base_url: str = "https://api.sarvam.ai",
         pace: float = 1.05,
@@ -367,12 +437,25 @@ class SarvamTTS(tts.TTS):
         max_chunk_length: int = 160,
         output_audio_codec: str = "wav",
     ):
-        sample_rate = 24000 if "v3" in model else 22050
+        model, speaker = resolve_sarvam_voice(model, speaker)
         super().__init__(
+            # streaming=False on purpose.
+            #
+            # The WebSocket endpoint (wss://api.sarvam.ai/text-to-speech/ws) was
+            # probed directly on 2026-08-14 and NEVER returned audio for either
+            # model - it connects, accepts config/text/flush, then hangs until
+            # the client gives up. That is the 11-second dead-air timeout.
+            #
+            # Declaring the provider non-streaming makes AgentSession route
+            # through tts.StreamAdapter, which feeds the REST endpoint one
+            # clause at a time using EagerClauseTokenizer (already wired in
+            # SakhiAgent.tts_node, and only active for non-streaming providers).
+            # The caller therefore hears the first clause after ~440ms instead of
+            # waiting on a socket that never answers.
             capabilities=tts.TTSCapabilities(
-                streaming=True,
+                streaming=False,
             ),
-            sample_rate=sample_rate,
+            sample_rate=SARVAM_SAMPLE_RATE,
             num_channels=1,
         )
         self._api_key = api_key
@@ -680,29 +763,104 @@ class SarvamTTSChunkedStream(tts.ChunkedStream):
         self._sarvam_tts = tts_instance
 
     async def _run(self, output_emitter: tts.AudioEmitter) -> None:
-        request_id = f"sarvam-tts-{uuid.uuid4().hex[:12]}"
-        output_emitter.initialize(
-            request_id=request_id,
-            sample_rate=self._sarvam_tts.sample_rate,
-            num_channels=1,
-            mime_type="audio/pcm",
-        )
-
-        async def _input_aiter():
-            yield self._input_text
-            yield None
-
         try:
-            await _run_sarvam_tts_ws(
-                tts_instance=self._sarvam_tts,
-                output_emitter=output_emitter,
-                input_aiter=_input_aiter(),
-                conn_options=self._conn_options,
-                mark_started=lambda: None,
+            from livekit.agents import utils
+            request_id = f"sarvam-tts-{utils.shortuuid()}"
+            output_emitter.initialize(
+                request_id=request_id,
+                sample_rate=self._sarvam_tts.sample_rate,
+                num_channels=1,
+                mime_type="audio/pcm",
+                stream=False,
             )
-            output_emitter.flush()
+
+            lang = self._sarvam_tts._target_language_code.lower()
+            if lang == "kannada":
+                sarvam_lang = "kn-IN"
+            elif lang == "hindi":
+                sarvam_lang = "hi-IN"
+            elif lang == "english":
+                sarvam_lang = "en-IN"
+            else:
+                sarvam_lang = self._sarvam_tts._target_language_code
+
+            payload = {
+                "inputs": [self._input_text],
+                "target_language_code": sarvam_lang,
+                "speaker": self._sarvam_tts._speaker,
+                "model": self._sarvam_tts._model,
+                "pace": self._sarvam_tts._pace,
+            }
+            headers = {
+                "api-subscription-key": self._sarvam_tts._api_key,
+                "Content-Type": "application/json"
+            }
+            # Hard 3s ceiling per clause. Measured clause synthesis is ~440ms on
+            # bulbul:v2, so 3s is ~7x headroom while still failing fast enough
+            # for the TTS FallbackAdapter to reach OpenAI before the caller
+            # notices a gap. Without an explicit timeout aiohttp waits
+            # indefinitely, which is how a slow synthesis became dead air.
+            timeout = aiohttp.ClientTimeout(
+                total=float(os.getenv("SARVAM_TTS_HTTP_TIMEOUT", "3.0"))
+            )
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{self._sarvam_tts._base_url}/text-to-speech",
+                    json=payload,
+                    headers=headers
+                ) as resp:
+                    if resp.status != 200:
+                        # Surface the body: Sarvam explains speaker/model
+                        # mismatches here, and a silent failure is the worst
+                        # possible outcome on a clinical call.
+                        detail = (await resp.text())[:300]
+                        raise APIStatusError(
+                            f"Sarvam TTS {resp.status}: {detail}",
+                            status_code=resp.status,
+                        )
+                    data = await resp.json()
+                    audios = data.get("audios", [])
+
+                    if not audios or not audios[0]:
+                        # Raise rather than return: an empty body must trigger
+                        # the fallback chain, not produce a silent turn.
+                        raise APIConnectionError("Sarvam TTS returned no audio")
+
+                # Decode Base64 WAV from Sarvam
+                wav_bytes = base64.b64decode(audios[0])
+
+                # Extract raw PCM frames from the WAV container
+                with io.BytesIO(wav_bytes) as wav_io:
+                    with wave.open(wav_io, 'rb') as wav_file:
+                        actual_rate = wav_file.getframerate()
+                        raw_pcm = wav_file.readframes(wav_file.getnframes())
+
+                # The emitter was initialized with the declared sample rate. If
+                # the API ever returns a different one the audio plays at the
+                # wrong speed and pitch instead of failing visibly - so say so.
+                if actual_rate != self._sarvam_tts.sample_rate:
+                    logger.warning(
+                        "Sarvam returned %dHz but the provider declares %dHz; "
+                        "playback will be pitch-shifted. Update SARVAM_SAMPLE_RATE.",
+                        actual_rate, self._sarvam_tts.sample_rate,
+                    )
+
+                # Push valid audio bytes to LiveKit's AudioEmitter
+                output_emitter.push(raw_pcm)
+                output_emitter.flush()
+
         except (APIConnectionError, APIStatusError):
+            # Already the right type - let it reach the FallbackAdapter.
             raise
+        except asyncio.TimeoutError as e:
+            # The whole point of the 3s ceiling: convert a hang into a fast,
+            # typed failure the fallback chain can act on.
+            logger.warning("Sarvam TTS timed out; failing over")
+            raise APIConnectionError("Sarvam TTS timed out") from e
         except Exception as e:
-            logger.error("Error in Sarvam TTS chunked _run", exc_info=True)
-            raise _to_api_error("Sarvam TTS synthesis failed", e) from e
+            # This previously logged and returned, swallowing the failure. The
+            # emitter then produced no audio, AgentSession saw a "successful"
+            # empty synthesis, and the fallback chain never fired - the caller
+            # just got silence. Every failure must propagate.
+            logger.error("Error in SarvamTTSChunkedStream._run", exc_info=True)
+            raise _to_api_error("Sarvam TTS request failed", e) from e

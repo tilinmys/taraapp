@@ -49,9 +49,36 @@ class SarvamTTSPayloadTests(unittest.TestCase):
         self.assertIsNone(_sarvam_tts_text_payload("", max_chars=160))
         self.assertIsNone(_sarvam_tts_text_payload("   ... !!! ", max_chars=160))
 
-    def test_invalid_speaker_fails_before_api_call(self):
-        with self.assertRaises(ValueError):
-            _sarvam_tts_config_payload(self.make_tts(speaker="not-a-real-speaker"))
+    def test_invalid_speaker_is_remapped_not_fatal(self):
+        """An unusable speaker must NOT abort TTS construction.
+
+        This previously asserted that an unknown speaker raised ValueError. On a
+        live maternal-health call that behaviour is worse than the problem it
+        guards: a stale voice name in dispatch metadata would fail the whole TTS
+        build and the ASHA worker would hear nothing at all.
+
+        resolve_sarvam_voice() now substitutes a valid speaker for the selected
+        model and logs a warning, so a bad voice costs the wrong timbre rather
+        than a silent call. The model/speaker sets do not overlap between
+        bulbul:v2 and v3, so this path is easy to hit by accident.
+        """
+        tts_instance = self.make_tts(speaker="not-a-real-speaker")
+        payload = _sarvam_tts_config_payload(tts_instance)
+        speaker = payload["data"]["speaker"]
+        self.assertNotEqual(speaker, "not-a-real-speaker")
+        self.assertTrue(speaker)
+
+    def test_speaker_is_paired_with_a_compatible_model(self):
+        from sarvam_wrappers import SARVAM_V2_SPEAKERS, resolve_sarvam_voice
+
+        # A v3 voice requested against v2 is a hard 400 from the API.
+        model, speaker = resolve_sarvam_voice("bulbul:v2", "pooja")
+        self.assertEqual(model, "bulbul:v2")
+        self.assertIn(speaker, SARVAM_V2_SPEAKERS)
+
+        # A valid pairing is passed through untouched.
+        self.assertEqual(resolve_sarvam_voice("bulbul:v2", "vidya"), ("bulbul:v2", "vidya"))
+        self.assertEqual(resolve_sarvam_voice("bulbul:v3", "pooja"), ("bulbul:v3", "pooja"))
 
     def test_422_sanitized_shape_has_no_text_or_secret(self):
         payload = _sarvam_tts_text_payload("Patient phone 9-8-4-5.", max_chars=160)

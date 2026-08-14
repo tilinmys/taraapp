@@ -6,5 +6,7 @@ livekit-plugins-google==1.6.4
 livekit-plugins-silero==1.6.4
 livekit-plugins-noise-cancellation==0.2.6
 livekit-plugins-turn-detector==1.6.4
+livekit-plugins-bey
+livekit-plugins-tavus==1.6.10
 python-dotenv>=1.0
 websockets>=15.0

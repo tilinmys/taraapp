@@ -1,0 +1,554 @@
+# changed.md — Sakhi Refactor Log
+
+Running log of every change made while routing this codebase from the **MyStree
+Clinic appointment-booking agent** to the **Sakhi maternal-health ASHA co-pilot**
+described in the target architecture.
+
+Newest phase at the bottom. Each entry says *what* changed, *why*, and *what it
+affects downstream*, because the modules here are tightly coupled and a change in
+one place reliably breaks another.
+
+---
+
+## Phase 0 — Audit (no code changed yet)
+
+### 0.1 The central finding
+
+The repository is **two agents wearing one body**.
+
+`agent.py` (4,106 lines) is a fully-built **clinic receptionist** — `GracyAgent`,
+doctor lookup, slot search, appointment booking/rescheduling/cancellation, SQLite
+persistence, an FAQ semantic cache for "what are your opening hours".
+
+Bolted onto it, at lines 3413–3486, are **four Sakhi maternal-health tools** added
+later. Those four are the only tools actually registered on the session. The
+~12 booking tools above them are defined, decorated, and **never registered** —
+they are dead weight that still drags in `db_helper`, `SlotCache`,
+`BookingPrefetch` and a background SQLite refresh loop on every single call.
+
+The system prompt is already Sakhi's. The state object, the fast path, the FAQ
+cache, the greeting/goodbye pair, and half the runtime are still the clinic's.
+That split is the root cause of most of the specific bugs below.
+
+### 0.2 Latency defects found
+
+| # | Location | Defect | Cost |
+|---|---|---|---|
+| L1 | `build_llm()` `agent.py:2085` | Builds the whole Groq provider list into `providers`/`groq_providers`, emits "Groq key configured" events, then **`return openai_fallback`** unconditionally. Every Groq line is dead code. The last commit message claims "Promote Groq qwen3-32b to primary LLM after benchmarking (~3.5x faster)" — the code does the opposite. | The single largest TTFT regression. Their own benchmark says ~3.5×. |
+| L2 | `build_initial_context()` `agent.py:2333` | Prompt still carries `CLINIC_NAME`, a 7-day clinic calendar, "the clinic is CLOSED on Sundays", and a Malayalam/"You are Gracy" block — none of it reachable for a Kannada maternal call. | Prefill tokens paid on **every** generation. |
+| L3 | System prompt `agent.py:2369` | Instructs the LLM to append `[VAD: FAST]` / `[VAD: SLOW]` to every reply. | Extra output tokens on the critical path, and the tag leaks into TTS if the strip transform misses it. |
+| L4 | `build_turn_handling()` `agent.py:2322` | `MIN_INTERRUPTION_DURATION=5.0`, `MIN_INTERRUPTION_WORDS=15`. | Barge-in is effectively **disabled** — the ASHA worker cannot interrupt Sakhi for 5 seconds / 15 words. |
+| L5 | `entrypoint()` `agent.py:3588` | `call_silence_threshold` defaults to `0.5`; `MAX_ENDPOINTING_DELAY` caps at `1.2`. | Target architecture specifies 250–350 ms endpointing. |
+| L6 | `mock_sixtydb.py` | `read_db()`/`write_db()` do a **full synchronous JSON file read/write** on the asyncio event loop inside tool calls. | Blocks the loop mid-turn; audio stalls. |
+| L7 | `entrypoint()` `agent.py:3839` | `_preload_slots()` + `slot_cache.start_background_refresh(10s)` run per call, plus `booking_prefetch.handle_transcript()` on **every interim STT transcript**. | Pure overhead — the clinic DB is no longer part of this product. |
+| L8 | `GracyAgent.on_user_turn_completed` | FAQ cache lookup (OpenAI embeddings network round-trip) before the LLM on every non-fast-path turn, for a clinic FAQ set irrelevant to maternal triage. | Adds a round-trip in front of the LLM. |
+
+### 0.3 Correctness / safety defects found
+
+| # | Location | Defect |
+|---|---|---|
+| C1 | `record_bp()` `agent.py:3450` | Does **not persist anything** and does **not compute risk**. It logs a line and returns a success string. The real, correct BP + risk logic lives in `MockSixtyDB.record_bp()` — a class that is **never instantiated anywhere in the codebase**. |
+| C2 | `flag_high_risk_pregnancy()` `agent.py:3456` | Logs a warning and returns. No DB write, no alert, no audit entry. |
+| C3 | — | **No `record_symptoms` tool and no `record_patient_data` tool exist**, despite both being in the target spec and referenced by the prompt's STEP 2/STEP 3. |
+| C4 | — | The **Pre-Eclampsia triage matrix exists only as prose in the system prompt.** There is no deterministic code path implementing it. A clinical safety rule that depends on the LLM remembering to apply it is not a guardrail. |
+| C5 | `CallState` `agent.py:2737` | Is the **booking** state — `doctor`, `booking_confirmed`, `appointment_id`, `doctor_preference_asked`. `llm_node` injects `state.summary()` into *every* generation, so Sakhi is told on every turn to go collect a doctor preference and confirm a booking. Directly fights the maternal workflow. |
+| C6 | `agent.py:3631` `extract_vad_flags` | Mutates `vad_provider.min_silence_duration` — the VAD instance **shared across concurrent calls** via `proc.userdata`. `DynamicVADController`'s own docstring (line 2818) explicitly warns never to do this. Two competing adaptive-VAD systems fight each other. Also reaches into the private `session._turn_detector._min_endpointing_delay`. |
+| C7 | `agent.py:1884` | `schedule_hangup_after_playout` is decorated `@llm.function_tool` but is a plain internal helper called directly. Verified it still works (`FunctionTool` is callable), but it is semantically wrong and would be exposed to the model if ever passed in a tools list. |
+| C8 | `tts_node` `agent.py:3271` | Content heuristic looks for `"doctor in mind"` / `"suggest one"` to set booking state — dead logic on a maternal call. |
+| C9 | `GOODBYE_TEXT` `agent.py:2432` | Still `"Thank you for calling MyStree Clinic..."` in English, while `GREETING_TEXT` is Kannada. `_FAREWELL_RE` keys off `pranaam` / `have a beautiful day`, so **auto-hangup can never fire on a Kannada goodbye.** |
+| C10 | `agent.py:3853` | Agent `instructions=` says *"You are a human receptionist for MyStree Clinic. Never call yourself an AI."* — contradicts the Sakhi system prompt in the same session. |
+| C11 | `build_stt()` `agent.py:2070` | Builds a `health_terms` vocabulary-bias list and **never passes it to `SarvamSTT`**. Dead variable; no keyword biasing is actually applied. |
+| C12 | `build_tts()` `agent.py:2267` | Accepts `tts_provider` and `speed_override` and **ignores both** — always Sarvam, and silently drops the caller's speed setting from the UI. |
+| C13 | `agent.py:3413` | `import json`, `from datetime import datetime`, `from mock_sixtydb import ...` sit **in the middle of the file**, after ~3,400 lines of definitions. |
+| C14 | `agent.py:30` | `from livekit.plugins import bey` — the Beyond Presence avatar plugin is imported and **never used**. `BEYOND_PRESENCE_API_KEY` is present in `.env`. |
+| C15 | `agent.py:1940`, `2044` | `LockedSpeechStream` / `LockedAssemblyAISTT` — several hundred lines of AssemblyAI subclassing, unreachable now that `build_stt()` hard-returns `SarvamSTT`. |
+| C16 | Fast path `agent.py:2554` | `fast_path_reply` and its helpers are **English clinic-booking** patterns ("what brings you in today", name spelling, 10-digit phone confirmation). On a Kannada/Hindi maternal call they either never fire or fire wrongly. |
+| C17 | `agent.py:262` (found during Phase 3) | One `try:` block imported `MultilingualModel`, `SmallestTTS`, `SkilliesTTS` **and `token_manager`** — and `token_manager.py` does not exist in this repo. So the block raised `ModuleNotFoundError` on **every boot**, silently forcing `MultilingualModel = None` (making `ENABLE_MULTILINGUAL_TURN_DETECTOR` a no-op regardless of its value) and leaving `SmallestTTS`/`SkilliesTTS` undefined. Only masked because `build_tts()` hard-returns Sarvam. |
+| C18 | `_build_sarvam_tts()` (found during Phase 6) | Computes `pace`, `base_url`, `min_buffer_size`, `max_chunk_length`, **logs all four in a pipeline event as if applied**, then passes **none** of them to the `SarvamTTS` constructor. `SARVAM_PACE`, the UI speed slider, `SARVAM_BASE_URL` and `SARVAM_MIN_BUFFER_SIZE` all had zero effect — and `SARVAM_PACE_GREETING` did too, so the "deliberately slower greeting" documented at length in `entrypoint()` never actually played slower. |
+
+### 0.4 Environment gap
+
+`.env` contains only `EXOTEL_*` and `BEYOND_PRESENCE_API_KEY`. There is **no
+`SARVAM_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, or `LIVEKIT_*`** in it.
+`build_llm()` calls `required_env("OPENAI_API_KEY")`, so a local run raises before
+the session starts. Keys must be coming from the deploy environment — flagged so
+local verification is understood to be limited to import/unit level.
+
+### 0.5 Routing plan (audit → target architecture)
+
+| Target spec subsystem | Current state | Action |
+|---|---|---|
+| Media transport & turn detection | Present and good (LiveKit + BVC + Silero + `DynamicVADController`) | Keep; delete the competing `[VAD:]` tag mechanism; retune to 250–350 ms |
+| `CallState` schema (maternal) | Booking schema | **Replace** with the spec's maternal schema |
+| Sarvam STT/TTS | Wrappers are solid and stream natively | Keep; actually apply the vocabulary bias; honour speed override |
+| Clinical AI core + tools | 4 stubs, 2 of them no-ops | **Rebuild** against a repository + a real triage engine |
+| Pre-eclampsia triage matrix | Prompt prose only | **Implement deterministically** in `sakhi_triage.py` |
+| SixtyDB persistence | Sync file I/O, class never used | **Replace** with an async repository behind an ABC |
+| D-ID avatar | Nothing (dead `bey` import) | Build the **seam** now (ABC + null backend), plug the backend next prompt |
+| Latency budget | Groq discarded, prompt bloated | Restore fallback chain, trim prefill |
+
+No code has been modified in this phase.
+
+---
+
+## Phase 1 — Sakhi domain core (new modules, no behaviour change yet)
+
+Three new dependency-free modules. Nothing in `agent.py` used them at this
+point; the goal was to get the clinical model correct and tested in isolation
+before wiring it into a live session.
+
+**`sakhi_domain.py`** (425 lines) — value objects and per-call state.
+
+| Type | Replaces | Why |
+|---|---|---|
+| `Language` enum | bare `str` ("en"/"kn"/"kn-IN") | `build_stt` had to re-derive the Sarvam code with a `startswith` check because no type carried it. Now carries `sarvam_code` and `honorific`. `Language.parse()` never raises — Sarvam goes *silent* on unknown codes, which makes the agent deaf, so junk falls back instead of propagating. |
+| `RiskLevel` enum | `"NORMAL"` / `"HIGH"` / `"HIGH_RISK"` magic strings | The codebase used **both** `"HIGH"` and `"HIGH_RISK"` for the same state (`mock_sixtydb.py:90` vs `:106`). Ordered, so call sites compare instead of string-matching. |
+| `BloodPressure` frozen dataclass | two loose ints | Self-validating. Rejects `140/900` (STT hearing "ninety" as "nine hundred") and transposed readings, so a mis-transcription becomes a re-ask instead of a record against a mother's chart. |
+| `SymptomSet` frozen dataclass | three positional bools | `record_symptoms(pid, True, False, True)` was transposable with no error surfacing. Keyword-only now, and `merged_with()` makes symptoms accumulate so a later "no swelling" cannot erase an earlier "yes headache". |
+| `RiskAssessment` frozen dataclass | — | Carries the *reasons* for the decision, so the audit trail records why a mother was flagged. |
+| `SakhiCallState` | booking `CallState` | The spec's maternal schema. Mutation goes through methods so risk cannot drift out of sync with the readings that produced it. |
+
+**`sakhi_triage.py`** (137 lines) — `TriageEngine`. Implements the matrix in code:
+
+| BP | Danger symptoms | Outcome |
+|---|---|---|
+| >=140/90 | any | 🔴 `HIGH_RISK` — escalate |
+| >=140/90 | none | 🟡 `MODERATE` — 48h re-check |
+| normal | any | 🟡 `OBSERVATION` |
+| normal | none | 🟢 `ROUTINE` |
+
+Two deliberate additions beyond the literal spec matrix:
+
+- **Severe-range BP (>=160/110) escalates on the reading alone**, per standard obstetric practice. Toggleable via `TRIAGE_ESCALATE_ON_SEVERE_BP` / the `escalate_on_severe_bp_alone` constructor flag.
+- **Gestation under 20 weeks** with raised BP adds a reason noting it may be chronic hypertension rather than pre-eclampsia. It does **not** downgrade the risk — a screening tool must not under-triage.
+
+A missing BP reading is treated as "not yet known", never as "normal" — triage runs incrementally as readings arrive.
+
+**`sakhi_repository.py`** (392 lines) — `PatientRepository` ABC + `MockSixtyDBRepository`.
+
+- Reads serve from memory; writes mutate memory and a single debounced task does the `json.dump` inside `asyncio.to_thread`. A burst of BP + symptoms + teleconsult writes in one turn costs one off-loop file write **after** the caller has already heard the reply. Fixes L6.
+- Writes go to a temp file then `replace()`, so a crash mid-write cannot leave truncated JSON that fails to load on the next call.
+- `PatientRecord.from_dict` tolerates the legacy seed format (`"NORMAL"`/`"HIGH"`, missing fields, digit-separated phones).
+- **Bug fixed:** new patient ids were `M-{len(patients)+201}`, which reissues an id already in use as soon as any record is removed. Now derived from the highest existing number.
+- **Bug fixed:** risk status now ratchets upward only — a later normal reading cannot silently clear a red alert already raised and acted on.
+
+`mock_sixtydb.py` is left in place (unused by the agent) so any external script still importing it keeps working.
+
+**Tests:** `tests/test_sakhi_clinical.py` — 62 tests covering all four triage quadrants, severe-range, BP validation, symptom accumulation, phone normalisation, legacy risk mapping, id collision, the risk ratchet, and write-behind durability.
+
+---
+
+## Phase 2 — Real clinical tools
+
+**`sakhi_tools.py`** (408 lines) — `ClinicalToolset`.
+
+Tools are **methods on a class**, with the repository and triage engine injected
+through the constructor. Verified against livekit-agents 1.6.10 that bound
+methods register correctly and that `self` is excluded from the generated JSON
+schema.
+
+The division of labour, which is the point of the module:
+
+> the LLM collects the readings and speaks the outcome; **the code decides what the outcome is**
+
+Every tool returns a JSON block containing the decided `risk_level`, the
+`reasons`, and an `instruction` telling the model what to say. The model never
+computes a risk level.
+
+| Tool | Before | After |
+|---|---|---|
+| `search_patient` | raw dict scan over a file read | repository lookup; populates `SakhiCallState`; surfaces a prior high-risk flag first |
+| `record_bp` | **logged a line, persisted nothing, computed no risk** | validates → triages → persists → returns decision + what to say. Implausible readings return a re-ask |
+| `record_symptoms` | **did not exist** | merges symptoms, persists, **re-triages** — a symptom reported after the BP reading flips MODERATE to a red alert |
+| `register_mother` | **did not exist** | creates the SixtyDB record |
+| `flag_high_risk_pregnancy` | logged a warning | **removed** — risk is assigned by the engine, not asserted by the model |
+| `connect_smfmi_specialist` | wrote a log entry | idempotent; writes an audit entry carrying risk level and reasons |
+
+---
+
+## Phase 3 — `agent.py` rewired
+
+- **`GracyAgent` → `SakhiAgent`.** Same three framework hooks (that part of the old design was sound); the booking fast path, phone-confirmation branch, doctor-preference heuristics and FAQ-cache lookup are gone from them. `GracyAgent` is kept as an alias for older scripts and docs.
+- **Deterministic escalation safety net (fixes C4).** `SakhiAgent` guarantees: *if the triage engine says a mother needs a specialist, a specialist is connected — whether or not the LLM calls the tool.* Two layers: `llm_node` injects an urgent directive while escalation is pending, and if the turn still finishes without the call, `tts_node` fires `_force_escalation()` directly against the toolset. Re-entrant-safe and idempotent.
+- **`CallState` → `SakhiCallState`**; `llm_node` now injects `prompt_summary()` (fixes C5 — the old summary told Sakhi on every generation to collect a doctor preference and confirm a booking).
+- **System prompt rewritten.** Dropped `CLINIC_NAME`, the seven-day appointment calendar, "closed on Sundays", the Malayalam/"You are Gracy" block, and the `[VAD: FAST]`/`[VAD: SLOW]` tag protocol. **~3–4k tokens → ~484 tokens of prefill per generation.** Triage thresholds are deliberately *not* restated in the prompt — restating them invites the model to second-guess the engine.
+- **`extract_vad_flags` deleted (fixes C6).** It mutated `vad_provider.min_silence_duration` — the Silero instance **shared across every concurrent call** on the worker — and reached into private `session._turn_detector._min_endpointing_delay`. One caller's turn retuned turn-taking for every other live call. `DynamicVADController` now owns endpointing alone.
+- **`GOODBYE_TEXT` and `_FAREWELL_RE` localised (fixes C9).** The farewell detector matched English only ("pranaam", "have a beautiful day"), so on a Kannada call auto-hangup **could never fire** and the line stayed open until the ~45–75s silence timeout. Now matches Kannada, Hindi and transliterations.
+- **Agent `instructions=` fixed (C10)** — was *"You are a human receptionist for MyStree Clinic"*, contradicting the Sakhi prompt in the same session.
+- **Repository + triage engine loaded once at `prewarm_process`**, not per call.
+- **Removed from the per-call path:** slot-cache preload and its 10s refresh timer, `booking_prefetch.handle_transcript()` (ran on *every interim transcript*, several times a second while the caller speaks), and the FAQ-cache prewarm and lookup (an OpenAI embeddings round-trip in front of the LLM, for clinic opening-hours content).
+- Mid-file imports at line 3413 hoisted to the top (C13).
+
+---
+
+## Phase 4 — Latency pass
+
+- **`build_llm` rewritten (fixes L1 — the biggest single win).** The old function built the entire Groq chain, emitted "Groq key configured" events for each key, then ended with an unconditional `return openai_fallback`. **Every Groq provider it constructed was discarded**; the dashboard reported Groq while 100% of turns went to `gpt-4o-mini`. Now returns a real `llm.FallbackAdapter([*groq, openai])` with a 3.5s attempt timeout, so a Groq rate-limit costs one timeout rather than the turn. Raises at build time if no provider is configured, instead of starting a call that can never reply.
+- **Barge-in restored (fixes L4).** Committed values were `min_duration=5.0s` / `min_words=15` — those do not filter backchannels, they **disable interruption outright**. An ASHA worker could not interrupt for five seconds or fifteen words, which on an urgent call is the wrong failure: she may be correcting a misheard BP. Back to 0.6s / 2 words, the values the surrounding comment always claimed.
+- **Endpointing default 0.5s → 0.3s**, landing in the spec's 250–350 ms band.
+- **`build_stt` cleaned (fixes C11).** Dropped four AssemblyAI endpointing parameters that had had no effect since STT moved to Sarvam, and the `health_terms` vocabulary list that was built and never passed to anything. `SarvamSTT` exposes no keyword-biasing parameter — leaving the list in place would read as if biasing were active.
+- **`build_tts` honours its parameters (fixes C12).** It accepted `speed_override` and dropped it — the dashboard's TTS-speed slider moved a value that never reached the provider.
+- **`_build_sarvam_tts` now forwards its tuned values (C18, found late).** It computed `pace`, `base_url`, `min_buffer_size` and `max_chunk_length`, **logged all four in a pipeline event as though they had been applied**, and passed none of them to the constructor. Consequences: `SARVAM_PACE` and the speed slider did nothing; `SARVAM_PACE_GREETING` did nothing, so the "deliberately slower greeting" documented at length in `entrypoint()` **never actually played slower**; and `SARVAM_MIN_BUFFER_SIZE` — which sets how much text buffers before the first synthesis request leaves, i.e. time-to-first-audio — was not tunable at all.
+- **Adaptive-VAD triggers rewritten.** `_VAD_SLOW_TRIGGER_RE` was English clinic phrasing ("which doctor", "doctor in mind", "what brings you"), none of which Sakhi ever says — so on a Kannada call the slow window **could never engage** and every question got the fast endpoint. Now covers BP readings, gestational age, names and villages in Kannada, Hindi and English.
+
+---
+
+## Phase 5 — Avatar seam
+
+**`sakhi_avatar.py`** (227 lines) — `AvatarBackend` ABC with three implementations:
+
+- `NullAvatarBackend` — audio-only, the default (Mode C in the bandwidth matrix).
+- `BeyAvatarBackend` — Beyond Presence. The plugin is installed and `BEYOND_PRESENCE_API_KEY` is already in `.env`, so this path is live behind `SAKHI_AVATAR=bey`.
+- `DIDAvatarBackend` — **refuses to start**, with the implementation steps in its docstring, so selecting it cannot look like success in the logs.
+
+The hard rule every backend enforces: **an avatar failure never takes down the
+call.** `start()` returns a bool and cannot raise; an unknown `SAKHI_AVATAR`
+value falls back to audio-only with a warning rather than blocking calls. Wired
+into `entrypoint()` after `session.start()`, closed on call end.
+
+Also removed the unused top-level `from livekit.plugins import bey` (C14).
+
+The one non-trivial piece left for the D-ID work: audio must be **teed** from the
+existing TTS stream rather than re-synthesised, or lip-sync drifts against what
+the caller actually hears.
+
+---
+
+## Phase 6 — Pruning and verification
+
+`agent.py`: **4,239 → 2,999 lines** (−1,240). Every removal left a comment naming
+what was there and why it went.
+
+| Removed | Lines | Reason |
+|---|---|---|
+| 11 clinic booking tools | ~370 | Never registered on the session; still pulled in `db_helper`, `SlotCache`, `BookingPrefetch` on every import |
+| `BookingPrefetch` + singleton | ~250 | Ran on every interim transcript; cross-call mutable global |
+| Deterministic fast path | ~145 | English booking patterns — on a Kannada call they never matched or matched wrongly (C16) |
+| `LockedSpeechStream` / `LockedAssemblyAISTT` | ~130 | Unreachable since `build_stt` moved to Sarvam (C15) |
+| `SlotCache` + singleton | ~115 | Cross-call mutable global, 10s refresh timer, no consumer |
+| `_FillerHandle`, `delayed_filler`, `run_db_step`, `log_tool_failure`, `_harvest_identity` | ~100 | Booking-tool scaffolding. `_harvest_identity` was **already broken** — it called three functions removed with the booking flow, and survived only because nothing called it |
+| Clinic time/date helpers, name/phone helpers, `FILLER_TEXTS`, `_AFFIRMATIVE_RE`/`_NEGATIVE_RE` | ~130 | Booking-flow only, English-only |
+
+Also fixed **C7**: `schedule_hangup_after_playout` carried an `@llm.function_tool`
+decorator despite being a plain internal helper called directly. It happened to
+work (`FunctionTool` is callable) but made a private helper eligible for
+exposure to the model.
+
+### Test results — 215 passing
+
+| Suite | Result |
+|---|---|
+| `tests/test_sakhi_clinical.py` (new) | 62 passed |
+| `tests/test_sakhi_agent_wiring.py` (new) | 20 passed |
+| `tests/test_sarvam_tts_payloads.py` | 8 passed |
+| `tests/test_adaptive_vad.py` (updated) | 24 passed |
+| `tests/test_guardrails.py` | 73 passed |
+| `tests/test_schedule_db.py` | 28 passed |
+
+Retired: `test_fast_path.py`, `test_faq_cache.py`, `test_call_state.py` — all
+tested code that no longer exists.
+
+Verified beyond unit tests: `prewarm_process` loads VAD + repository + triage;
+`build_stt` / `build_tts` / `build_llm` / `build_turn_handling` all construct for
+Kannada and Hindi; the LLM is a `FallbackAdapter`; TTS reports streaming; pace
+overrides reach the provider; and the full clinical conversation runs end to end
+(lookup → implausible-BP rejection → MODERATE → symptom flips it to HIGH_RISK →
+escalation → audit trail with reasons).
+
+---
+
+## Open items and risks
+
+1. **`GROQ_LLM_MODEL` is set to `qwen/qwen3-32b` in the environment.** Qwen 3 is
+   a reasoning model, and a comment in the original `build_llm` recorded exactly
+   this failure: *"Qwen 3 can spend the complete voice-token budget on hidden
+   reasoning and finish with no assistant content."* Now that Groq is genuinely
+   primary, that risk is live for the first time. The empty-completion fallback
+   in `llm_node` catches it, but at the cost of a second round-trip.
+   **Recommendation:** set `GROQ_LLM_MODEL=llama-3.3-70b-versatile`, or raise
+   `LLM_MAX_COMPLETION_TOKENS` and constrain reasoning. Worth one live call to check.
+2. **Local `.env` has no `SARVAM_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY` or
+   `LIVEKIT_*`** — only `EXOTEL_*` and `BEYOND_PRESENCE_API_KEY`. Verification
+   here was import and unit level; a live call needs those in the deploy environment.
+3. **`db_helper` (clinic SQLite) is still imported** and used by `preload_user`,
+   `patient_context_prompt` and `save_call_report`. Post-call reports still land
+   in the clinic DB rather than SixtyDB. Left deliberately — it works, and moving
+   it is a separate change.
+4. **Latency is not yet measured on a live call.** The changes are structural
+   (Groq actually primary, ~3–4k → ~484 prefill tokens, one fewer pre-LLM
+   round-trip, no blocking file I/O in tools). Confirm against
+   `logs/pipeline_events.jsonl` (`llm_ttft_ms`, `ttfa_ms`, `eou_delay_ms`) on a
+   real call.
+5. **`livekit.plugins.turn_detector` is deprecated** in the installed version; it
+   warns to use `livekit.agents.inference.TurnDetector`. Not urgent — the
+   multilingual detector is off by default.
+6. **The D-ID backend is a stub.** `SAKHI_AVATAR=bey` works today; D-ID is next
+   prompt's work.
+
+---
+
+## Phase 7 — Tavus avatar + ASHA-worker UI
+
+### 7.1 Tavus integration
+
+**The one thing that had to be right:** Tavus can run an entire conversational
+stack itself (its own STT, LLM and TTS). Used that way it would have replaced
+everything this refactor built — no Kannada, no clinical prompt, no
+`TriageEngine`.
+
+The LiveKit plugin does not do that. Verified in
+`livekit/plugins/tavus/api.py`: it creates the conversation with
+
+```python
+"pipeline_mode": "echo",
+"transport": {"transport_type": "livekit"}
+```
+
+In **echo mode** Tavus neither thinks nor speaks. It receives Sakhi's
+already-synthesised Sarvam audio and returns a video track whose lips match it:
+
+```
+Sarvam Kannada TTS ──> Tavus (echo) ──> lip-synced H.264 video
+Groq LLM + TriageEngine ──> untouched; Tavus never sees them
+```
+
+Tavus contributes a face and nothing else — exactly what the `AvatarBackend`
+seam from Phase 5 was built for.
+
+**Added:** `TavusAvatarBackend` in `sakhi_avatar.py`, registered as
+`SAKHI_AVATAR=tavus`. Config via `TAVUS_API_KEY`, `TAVUS_REPLICA_ID`
+(default `rd3ba0f30551`, "Olivia - Doctor"), optional `TAVUS_PERSONA_ID`.
+`livekit-plugins-tavus==1.6.10` added to `requirements.txt`.
+
+The API key lives in `.env` only, which is gitignored, and never reaches the
+browser — the frontend receives a LiveKit token, never a Tavus credential.
+
+**Bug found and fixed during the live test.** The first run failed with:
+
+```
+RuntimeError: Plugins must be registered on the main thread
+```
+
+A backend's `start()` runs on the job's worker thread, so the lazy
+`from livekit.plugins import tavus` inside `_start()` failed on every call and
+the seam silently degraded to audio-only. Avatar plugins are now imported at
+**module scope** in `sakhi_avatar.py`, which is the main thread at process
+import.
+
+This is what the `from livekit.plugins import bey` line at the top of the old
+`agent.py` was actually for. It looked unused — nothing referenced the name —
+so it was removed in Phase 5 as dead. **The import itself was the point.**
+`BeyAvatarBackend` had the same latent defect and is fixed by the same change.
+
+**Live verification.** Worker restarted with `SAKHI_AVATAR=tavus`:
+
+```
+Stage 9 Playback ok  Avatar started - Tavus avatar (replica rd3ba0f30551)
+                     is rendering Sakhi's video track
+AvatarMetrics(avatar_joined_time=..., playback_latency=4.57, metadata={'model_provider': 'tavus'})
+```
+
+Two active conversations confirmed on Tavus's side, then ended via the API so
+they stopped consuming concurrency.
+
+**Latency cost, measured:** the avatar took **~6.1 s to join** after session
+start, and reported **`playback_latency` ≈ 4.6 s**. That is a real budget hit
+against the ~1.25–1.9 s audio-only target, and matches the target
+architecture's own Mode A estimate (2.25–3.4 s) being optimistic. Audio is
+unaffected — voice still flows on its own track — but the *video* trails.
+Worth deciding whether video is on by default in the field, or reserved for
+good-4G sessions per the bandwidth matrix.
+
+### 7.2 ASHA-worker UI
+
+`frontend/src/app/page.tsx` and `page.module.css` rewritten for one user: an
+ASHA worker in a Bidar village, cheap Android phone, outdoors, Kannada-first,
+variable literacy, patchy 3G.
+
+| Removed | Why |
+|---|---|
+| Three `<select>` dropdowns (language / TTS provider / TTS voice) | TTS provider and voice are engineering knobs, not field decisions — the backend runs Sarvam regardless. A dropdown also hides its options behind a tap on a small touch screen. Language is now two large pills. |
+| Three.js / WebGL canvas + `SakhiAvatar.tsx` model | Shipped a 3D model and ran a continuous render loop on a device class that can afford neither. The Tavus video track is a plain `<video>`. |
+| Log console in the main column | Moved to a quiet collapsible left rail. |
+
+Design rules applied:
+
+- **Kannada primary, English subtitle** — never English-only, never Kannada replaced.
+- **One obvious action.** A single 78 px teal button, `ಮಾತನಾಡಿ` (Talk).
+- **State is icon + colour + word**, never colour alone: `ಕೇಳುತ್ತಿದ್ದೇನೆ` 👂 listening, `ಮಾತನಾಡುತ್ತಿದ್ದೇನೆ` 🗣️ speaking, `ಯೋಚಿಸುತ್ತಿದ್ದೇನೆ` 💭 thinking.
+- **Touch targets ≥64 px** throughout.
+- **Warm off-white**, not pure white — low-contrast greys wash out in sunlight.
+- **No thin font weights**; Kannada/Devanagari fonts lead the stack so Indic glyphs never fall back to boxes.
+- **Risk banner** driven by the worker's `Triage: <LEVEL>` pipeline event, so the ASHA worker sees the *engine's* deterministic decision. The UI never infers a risk level. HIGH_RISK renders `ತಕ್ಷಣ ಆಸ್ಪತ್ರೆಗೆ ಕರೆದೊಯ್ಯಿರಿ` (take her to hospital immediately) in red.
+- All user-facing strings live in one `COPY` table so a Kannada speaker can review every word without reading JSX.
+
+**Log rail:** 320 px open → 56 px collapsed; on mobile it moves below the call
+(`order: 2`) so the call owns the screen. Colour-coded by severity, copy button,
+auto-scroll.
+
+### 7.3 Browser verification
+
+| Check | Result |
+|---|---|
+| Page renders, no console errors | ✅ |
+| Kannada font stack applies (not the Geist body font) | ✅ `Noto Sans Kannada` first |
+| Talk button / language pills | 78 px / 64 px, 24 px & 20 px type |
+| Log rail collapse | 320 px → 56 px, main button unaffected |
+| Mobile 375×812 | single column, call first, **no horizontal scroll** |
+| Risk banner end-to-end | real triage event → pipeline log → `/api/logs` → red Kannada banner ✅ |
+| Log rail streaming | 46 rows, `ok`/`warn`/`info` colour coding ✅ |
+
+Tests: **221 passing** (101 pytest + 24 + 73 + 28 standalone).
+
+One test was environment-dependent and is fixed: `build_avatar_backend()` with
+no argument now resolves to Tavus because this repo's `.env` sets
+`SAKHI_AVATAR=tavus`, so the default-behaviour assertion now clears the variable
+with `monkeypatch` instead of testing the developer's machine.
+
+### 7.4 Open items
+
+1. **Rotate the Tavus API key.** It was pasted into a chat transcript.
+2. **Train a custom replica for Bidar.** The default is a stock Western face. Tavus needs ~2 minutes of footage; a local Kannada-speaking health worker would be far better received. Set `TAVUS_REPLICA_ID` — nothing else changes.
+3. **Decide the default avatar mode.** ~6 s join and ~4.6 s playback latency argue for audio-only (`SAKHI_AVATAR=none`) as the field default, with video enabled on good connections.
+4. **Ghost conversations consume Tavus concurrency.** A dispatch that no participant joins leaves a conversation active until it times out. `aclose()` handles normal call end; consider a sweeper if dispatches are created speculatively.
+
+---
+
+## Phase 8 — TTS timeout, fallback chain, prompt trim, turn-taking
+
+### 8.1 Root cause of the 11-second timeout — measured, not assumed
+
+Before changing the wrapper, both Sarvam endpoints were probed directly with the
+live key (2026-08-14, identical Kannada text):
+
+**WebSocket `wss://api.sarvam.ai/text-to-speech/ws`**
+
+```
+bulbul:v2 manisha  -> TimeoutError (no audio in 12s)
+bulbul:v3 pooja    -> TimeoutError (no audio in 12s)
+```
+
+It connects, accepts `config`/`text`/`flush`, then never returns audio. **That
+is the dead air.** The wrapper declared `streaming=True`, so AgentSession sent
+every reply down this socket.
+
+**REST `POST /text-to-speech`**
+
+| model | speaker | short clause | full sentence |
+|---|---|---|---|
+| bulbul:v2 | **manisha** | **438 ms** | **779 ms** |
+| bulbul:v2 | vidya | 451 ms | 764 ms |
+| bulbul:v2 | anushka | 700 ms | 1026 ms |
+| bulbul:v3 | pooja | 1012 ms | 2655 ms |
+
+### 8.2 Three corrections to the brief
+
+The prescribed fix was right in shape; three details would have broken it:
+
+1. **`bulbul:v1` does not exist.** The API rejects it outright:
+   `model: Input should be 'bulbul:v2', 'bulbul:v3-beta' or 'bulbul:v3'`.
+   Forcing v1 would have made **every** TTS call a hard 400 — total silence.
+   Used **`bulbul:v2`**, which is also the fastest option measured.
+2. **Speaker sets do not overlap between models.** v2 accepts
+   `anushka, abhilash, manisha, vidya, arya, karun, hitesh, aditya, ritu`; the
+   configured voices (`pooja`, `ishita`) are v3-only. Sending `pooja` to v2 is a
+   400 and a silent turn. Added `resolve_sarvam_voice()` to pair them safely.
+3. **The sample rate was wrong.** The wrapper computed
+   `24000 if "v3" in model else 22050`, but the REST endpoint returns **22050 Hz
+   for both** (read from the RIFF header). Every v3 reply was played ~9% fast
+   and pitched up. Now pinned to the measured 22050.
+
+### 8.3 `sarvam_wrappers.py`
+
+- `capabilities.streaming` **True → False**. This is the core fix: AgentSession
+  now routes through `tts.StreamAdapter`, which feeds the REST endpoint one
+  clause at a time using the `EagerClauseTokenizer` already wired into
+  `SakhiAgent.tts_node` (it only activates for non-streaming providers). That
+  delivers the requested "buffer until punctuation / a few words" behaviour by
+  reusing tested code instead of adding a second buffering implementation.
+- **3-second `aiohttp.ClientTimeout`** on the REST call (`SARVAM_TTS_HTTP_TIMEOUT`).
+  Previously there was no timeout at all, so a slow synthesis waited forever.
+- **Errors now propagate.** The old handler logged and `return`ed, so a failure
+  produced an empty emitter, AgentSession saw a "successful" silent synthesis,
+  and no fallback ever fired. Non-200 responses now raise `APIStatusError` with
+  the response body, timeouts raise `APIConnectionError`, and everything else is
+  wrapped — all of which the fallback chain can act on.
+- `output_emitter.flush()` added after push.
+- Sample-rate mismatch between the returned WAV and the declared rate now logs a
+  warning instead of silently pitch-shifting.
+
+The WebSocket code path (`_run_sarvam_tts_ws`, `SarvamTTSSynthesizeStream`) is
+left in place but unreachable, documented as hanging. If Sarvam fixes the
+endpoint, flipping one capability flag restores it.
+
+### 8.4 `agent.py`
+
+- **TTS fallback chain**: `tts.FallbackAdapter([Sarvam, OpenAI])`, pinned to
+  22050 Hz so a failover cannot change the track's sample rate mid-call (LiveKit
+  logs `resampling ... from 24000Hz to 22050Hz` for the OpenAI leg). Gated by
+  `VOICE_TTS_FALLBACK_ENABLED`. **This is a degraded path, not an equal one** —
+  OpenAI will read Kannada text with an English voice. That is still better than
+  dead air on a call where a mother may be in danger.
+- `force_bulbul_v3()` → `sarvam_tts_model()`. The old function hard-returned
+  `"bulbul:v3"` and ignored `SARVAM_TTS_MODEL` entirely.
+- Voice selection now goes through `resolve_sarvam_voice()`, emitting a
+  `Voice remapped` event instead of a 400.
+- **Prompt trimmed: 484 → 109 tokens** (`tiktoken o200k_base`), plus a 29-token
+  per-turn state block = **~138 tokens of prefill per generation**. Cut the
+  four-step workflow prose (the tool docstrings already carry it), the tone
+  paragraph (each tool result ships an explicit `instruction` field), and the
+  "never ask twice" rule (`prompt_summary()` already states what is recorded).
+  Kept identity, language + honorific, tool order, the follow-the-instruction
+  contract, and the three hard safety rules.
+
+### 8.5 Avatar paused and turn-taking retuned
+
+`SAKHI_AVATAR=none` — audio-only, via the existing seam rather than by
+commenting out code, so re-enabling is a one-variable change and the Tavus work
+from Phase 7 stays intact and tested. The frontend already falls back to the
+idle card when no video track arrives, so no UI change was needed.
+
+`VAD_MIN_SILENCE=0.25`, `MIN_ENDPOINTING_DELAY=0.3`. Note 0.25 is *higher* than
+the previous 0.2, so this slightly increases end-of-turn wait in exchange for
+fewer clipped utterances — worth knowing, since the brief filed it under
+"reduce lag".
+
+Also cleared `assets/audio/greetings/*.wav`: those were rendered at 24000 Hz
+under the old wrong assumption, with v3 voices no longer in use.
+
+### 8.6 Verification
+
+| Check | Result |
+|---|---|
+| Wrapper synthesis, live API | 619 ms / 633 ms per clause, real frames |
+| Voice guard | `pooja` on v2 → `manisha`, logged not fatal |
+| Worker boot | `bulbul:v2 via REST, clause-buffered`; fallback chain active |
+| Live dispatch | greeting synthesised, **zero TTS errors, zero timeouts** |
+| Avatar | `NullAvatarBackend` (audio-only) |
+| Turn config | endpointing 0.3 s, VAD 0.25 s, barge-in 0.6 s / 2 words |
+| Tests | **227 passing** |
+
+Two tests asserted environment rather than behaviour and were corrected:
+`test_adaptive_vad` hardcoded `min_delay == 0.35` (now compares against the
+controller's own configured value), and `test_invalid_speaker_fails_before_api_call`
+expected a `ValueError` (now asserts the remap, since aborting TTS construction
+over a stale voice name is worse than substituting one).
+
+### 8.7 What was NOT achieved
+
+**"Turn 1 TTFT under 150 ms" is not physically reachable.** 150 ms is below the
+network round-trip from India to Groq/OpenAI before a single token is generated;
+observed TTFT is typically 300–700 ms. Prompt size was the controllable part and
+is now ~138 tokens of prefill. The honest end-to-end first-response estimate is:
+
+```
+endpointing 0.30s + STT ~0.30s + LLM TTFT ~0.40s + TTS clause ~0.44s  ≈ 1.4s
+```
+
+That is inside the target architecture's 1.25–1.9 s audio-only budget, but it is
+not 150 ms and no amount of prompt trimming will make it so.
+
+**TTFA was not measured on a real call.** A dispatch with no participant cannot
+complete playout, and joining a WebRTC room with a live microphone is not
+possible from here. The 619 ms figure is direct wrapper timing against the live
+API; the worker path is verified only as "synthesises without error".

@@ -1,0 +1,43 @@
+{
+  "patients": [
+    {
+      "patient_id": "M-201",
+      "name": "Suma Gowda",
+      "age": 24,
+      "village": "Kamalnagar",
+      "phone": "9876543210",
+      "gestational_weeks": 28,
+      "risk_status": "ROUTINE",
+      "history": [],
+      "symptoms": {
+        "headache": false,
+        "blurry_vision": false,
+        "swelling": false
+      }
+    },
+    {
+      "patient_id": "M-202",
+      "name": "Priya Patil",
+      "age": 29,
+      "village": "Aurad",
+      "phone": "8765432109",
+      "gestational_weeks": 33,
+      "risk_status": "MODERATE",
+      "history": [
+        {
+          "date": "2026-08-01",
+          "bp": "145/95",
+          "risk_level": "MODERATE",
+          "notes": "Mild pre-eclampsia indicators; 48h re-check advised."
+        }
+      ],
+      "symptoms": {
+        "headache": false,
+        "blurry_vision": false,
+        "swelling": false
+      }
+    }
+  ],
+  "bp_records": [],
+  "teleconsult_logs": []
+}

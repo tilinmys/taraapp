@@ -1,1030 +1,563 @@
+/*
+ * Sakhi — ASHA worker console.
+ *
+ * Design constraints, all driven by the Bidar field context rather than taste:
+ *
+ * 1. Kannada is the primary language, English is a small subtitle. Kannada
+ *    glyphs need more vertical room than Latin, hence the generous line-height
+ *    on every text token.
+ * 2. Touch targets are >=64px. ASHA workers use this one-handed, outdoors,
+ *    often while holding a register or a baby.
+ * 3. State is never communicated by colour alone — every state carries an
+ *    icon, a colour AND a Kannada word, because the app has to work for a user
+ *    with low text literacy and for one with colour-vision deficiency.
+ * 4. Contrast is high and backgrounds are warm off-white, not pure white:
+ *    cheap Android panels in direct sunlight wash out low-contrast greys.
+ * 5. No thin font weights anywhere. They disappear on low-DPI screens.
+ * 6. The log panel is deliberately quiet — small, muted, collapsible. It is a
+ *    supervisor/debug affordance and must never compete with the call.
+ */
 
-.lobbyWrapper {
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  padding: 20px;
-  max-height: 100vh;
-  overflow-y: auto;
+:root {
+  --sk-bg: #fdfaf6;
+  --sk-surface: #ffffff;
+  --sk-ink: #1f2937;
+  --sk-ink-soft: #52606d;
+
+  --sk-primary: #0f766e;
+  --sk-primary-dark: #115e59;
+  --sk-primary-soft: #ccfbf1;
+
+  --sk-danger: #b91c1c;
+  --sk-danger-soft: #fee2e2;
+  --sk-warn: #b45309;
+  --sk-warn-soft: #fef3c7;
+  --sk-ok: #15803d;
+  --sk-ok-soft: #dcfce7;
+
+  --sk-line: #e7e2db;
+  --sk-radius: 20px;
+  --sk-shadow: 0 2px 8px rgba(31, 41, 55, 0.06), 0 12px 32px rgba(31, 41, 55, 0.06);
 }
 
-.lobbyCard {
-  background: var(--card-bg);
-  border: 1px solid var(--card-border);
-  backdrop-filter: blur(16px);
-  border-radius: 24px;
-  width: 460px;
-  padding: 40px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+/* Kannada/Devanagari first in the stack so Indic glyphs never fall back to a
+   box on Windows or older Android. */
+.shell {
+  font-family: "Noto Sans Kannada", "Noto Sans Devanagari", "Nirmala UI", "Tunga",
+    system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  min-height: 100dvh;
+  background: var(--sk-bg);
+  color: var(--sk-ink);
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 0;
 }
 
-.workerStatusRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: #a1a1aa;
-  margin-bottom: 20px;
+.shell[data-logs="closed"] {
+  grid-template-columns: 56px 1fr;
 }
 
-.workerDot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
+/* ---------- Log rail (left) ---------------------------------------------- */
 
-.workerReady {
-  background-color: var(--accent);
-  box-shadow: 0 0 8px var(--accent);
-}
-
-.workerDown {
-  background-color: #f87171;
-  box-shadow: 0 0 8px rgba(248, 113, 113, 0.6);
-}
-
-.systemPanel {
-  width: 100%;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  border-radius: 16px;
-  padding: 18px 20px;
-  text-align: left;
-  margin-bottom: 20px;
-}
-
-.systemPanel h3 {
-  font-size: 13px;
-  font-weight: 600;
-  margin-bottom: 12px;
-  color: #e4e4e7;
-}
-
-.modelBar {
-  width: 100%;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 14px;
-  padding: 12px 16px;
-  margin-bottom: 24px;
-  text-align: left;
+.logRail {
+  border-right: 1px solid var(--sk-line);
+  background: #f7f4ef;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-}
-
-.modelRow {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-size: 11.5px;
-  padding: 3px 0;
-}
-
-.modelLabel {
-  color: #71717a;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  width: 42px;
-  flex-shrink: 0;
-}
-
-.modelValue {
-  color: #d4d4d8;
-  font-family: 'Courier New', Courier, monospace;
-  word-break: break-word;
-}
-
-.modelArrow {
-  color: #52525b;
-  margin: 0 6px;
-}
-
-.pickerRow {
-  display: flex;
-  gap: 12px;
-  margin-top: 14px;
-}
-
-.pickerLabel {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 11px;
-  color: #a1a1aa;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}
-
-.pickerSelect {
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  color: #e4e4e7;
-  padding: 8px 10px;
-  font-size: 13px;
-  font-weight: 500;
-  text-transform: none;
-  letter-spacing: normal;
-}
-
-.pickerSelect:disabled {
-  opacity: 0.5;
-}
-
-.providerUnavailable {
-  margin-top: 10px;
-  font-size: 11.5px;
-  color: #f87171;
-  line-height: 1.4;
-}
-
-.callWrapper {
-  display: flex;
-  gap: 24px;
-  max-width: 900px;
-  width: 100%;
-  padding: 20px;
-  justify-content: center;
-  align-items: center;
-}
-
-.callCard {
-  background: var(--card-bg);
-  border: 1px solid var(--card-border);
-  backdrop-filter: blur(16px);
-  border-radius: 24px;
-  width: 420px;
-  padding: 40px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
-}
-
-.consoleCard {
-  background: rgba(10, 10, 15, 0.85);
-  border: 1px solid var(--card-border);
-  backdrop-filter: blur(16px);
-  border-radius: 24px;
-  width: 520px;
-  height: 640px;
-  max-height: 90vh;
-  padding: 30px;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
-  text-align: left;
-}
-
-.consoleHeader {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  padding-bottom: 12px;
-}
-
-.consoleHeader h2 {
-  font-size: 15px;
-  font-weight: 600;
-  color: #e4e4e7;
-  letter-spacing: 0.5px;
-}
-
-.consoleHeaderActions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.copyButton {
-  font-size: 11px;
-  font-weight: 600;
-  color: #d4d4d8;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  padding: 4px 10px;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-
-.copyButton:hover {
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.consoleStatus {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--accent);
-  background: rgba(20, 184, 166, 0.1);
-  padding: 2px 8px;
-  border-radius: 12px;
-  border: 1px solid rgba(20, 184, 166, 0.2);
-  display: flex;
-  align-items: center;
-}
-
-.consoleStatus::before {
-  content: "";
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background-color: var(--accent);
-  margin-right: 6px;
-  animation: blink 1.5s infinite;
-}
-
-.consoleBody {
-  flex: 1;
-  overflow-y: auto;
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 11.5px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-right: 8px;
-}
-
-/* Custom Scrollbar for consoleBody */
-.consoleBody::-webkit-scrollbar {
-  width: 4px;
-}
-.consoleBody::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.02);
-  border-radius: 2px;
-}
-.consoleBody::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 2px;
-}
-
-.consoleLog {
-  line-height: 1.4;
-  word-break: break-all;
-}
-
-.logDetails {
-  margin: 4px 0 0 0;
-  padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 6px;
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 10.5px;
-  color: #9ca3af;
-  white-space: pre-wrap;
-  word-break: break-all;
-  user-select: text;
-}
-
-.logTimestamp {
-  color: #52525b;
-  margin-right: 8px;
-  user-select: none;
-}
-
-.logText {
-  color: #d4d4d8;
-}
-
-.logText.info {
-  color: #a1a1aa;
-}
-
-.logText.event {
-  color: #2dd4bf; /* Mint/teal for WebRTC events */
-}
-
-.logText.error {
-  color: #f87171;
-}
-
-.logText.agent-state {
-  color: #c084fc; /* Purple for assistant states */
-  font-weight: 600;
-}
-
-.logText.backend-ok {
-  color: #4ade80; /* Green for successful backend pipeline stages */
-}
-
-.logText.backend-info {
-  color: #7dd3fc; /* Light blue for informational backend stages */
-}
-
-.logText.backend-warn {
-  color: #fbbf24; /* Amber for backend warnings */
-}
-
-.logText.backend-error {
-  color: #f87171; /* Red for backend errors */
-  font-weight: 600;
-}
-
-.brand {
-  margin-bottom: 30px;
-}
-
-.brandLogo {
-  font-size: 48px;
-  margin-bottom: 16px;
-  filter: drop-shadow(0 0 10px rgba(168, 85, 247, 0.3));
-}
-
-.brand h1 {
-  font-size: 28px;
-  font-weight: 700;
-  margin-bottom: 12px;
-  letter-spacing: -0.5px;
-  background: linear-gradient(135deg, #ffffff 0%, #d8b4fe 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-.brand p {
-  font-size: 14px;
-  line-height: 1.6;
-  color: #a1a1aa;
-}
-
-.guidelines {
-  width: 100%;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  border-radius: 16px;
-  padding: 20px;
-  text-align: left;
-  margin-bottom: 30px;
-}
-
-.guidelines h3 {
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 12px;
-  color: #e4e4e7;
-}
-
-.guidelines ul {
-  list-style: none;
-}
-
-.guidelines li {
-  font-size: 13px;
-  color: #a1a1aa;
-  margin-bottom: 8px;
-  position: relative;
-  padding-left: 18px;
-}
-
-.guidelines li::before {
-  content: "•";
-  color: var(--primary);
-  position: absolute;
-  left: 0;
-  font-weight: bold;
-}
-
-.startButton {
-  width: 100%;
-  padding: 16px;
-  background: linear-gradient(135deg, var(--primary) 0%, #8b5cf6 100%);
-  color: #ffffff;
-  border: none;
-  border-radius: 14px;
-  font-size: 16px;
-  font-weight: 600;
-  cursor: pointer;
-  box-shadow: 0 4px 15px rgba(168, 85, 247, 0.3);
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.startButton:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 25px rgba(168, 85, 247, 0.5);
-  background: linear-gradient(135deg, #b55fe6 0%, #9061f9 100%);
-}
-
-.startButton:active {
-  transform: translateY(0);
-}
-
-.startButton:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
-}
-
-.error {
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  border-radius: 10px;
-  padding: 12px;
-  width: 100%;
-  font-size: 13px;
-  margin-bottom: 20px;
-}
-
-/* Call View styles */
-.roomContainer {
-  display: contents;
-}
-
-.clinicHeader {
-  margin-bottom: 30px;
-}
-
-.statusBadge {
-  background: rgba(20, 184, 166, 0.12);
-  color: var(--accent);
-  border: 1px solid rgba(20, 184, 166, 0.25);
-  padding: 4px 10px;
-  border-radius: 20px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  margin-bottom: 12px;
-  display: inline-block;
-}
-
-.clinicName {
-  font-size: 26px;
-  font-weight: 700;
-  margin-bottom: 4px;
-  color: #ffffff;
-}
-
-.subtitle {
-  font-size: 13px;
-  color: #71717a;
-}
-
-.visualizerContainer {
-  width: 100%;
-  height: 140px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  background: rgba(0, 0, 0, 0.25);
-  border-radius: 20px;
-  margin-bottom: 30px;
-  position: relative;
-  overflow: hidden;
-}
-
-.visualizerAnimation {
-  width: 100%;
-  height: 60px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-}
-
-.stateContainer {
-  display: flex;
-  align-items: center;
-  margin-top: 15px;
-  z-index: 1;
-}
-
-.pulseDot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-right: 8px;
-  background-color: #a1a1aa;
-}
-
-.pulseDot.speaking {
-  background-color: var(--primary);
-  box-shadow: 0 0 10px var(--primary);
-  animation: pulse-purple 1.5s infinite;
-}
-
-.pulseDot.listening {
-  background-color: var(--accent);
-  box-shadow: 0 0 10px var(--accent);
-  animation: pulse-teal 1.5s infinite;
-}
-
-.agentState {
-  font-size: 13px;
-  font-weight: 600;
-  color: #e4e4e7;
-  letter-spacing: 0.2px;
-}
-
-.controlsWrapper {
-  width: 100%;
-  display: flex;
-  justify-content: center;
-  margin-top: 10px;
-}
-
-@keyframes pulse-purple {
-  0% {
-    transform: scale(0.95);
-    box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.6);
-  }
-  70% {
-    transform: scale(1);
-    box-shadow: 0 0 0 8px rgba(168, 85, 247, 0);
-  }
-  100% {
-    transform: scale(0.95);
-    box-shadow: 0 0 0 0 rgba(168, 85, 247, 0);
-  }
-}
-
-@keyframes pulse-teal {
-  0% {
-    transform: scale(0.95);
-    box-shadow: 0 0 0 0 rgba(20, 184, 166, 0.6);
-  }
-  70% {
-    transform: scale(1);
-    box-shadow: 0 0 0 8px rgba(20, 184, 166, 0);
-  }
-  100% {
-    transform: scale(0.95);
-    box-shadow: 0 0 0 0 rgba(20, 184, 166, 0);
-  }
-}
-
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
-
-/* ===================== dashboard layout ===================== */
-
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
-  width: 100%;
-  max-width: 1560px;
-  margin: 0 auto;
-  padding: 24px;
-  min-height: 100vh;
-}
-
-.topRow {
-  display: flex;
-  gap: 22px;
-  align-items: flex-start;
-}
-
-.callColumn {
-  width: 380px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.callColumn .callCard {
-  width: 100%;
-  padding: 26px;
-}
-
-.scheduleCard {
-  flex: 1;
-  min-width: 0;
-  background: var(--card-bg);
-  border: 1px solid var(--card-border);
-  backdrop-filter: blur(16px);
-  border-radius: 20px;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
-}
-
-.statsRow {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.statTile {
-  flex: 1;
-  min-width: 110px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 12px;
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.statTileWide {
-  flex: 2;
-  min-width: 180px;
-}
-
-.statValue {
-  font-size: 20px;
-  font-weight: 700;
-  color: #e4e4e7;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.statLabel {
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: #71717a;
-}
-
-.scheduleHeader {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding-bottom: 4px;
-}
-
-.scheduleHeader .pickerSelect {
-  flex: 1;
-  min-width: 220px;
-}
-
-.smallButton {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #d4d4d8;
-  border-radius: 8px;
-  padding: 7px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.smallButton:hover {
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.smallButtonPrimary {
-  background: linear-gradient(135deg, var(--primary) 0%, #8b5cf6 100%);
-  border: none;
-  color: #fff;
-  border-radius: 8px;
-  padding: 7px 14px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.weekNav {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-}
-
-.weekLabel {
-  font-size: 12px;
-  color: #a1a1aa;
-  min-width: 130px;
-  text-align: center;
-}
-
-.newDoctorRow {
-  display: flex;
-  gap: 10px;
-}
-
-.textInput {
-  flex: 1;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  color: #e4e4e7;
-  padding: 8px 10px;
-  font-size: 13px;
-}
-
-/* ---------------- slot table ---------------- */
-
-.tableScroll {
-  /* No nested vertical scroll on purpose - a sticky header inside an inner
-     scroll box only stays pinned while scrolling THAT box; scrolling the
-     outer page instead carries the whole box (header included) off-screen,
-     landing you mid-table with the header nowhere in sight. All 24 rows
-     (~760px) fit comfortably in normal page scroll, so let the page handle
-     it and keep the header sticky against the real viewport top.
-     overflow-x:auto + overflow-y:visible is NOT valid here - mixing
-     "visible" with a scrolling value on the other axis is spec-invalid; the
-     browser silently force-promotes the visible axis back to auto, which
-     recreates the exact nested scroll box this is trying to avoid. Plain
-     "visible" on both axes is the only combination that actually removes
-     the scroll container. */
-  overflow: visible;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 12px;
-}
-
-.slotTable {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  font-size: 12px;
-}
-
-.slotTable th,
-.slotTable td {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  border-right: 1px solid rgba(255, 255, 255, 0.04);
-  text-align: center;
-}
-
-.slotTable th:last-child,
-.slotTable td:last-child {
-  border-right: none;
-}
-
-.timeHead {
-  width: 58px;
-}
-
-.dayHead {
+  min-height: 100dvh;
   position: sticky;
   top: 0;
-  background: rgba(18, 16, 24, 0.98);
-  padding: 10px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #e4e4e7;
-  z-index: 2;
-  white-space: nowrap;
+  max-height: 100dvh;
 }
 
-.dayHead > span {
-  margin-right: 4px;
-}
-
-.plusButton {
-  background: rgba(168, 85, 247, 0.16);
-  border: 1px solid rgba(168, 85, 247, 0.35);
-  color: #d8b4fe;
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
-  vertical-align: middle;
-}
-
-.plusButton:hover {
-  background: rgba(168, 85, 247, 0.3);
-}
-
-.addSlotPopover {
+.logHead {
   display: flex;
-  gap: 6px;
-  margin-top: 8px;
   align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.4);
-  border-radius: 8px;
-  padding: 6px;
+  gap: 8px;
+  padding: 14px 12px;
+  border-bottom: 1px solid var(--sk-line);
 }
 
-.addSlotPopover .pickerSelect {
-  padding: 4px 6px;
-  font-size: 12px;
-}
-
-.timeCell {
-  color: #6b7280;
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 11px;
-  background: rgba(255, 255, 255, 0.015);
-  padding: 0 8px;
-  white-space: nowrap;
-}
-
-.slotCell {
-  min-width: 92px;
-  height: 30px;
-  transition: background 0.3s ease, box-shadow 0.3s ease;
-  padding: 0 6px;
-}
-
-.slotNone {
-  background: repeating-linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.012),
-    rgba(255, 255, 255, 0.012) 4px,
-    transparent 4px,
-    transparent 9px
-  );
-}
-
-.slotAvailable {
-  background: rgba(34, 197, 94, 0.05);
-}
-
-.slotAvailable .slotOpenMark {
-  display: inline-block;
-  color: #6ee7a0;
-  background: rgba(34, 197, 94, 0.12);
-  border: 1px solid rgba(34, 197, 94, 0.22);
-  border-radius: 5px;
-  padding: 2px 8px;
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.6px;
+.logTitle {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-}
-
-.slotBooked {
-  background: rgba(244, 63, 94, 0.06);
-}
-
-.slotPatient {
-  display: inline-block;
-  color: #ffc2cd;
-  background: rgba(244, 63, 94, 0.14);
-  border: 1px solid rgba(244, 63, 94, 0.25);
-  border-radius: 5px;
-  padding: 2px 8px;
-  font-weight: 600;
-  font-size: 10.5px;
+  color: var(--sk-ink-soft);
+  flex: 1;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 108px;
 }
 
-.slotClosed {
-  background: rgba(113, 113, 122, 0.06);
+.logToggle,
+.logCopy {
+  border: 1px solid var(--sk-line);
+  background: var(--sk-surface);
+  color: var(--sk-ink-soft);
+  border-radius: 10px;
+  width: 32px;
+  height: 32px;
+  font-size: 14px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  flex: none;
 }
 
-.slotClosedMark {
-  display: inline-block;
-  color: #a1a1aa;
-  background: rgba(113, 113, 122, 0.12);
-  border: 1px solid rgba(113, 113, 122, 0.22);
-  border-radius: 5px;
-  padding: 2px 8px;
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.6px;
-  text-transform: uppercase;
+.logToggle:hover,
+.logCopy:hover {
+  background: #efe9e1;
 }
 
-.slotJustBooked {
-  animation: flash-booked 1.1s ease 3;
-}
-
-.slotJustCancelled {
-  animation: flash-cancelled 1.1s ease 3;
-}
-
-@keyframes flash-booked {
-  0%, 100% { background: rgba(244, 63, 94, 0.06); box-shadow: none; }
-  50% { background: rgba(244, 63, 94, 0.28); box-shadow: inset 0 0 0 1px rgba(244, 63, 94, 0.5); }
-}
-
-@keyframes flash-cancelled {
-  0%, 100% { background: rgba(34, 197, 94, 0.05); box-shadow: none; }
-  50% { background: rgba(34, 197, 94, 0.24); box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.5); }
-}
-
-/* ---------------- live feed ---------------- */
-
-.liveFeed {
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 12px;
-  padding: 14px 16px;
-  max-height: 170px;
+.logBody {
+  flex: 1;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  padding: 8px;
+  font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
-.liveFeedHeader {
+.logRow {
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: var(--sk-ink-soft);
+  word-break: break-word;
+  border-left: 3px solid transparent;
+}
+
+.logRow time {
+  color: #9aa4b2;
+  margin-right: 6px;
+}
+
+.logRow[data-kind="warn"] {
+  border-left-color: var(--sk-warn);
+  background: #fffaf0;
+  color: #7c4a03;
+}
+.logRow[data-kind="error"] {
+  border-left-color: var(--sk-danger);
+  background: var(--sk-danger-soft);
+  color: #7f1d1d;
+}
+.logRow[data-kind="ok"] {
+  border-left-color: var(--sk-ok);
+}
+
+.logEmpty {
+  padding: 16px 10px;
+  color: #9aa4b2;
+  font-size: 11px;
+}
+
+/* Collapsed rail: just a vertical label, so the logs never steal attention. */
+.railClosed {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  padding: 16px 0;
   font-size: 12px;
   font-weight: 700;
-  color: #e4e4e7;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #9aa4b2;
+  text-align: center;
+}
+
+/* ---------- Main stage ---------------------------------------------------- */
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px 20px 32px;
+  gap: 18px;
+}
+
+.header {
+  width: 100%;
+  max-width: 720px;
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin-bottom: 2px;
+  gap: 12px;
 }
 
-.liveDot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: blink 1.5s infinite;
+.brandMark {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  background: var(--sk-primary);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 24px;
+  flex: none;
 }
 
-.feedEmpty {
+.brandText {
+  flex: 1;
+  min-width: 0;
+}
+
+.brandName {
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.brandSub {
+  font-size: 14px;
+  color: var(--sk-ink-soft);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.linkPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
-  color: #71717a;
-}
-
-.feedRow {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-size: 12px;
-  font-family: 'Courier New', Courier, monospace;
-}
-
-.feedType {
   font-weight: 700;
-  font-size: 10.5px;
-  letter-spacing: 0.6px;
-  padding: 1px 7px;
-  border-radius: 8px;
-  flex-shrink: 0;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--sk-line);
+  background: var(--sk-surface);
+  color: var(--sk-ink-soft);
+  white-space: nowrap;
 }
 
-.feedBooked .feedType {
-  color: #fda4af;
-  background: rgba(244, 63, 94, 0.14);
-  border: 1px solid rgba(244, 63, 94, 0.3);
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #cbd2d9;
+  flex: none;
+}
+.dot[data-live="true"] {
+  background: var(--sk-ok);
+  box-shadow: 0 0 0 4px var(--sk-ok-soft);
 }
 
-.feedCancelled .feedType {
-  color: #4ade80;
-  background: rgba(34, 197, 94, 0.12);
-  border: 1px solid rgba(34, 197, 94, 0.3);
-}
+/* ---------- Risk banner --------------------------------------------------- */
 
-.feedText {
-  color: #d4d4d8;
-}
-
-/* ---------------- bottom console ---------------- */
-
-.consoleCardWide {
-  background: rgba(10, 10, 15, 0.85);
-  border: 1px solid var(--card-border);
-  backdrop-filter: blur(16px);
-  border-radius: 20px;
+.riskBanner {
   width: 100%;
-  height: 320px;
-  padding: 22px;
+  max-width: 720px;
+  border-radius: var(--sk-radius);
+  padding: 18px 20px;
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  border: 2px solid;
+  animation: riseIn 240ms ease-out;
+}
+
+.riskBanner[data-level="HIGH_RISK"] {
+  background: var(--sk-danger-soft);
+  border-color: var(--sk-danger);
+  color: #7f1d1d;
+}
+.riskBanner[data-level="MODERATE"],
+.riskBanner[data-level="OBSERVATION"] {
+  background: var(--sk-warn-soft);
+  border-color: var(--sk-warn);
+  color: #7c4a03;
+}
+.riskBanner[data-level="ROUTINE"] {
+  background: var(--sk-ok-soft);
+  border-color: var(--sk-ok);
+  color: #14532d;
+}
+
+.riskIcon {
+  font-size: 30px;
+  line-height: 1;
+  flex: none;
+}
+
+.riskTitle {
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.45;
+  margin: 0 0 2px;
+}
+
+.riskBody {
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 0;
+  opacity: 0.9;
+}
+
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- Avatar ------------------------------------------------------- */
+
+.avatarCard {
+  width: 100%;
+  max-width: 720px;
+  aspect-ratio: 4 / 3;
+  background: linear-gradient(160deg, #e8f5f3 0%, #fdf6ec 100%);
+  border-radius: 28px;
+  border: 1px solid var(--sk-line);
+  box-shadow: var(--sk-shadow);
+  overflow: hidden;
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.avatarCard video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.idleArt {
+  text-align: center;
+  padding: 24px;
+}
+
+.idleFace {
+  width: 128px;
+  height: 128px;
+  border-radius: 50%;
+  background: var(--sk-surface);
+  border: 3px solid var(--sk-primary-soft);
+  display: grid;
+  place-items: center;
+  font-size: 62px;
+  margin: 0 auto 16px;
+  box-shadow: var(--sk-shadow);
+}
+
+.idleLine {
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.6;
+  margin: 0 0 4px;
+}
+
+.idleSub {
+  font-size: 14px;
+  color: var(--sk-ink-soft);
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* Connecting shimmer — reassurance that something is happening on a slow link */
+.connectingWrap {
+  text-align: center;
+}
+.spinner {
+  width: 46px;
+  height: 46px;
+  border: 5px solid var(--sk-primary-soft);
+  border-top-color: var(--sk-primary);
+  border-radius: 50%;
+  margin: 0 auto 14px;
+  animation: spin 900ms linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- Status ------------------------------------------------------- */
+
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 26px;
+  border-radius: 999px;
+  font-size: 21px;
+  font-weight: 800;
+  line-height: 1.5;
+  border: 2px solid;
+  min-height: 64px;
+}
+
+.statusPill[data-state="listening"] {
+  background: var(--sk-ok-soft);
+  border-color: var(--sk-ok);
+  color: #14532d;
+}
+.statusPill[data-state="speaking"] {
+  background: var(--sk-primary-soft);
+  border-color: var(--sk-primary);
+  color: var(--sk-primary-dark);
+}
+.statusPill[data-state="thinking"] {
+  background: var(--sk-warn-soft);
+  border-color: var(--sk-warn);
+  color: #7c4a03;
+}
+.statusPill[data-state="idle"] {
+  background: var(--sk-surface);
+  border-color: var(--sk-line);
+  color: var(--sk-ink-soft);
+}
+
+.statusIcon { font-size: 26px; line-height: 1; }
+
+/* Pulsing ring while listening — a silent, wordless "I can hear you" */
+.pulse {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50%      { opacity: 1;    transform: scale(1.15); }
+}
+
+/* ---------- Controls ----------------------------------------------------- */
+
+.controls {
+  width: 100%;
+  max-width: 720px;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
-  text-align: left;
+  align-items: center;
+  gap: 14px;
 }
 
-.consoleBodyWrapper {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  display: flex;
-}
-
-.jumpToLatestButton {
-  position: absolute;
-  bottom: 14px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: linear-gradient(135deg, var(--primary) 0%, #8b5cf6 100%);
-  color: #fff;
+.bigButton {
+  width: 100%;
+  max-width: 520px;
+  min-height: 78px;
+  border-radius: 22px;
   border: none;
-  border-radius: 20px;
-  padding: 7px 16px;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
   cursor: pointer;
-  box-shadow: 0 4px 15px rgba(168, 85, 247, 0.45);
-  animation: pulse-purple 1.8s infinite;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 16px 24px;
+  transition: transform 120ms ease, filter 120ms ease;
+  box-shadow: var(--sk-shadow);
+  font-family: inherit;
 }
 
-.jumpToLatestButton:hover {
-  transform: translateX(-50%) translateY(-2px);
+.bigButton:active { transform: translateY(2px); }
+.bigButton:disabled { opacity: 0.55; cursor: progress; }
+
+.start {
+  background: var(--sk-primary);
+  color: #fff;
+}
+.start:hover:not(:disabled) { filter: brightness(1.07); }
+
+.end {
+  background: var(--sk-danger);
+  color: #fff;
+}
+.end:hover:not(:disabled) { filter: brightness(1.07); }
+
+.buttonHint {
+  font-size: 14px;
+  color: var(--sk-ink-soft);
+  line-height: 1.6;
+  text-align: center;
+  margin: 0;
+  max-width: 460px;
+}
+
+/* Language chooser: two big pills, not a dropdown. A <select> is a hostile
+   control on a low-end touch device and hides the options until tapped. */
+.langRow {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.langPill {
+  min-height: 64px;
+  min-width: 150px;
+  padding: 12px 26px;
+  border-radius: 18px;
+  border: 2px solid var(--sk-line);
+  background: var(--sk-surface);
+  color: var(--sk-ink);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.5;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.langPill[data-active="true"] {
+  border-color: var(--sk-primary);
+  background: var(--sk-primary-soft);
+  color: var(--sk-primary-dark);
+}
+
+.langPill:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.sectionLabel {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--sk-ink-soft);
+  text-align: center;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.errorBox {
+  width: 100%;
+  max-width: 520px;
+  background: var(--sk-danger-soft);
+  border: 2px solid var(--sk-danger);
+  color: #7f1d1d;
+  border-radius: 16px;
+  padding: 14px 18px;
+  font-size: 15px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+/* ---------- Responsive ---------------------------------------------------- */
+
+/* On a phone the log rail stops being a column and becomes a collapsed strip
+   at the bottom, so the call owns the whole screen. */
+@media (max-width: 860px) {
+  .shell,
+  .shell[data-logs="closed"] {
+    grid-template-columns: 1fr;
+  }
+
+  .logRail {
+    order: 2;
+    position: static;
+    min-height: 0;
+    max-height: 34dvh;
+    border-right: none;
+    border-top: 1px solid var(--sk-line);
+  }
+
+  .railClosed {
+    writing-mode: horizontal-tb;
+    transform: none;
+    padding: 10px;
+  }
+
+  .stage { order: 1; padding: 16px 14px 24px; }
+  .brandName { font-size: 23px; }
+  .bigButton { font-size: 21px; min-height: 72px; }
+  .avatarCard { aspect-ratio: 1 / 1; }
+  .statusPill { font-size: 19px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse, .spinner, .riskBanner { animation: none; }
 }
