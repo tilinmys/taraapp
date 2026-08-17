@@ -109,40 +109,88 @@ def provider_summary() -> dict:
     the exact env vars and defaults those functions read; if this drifts
     from agent.py, the defaults below should be updated to match.
     """
-    groq_primary = _env_flag("GROQ_PRIMARY", False)
-    groq_model = os.getenv("GROQ_LLM_MODEL", "openai/gpt-oss-20b")
+    # THIS HAD DRIFTED FAR FROM THE PIPELINE IT CLAIMS TO DESCRIBE.
+    #
+    # It reported OpenRouter as the primary LLM (Groq now leads, and the two are
+    # raced - see llm_hedge.py), and STT as Deepgram-or-AssemblyAI when
+    # build_stt() defaults to Sarvam and AssemblyAI is not wired at all. It also
+    # had no TTS section, on an agent whose headline choice is Sarvam vs Gnani.
+    # A dashboard that misreports the pipeline is worse than no dashboard.
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    openrouter_model = os.getenv("OPENROUTER_LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
+    groq_model = os.getenv("GROQ_MODEL_T1", "openai/gpt-oss-120b")
     openai_model = os.getenv("OPENAI_LLM_MODEL", os.getenv("LLM_MODEL", "gpt-4o-mini"))
-    raw_multi = os.getenv("GROQ_API_KEYS", "")
-    groq_key_count = len([k for k in raw_multi.split(",") if k.strip()])
-    if not groq_key_count and os.getenv("GROQ_API_KEY"):
-        groq_key_count = 1
+    # Must match agent.groq_api_keys() EXACTLY, including the numbered
+    # variants. It previously checked only GROQ_API_KEYS/GROQ_API_KEY, so a
+    # worker configured through GROQ_API_KEY_1/_2 (as this deployment is)
+    # counted zero keys here - and the dashboard reported OpenRouter as the
+    # primary LLM while the worker was actually running Groq.
+    _seen: set[str] = set()
+    for _name in ("GROQ_API_KEYS", "GROQ_API_KEY", "GROQ_API_KEY_1",
+                  "GROQ_API_KEY_2", "GROQ_API_KEY_3"):
+        for _part in (os.getenv(_name) or "").split(","):
+            if _part.strip():
+                _seen.add(_part.strip())
+    groq_key_count = len(_seen)
 
-    stt_primary_deepgram = os.getenv("STT_PRIMARY", "deepgram").strip().lower() == "deepgram"
-    deepgram_model = os.getenv("DEEPGRAM_STT_MODEL", "nova-3")
-    assemblyai_model = os.getenv("ASSEMBLYAI_STT_MODEL", "universal-3-5-pro")
+    # Mirrors build_stt(): Sarvam unless STT_PRIMARY explicitly says deepgram.
+    stt_primary_deepgram = (
+        os.getenv("STT_PRIMARY", "sarvam").strip().lower() == "deepgram"
+        and bool(os.getenv("DEEPGRAM_API_KEY"))
+    )
 
-    llm_primary = (
-        {"provider": "groq", "model": groq_model, "key_count": groq_key_count}
-        if groq_primary and groq_key_count
-        else {"provider": "openai", "model": openai_model}
-    )
-    llm_fallback = (
-        {"provider": "openai", "model": openai_model}
-        if groq_primary and groq_key_count
-        else {"provider": "groq", "model": groq_model, "key_count": groq_key_count}
-    )
+    # Mirrors build_llm(): Groq group leads, OpenRouter is the cross-vendor
+    # backup, and when both exist they are HEDGED rather than queued.
+    if groq_key_count:
+        llm_primary = {"provider": "groq", "model": groq_model, "key_count": groq_key_count}
+        llm_fallback = (
+            {"provider": "openrouter", "model": openrouter_model}
+            if openrouter_key else {"provider": "openai", "model": openai_model}
+        )
+    elif openrouter_key:
+        llm_primary = {"provider": "openrouter", "model": openrouter_model}
+        llm_fallback = {"provider": "openai", "model": openai_model}
+    else:
+        llm_primary = {"provider": "openai", "model": openai_model}
+        llm_fallback = {"provider": "none", "model": "-"}
+
+    hedged = bool(groq_key_count and openrouter_key and _env_flag("SAKHI_LLM_HEDGE", True))
+
+    # Mirrors build_tts(): same-language chain only. The backup is the OTHER
+    # Indic provider, never an English voice - a cross-language failover
+    # changed the voice mid-sentence (see changed.md 14.1).
+    tts_provider = os.getenv("TTS_PROVIDER", "sarvam").strip().lower()
+    sarvam_voice = os.getenv("SARVAM_SPEAKER", "manisha")
+    gnani_voice = os.getenv("GNANI_VOICE", "Janaki")
+    if tts_provider == "gnani":
+        tts_primary = {"provider": "gnani", "model": "timbre-v2.5", "voice": gnani_voice}
+        tts_fallback = {"provider": "sarvam", "model": "bulbul:v2", "voice": sarvam_voice}
+    else:
+        tts_primary = {"provider": "sarvam", "model": "bulbul:v2", "voice": sarvam_voice}
+        tts_fallback = {"provider": "gnani", "model": "timbre-v2.5", "voice": gnani_voice}
 
     return {
-        "llm": {"primary": llm_primary, "fallback": llm_fallback},
+        "llm": {
+            "primary": llm_primary,
+            "fallback": llm_fallback,
+            "hedged": hedged,
+            "hedge_delay_s": float(os.getenv("LLM_HEDGE_DELAY", "0.8")),
+            "groq_timeout_s": float(os.getenv("GROQ_ATTEMPT_TIMEOUT", "1.5")),
+            "openrouter_timeout_s": float(os.getenv("OPENROUTER_ATTEMPT_TIMEOUT", "4.0")),
+        },
+        "tts": {
+            "primary": tts_primary,
+            "fallback": tts_fallback,
+            "same_language_chain": True,
+            "pace": float(os.getenv("SARVAM_PACE", "1.0")),
+        },
         "stt": {
-            "primary": {
-                "provider": "deepgram" if stt_primary_deepgram else "assemblyai",
-                "model": deepgram_model if stt_primary_deepgram else assemblyai_model,
-            },
-            "fallback": {
-                "provider": "assemblyai" if stt_primary_deepgram else "deepgram",
-                "model": assemblyai_model if stt_primary_deepgram else deepgram_model,
-            },
+            "primary": (
+                {"provider": "deepgram", "model": os.getenv("DEEPGRAM_STT_MODEL", "nova-3")}
+                if stt_primary_deepgram
+                else {"provider": "sarvam", "model": "saarika"}
+            ),
+            "fallback": {"provider": "none", "model": "-"},
         },
         "turn_detection": {
             "mode": os.getenv("VOICE_TURN_DETECTION_MODE", "vad"),
@@ -155,6 +203,57 @@ def provider_summary() -> dict:
             "async_slot_refresh_enabled": _env_flag("VOICE_ASYNC_SLOT_REFRESH_ENABLED", True),
             "incremental_tts_enabled": _env_flag("VOICE_INCREMENTAL_TTS_ENABLED", True),
         },
+    }
+
+
+def maternal_db_status() -> dict:
+    """Health of the SAKHI store - the maternal database, not the legacy clinic one.
+
+    Opened read-only on each request rather than holding a connection: this is
+    a dashboard poll, and a long-lived handle in the HTTP thread would contend
+    with the write lock the agent needs during a live call.
+    """
+    backend = os.getenv("SAKHI_REPOSITORY", "sqlite").strip().lower()
+    if backend == "json":
+        path = Path(os.getenv("SIXTYDB_MOCK_PATH", "mock_sixtydb.json"))
+        if not path.exists():
+            return {"backend": "json", "ok": False, "error": "file missing", "path": str(path)}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return {"backend": "json", "ok": False, "error": str(exc), "path": str(path)}
+        return {
+            "backend": "json", "ok": True, "path": str(path),
+            "durable": False,
+            "warning": "write-behind: a reading can be lost if the worker dies before flush",
+            "counts": {"mothers": len(raw.get("patients", [])),
+                       "bp_records": len(raw.get("bp_records", []))},
+        }
+
+    path = Path(os.getenv("SAKHI_DB_PATH", "data/sakhi.sqlite3"))
+    if not path.exists():
+        return {"backend": "sqlite", "ok": False, "path": str(path),
+                "error": "database not created yet - run migrate_to_sqlite.py"}
+    try:
+        import sqlite3
+
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            counts = {}
+            for table in ("mothers", "bp_records", "symptom_records",
+                          "teleconsults", "call_reports"):
+                counts[table] = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            journal = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            integrity = conn.execute("PRAGMA quick_check").fetchone()[0]
+        finally:
+            conn.close()
+    except Exception as exc:
+        return {"backend": "sqlite", "ok": False, "path": str(path), "error": str(exc)}
+
+    return {
+        "backend": "sqlite", "ok": integrity == "ok", "path": str(path),
+        "durable": True, "journal_mode": journal, "integrity": integrity,
+        "postgres_portable": True, "counts": counts,
     }
 
 
@@ -227,6 +326,10 @@ class _Handler(BaseHTTPRequestHandler):
                 since = 0
             self._send_json(db_helper.get_slot_events(since))
             return
+        if parsed.path in {"/db", "/api/db"}:
+            self._send_json(maternal_db_status())
+            return
+
         if parsed.path in {"/logs", "/api/logs"}:
             params = parse_qs(parsed.query)
             raw_since = params.get("since", ["0"])[0]

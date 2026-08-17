@@ -18,6 +18,8 @@ import enum
 import re
 from typing import Iterable
 
+from sakhi_intake import IntakeProgress
+
 
 # Spelled-out language names, because the dashboard's picker sends
 # "kannada"/"hindi" rather than BCP-47 codes (frontend/src/app/page.tsx sets
@@ -294,6 +296,90 @@ class RiskAssessment:
         }
 
 
+# --------------------------------------------------------------------------
+# Deterministic symptom detection
+# --------------------------------------------------------------------------
+#
+# WHY THIS EXISTS
+# ---------------
+# Observed on a live test call: the ASHA worker said the mother had a severe
+# headache in her opening sentence. The model then called
+# record_symptoms(false, false, false), triage stayed MODERATE instead of
+# HIGH_RISK, and no specialist was indicated. That is under-triage - the most
+# dangerous direction this system can fail in - and it happened silently.
+#
+# So symptom capture no longer depends on the model passing the right booleans.
+# The user's own words are scanned here, and because SymptomSet.merged_with()
+# only ever ORs, a model that later reports `false` cannot erase a symptom the
+# mother actually reported.
+#
+# Transliterated forms are included on purpose: Sarvam STT renders spoken
+# English into Kannada script ("ಹೆಡ್ ಏಕ್" for "head ache"), so matching only
+# native-script or only Latin spellings misses half of real speech.
+_SYMPTOM_PATTERNS = {
+    "headache": (
+        "ತಲೆನೋವು", "ತಲೆ ನೋವು", "ತಲೆನೋವಿ", "ಹೆಡ್ ಏಕ್", "ಹೆಡ್‌ಏಕ್",
+        "सिरदर्द", "सर दर्द", "सिर में दर्द",
+        "headache", "head ache", "head-ache",
+    ),
+    "blurry_vision": (
+        "ಕಣ್ಣು ಮಂಜು", "ಮಂಜಾಗು", "ಮಂಜು", "ದೃಷ್ಟಿ ಮಂದ", "ಕಣ್ಣು ಮಂದ",
+        "धुंधला", "धुंधली", "दृष्टि",
+        "blurry", "blurred", "blurry vision", "double vision",
+    ),
+    "swelling": (
+        "ಊತ", "ಬಾವು", "ಊದಿಕೊಂಡ", "ಊದಿದೆ",
+        "सूजन", "सूजा",
+        "swelling", "swollen", "puffiness",
+    ),
+}
+
+# Negation markers. Kannada and Hindi place negation AFTER the noun
+# ("ತಲೆನೋವು ಇಲ್ಲ" = headache not-present), English places it before
+# ("no headache"), so the window is checked on both sides.
+_NEGATIONS = (
+    "ಇಲ್ಲ", "ಇಲ್ಲವೇ", "ಇರಲಿಲ್ಲ",
+    "नहीं", "नही",
+    " no ", " not ", " without ", "denies", "negative",
+)
+
+_NEGATION_WINDOW = 28
+
+
+def detect_symptoms(text: str) -> SymptomSet:
+    """Extract danger symptoms from what the ASHA worker actually said.
+
+    Negation-aware: "ತಲೆನೋವು ಇಲ್ಲ" (no headache) and "no swelling" must NOT
+    register the symptom, or every screening question would flag itself the
+    moment it was answered "no".
+
+    Never raises - a detector that crashes a turn is worse than one that misses.
+    """
+    if not text:
+        return SymptomSet()
+
+    haystack = f" {re.sub(r's+', ' ', str(text)).lower()} "
+    found: dict[str, bool] = {}
+
+    for field, patterns in _SYMPTOM_PATTERNS.items():
+        present = False
+        for pattern in patterns:
+            start = haystack.find(pattern.lower())
+            if start == -1:
+                continue
+            window = haystack[
+                max(0, start - _NEGATION_WINDOW):
+                start + len(pattern) + _NEGATION_WINDOW
+            ]
+            if any(neg.lower() in window for neg in _NEGATIONS):
+                continue          # explicitly denied - do not record
+            present = True
+            break
+        found[field] = present
+
+    return SymptomSet(**found)
+
+
 # A name that is really an STT artefact ("umm", "hello", a bare digit string).
 _NAME_NOISE_RE = re.compile(r"^(?:u+m+|a+h+|h+m+|hello|hi|namaste|yes|no|ok(?:ay)?)$", re.IGNORECASE)
 
@@ -351,6 +437,21 @@ class SakhiCallState:
     # Call control
     escalated: bool = False
     abuse_strikes: int = 0
+    # Failed patient lookups this call. Drives the spelling fallback: name
+    # collection is the dominant bottleneck in production voice agents, and an
+    # agent that re-asks the same way twice traps the worker in a loop. One
+    # miss is enough to switch strategy.
+    lookup_attempts: int = 0
+
+    # Deterministic position in the 24-question clinical intake.
+    #
+    # Before this existed, the questionnaire lived only in the system prompt
+    # and nothing tracked it: 16 state fields for 24 questions, and a
+    # prompt_summary() that reported three facts. The model re-derived its
+    # place in the list from the transcript every turn, so it re-asked, it
+    # skipped, and - with no checklist to ground "the next question" - it
+    # invented questions outright. See sakhi_intake.py.
+    intake: IntakeProgress = dataclasses.field(default_factory=IntakeProgress)
 
     # --- mutators ------------------------------------------------------
 
@@ -425,25 +526,40 @@ class SakhiCallState:
                 who += f", {self.village}"
             parts.append(f"mother={who}")
         else:
-            parts.append("mother=UNKNOWN - identify her first")
+            parts.append("mother=UNKNOWN")
 
         if self.gestational_weeks:
             parts.append(f"gestational_weeks={self.gestational_weeks}")
 
+        # STATUS ONLY - never an instruction to ask.
+        #
+        # These lines used to read "bp=NOT TAKEN - ask for it" and
+        # "symptoms=NOT SCREENED - ask the three danger questions". They were
+        # injected on EVERY turn and appeared BEFORE the intake line, so on turn
+        # one the model read an explicit order to ask for blood pressure and
+        # obeyed it - jumping straight past the intake flow. Exactly one thing
+        # is allowed to say what to ask next, and that is the intake line
+        # appended at the end of this summary.
         if self.blood_pressure:
             parts.append(f"bp={self.blood_pressure} (recorded - do NOT ask again)")
         else:
-            parts.append("bp=NOT TAKEN - ask for it")
+            parts.append("bp=not yet recorded")
 
         if self.symptoms_screened:
             present = ", ".join(self.symptoms.present_names) or "none reported"
             parts.append(f"symptoms=screened ({present}) - do NOT re-screen")
         else:
-            parts.append("symptoms=NOT SCREENED - ask the three danger questions")
+            parts.append("symptoms=not yet screened")
 
         if self.assessment:
             parts.append(f"risk={self.assessment.level.value}")
         if self.escalated:
             parts.append("specialist=ALREADY CONNECTED - do not connect again")
+
+        # Intake position goes LAST so the next question is the final thing
+        # the model reads before generating - the strongest position in the
+        # context for an instruction we need followed exactly.
+        self.intake.sync_from_state(self)
+        parts.append(self.intake.summary())
 
         return "; ".join(parts)

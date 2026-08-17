@@ -21,44 +21,89 @@ should I take" must never reach the LLM.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 
 # --- Approved scripts (spoken VERBATIM - never let the LLM improvise a ------
 # --- refusal; improvised refusals leak advice while refusing) ---------------
 
-MEDICAL_REFUSAL_SCRIPT = (
-    "I'm really not able to advise on medicines or symptoms... only our "
-    "doctors can do that safely. What I can do is book you in right away... "
-    "shall I find you a slot?"
-)
+# Approved refusal scripts, one per category and language.
+#
+# These were English clinic-booking lines ("shall I find you a slot?", "I'm just
+# the receptionist here"). Two failures at once, on the one path where failure
+# matters most: they were the wrong LANGUAGE for a Kannada-speaking ASHA worker,
+# and the wrong PRODUCT - they offered appointments Sakhi cannot book. A
+# guardrail that fires and then says something incomprehensible has not
+# protected anyone.
+#
+# Helpline numbers are spelled digit-by-digit in words. A voice reading "108"
+# or "14416" as a cardinal number is not dictation an ASHA worker can act on.
+_SCRIPTS_BY_LANG = {
+    "medical_advice": {
+        "kn": "ಕ್ಷಮಿಸಿ ಅಕ್ಕಾರ... ನಾನು ಔಷಧಿಗಳ ಬಗ್ಗೆ ಸಲಹೆ ನೀಡಲು ಸಾಧ್ಯವಿಲ್ಲ... "
+              "ದಯವಿಟ್ಟು ತಕ್ಷಣ ವೈದ್ಯರನ್ನು ಅಥವಾ ಪಿ.ಎಚ್.ಸಿ ಯನ್ನು ಸಂಪರ್ಕಿಸಿ.",
+        "hi": "माफ़ कीजिए दीदी... मैं दवा के बारे में सलाह नहीं दे सकती... "
+              "कृपया तुरंत डॉक्टर या पी.एच.सी से संपर्क करें।",
+        "en": "I am not able to advise on medicines... please contact the "
+              "doctor or the PHC right away.",
+    },
+    "emergency": {
+        "kn": "ಇದು ತುರ್ತು ಪರಿಸ್ಥಿತಿ ಅಕ್ಕಾರ... ತಕ್ಷಣ ತಾಯಿಯನ್ನು ಹತ್ತಿರದ ಆಸ್ಪತ್ರೆಗೆ "
+              "ಕರೆದೊಯ್ಯಿರಿ... ಅಥವಾ ಒಂದು ಸೊನ್ನೆ ಎಂಟು ಗೆ ಕರೆ ಮಾಡಿ.",
+        "hi": "यह आपात स्थिति है दीदी... माँ को तुरंत नज़दीकी अस्पताल ले जाइए... "
+              "या एक शून्य आठ पर कॉल कीजिए।",
+        "en": "This is an emergency... take the mother to the nearest hospital "
+              "now, or call one zero eight.",
+    },
+    "self_harm": {
+        "kn": "ನೀವು ಹೇಳಿದ್ದಕ್ಕೆ ಧನ್ಯವಾದ ಅಕ್ಕಾರ... ದಯವಿಟ್ಟು ಈಗಲೇ ಟೆಲಿ ಮನಸ್ ಸಹಾಯವಾಣಿಗೆ "
+              "ಕರೆ ಮಾಡಿ... ಒಂದು ನಾಲ್ಕು ನಾಲ್ಕು ಒಂದು ಆರು... ಇದು ಉಚಿತ ಮತ್ತು ಯಾವಾಗಲೂ ಲಭ್ಯ.",
+        "hi": "बताने के लिए धन्यवाद दीदी... कृपया अभी टेली मानस हेल्पलाइन पर कॉल करें... "
+              "एक चार चार एक छह... यह निःशुल्क है और हमेशा उपलब्ध है।",
+        "en": "Thank you for telling me... please call the Tele-MANAS helpline "
+              "now on one four four one six. It is free and always open.",
+    },
+    "jailbreak": {
+        "kn": "ನಾನು ಸಖಿ, ತಾಯಿಯ ಆರೋಗ್ಯಕ್ಕಾಗಿ ಇದ್ದೇನೆ... ತಾಯಿಯ ರಕ್ತದೊತ್ತಡದ ಬಗ್ಗೆ ಮಾತನಾಡೋಣವೇ?",
+        "hi": "मैं सखी हूँ, माँ के स्वास्थ्य के लिए... क्या हम माँ के रक्तचाप की बात करें?",
+        "en": "I am Sakhi, here for the mother's health. Shall we talk about "
+              "her blood pressure?",
+    },
+    "abuse_warning": {
+        "kn": "ನಿಮ್ಮ ಕಷ್ಟ ಅರ್ಥವಾಗುತ್ತದೆ ಅಕ್ಕಾರ... ತಾಯಿಯ ಆರೋಗ್ಯಕ್ಕಾಗಿ ಮುಂದುವರಿಸೋಣವೇ?",
+        "hi": "मैं समझती हूँ दीदी... क्या हम माँ के स्वास्थ्य पर आगे बढ़ें?",
+        "en": "I understand. Shall we continue with the mother's health?",
+    },
+    "abuse_goodbye": {
+        "kn": "ಕ್ಷಮಿಸಿ, ನಾನು ಈಗ ಕರೆಯನ್ನು ಮುಗಿಸಬೇಕು... ಯಾವಾಗ ಬೇಕಾದರೂ ಮತ್ತೆ ಕರೆ ಮಾಡಿ. ನಮಸ್ಕಾರ.",
+        "hi": "माफ़ कीजिए, मुझे यह कॉल समाप्त करनी होगी... कभी भी दोबारा कॉल करें। नमस्ते।",
+        "en": "I have to end this call now. Please call back anytime.",
+    },
+}
 
-EMERGENCY_SCRIPT = (
-    "This sounds urgent... please don't wait for an appointment. Go to the "
-    "nearest hospital emergency room right away, or call one-zero-eight for "
-    "an ambulance. Please stay safe."
-)
 
-SELF_HARM_SCRIPT = (
-    "I hear you, and I'm glad you told me... please reach out right now to "
-    "someone you trust, or call the Tele-MANAS helpline at "
-    "one-four-four-one-six... it is free and always open. If you are in "
-    "immediate danger, please call one-zero-eight."
-)
+def script_for(category: str, language: str = "kn") -> str:
+    """Approved script for a category in the caller's language.
 
-JAILBREAK_SCRIPT = (
-    "I'm just the receptionist here, so let's stay with your appointment... "
-    "would you like to book, change, or cancel one?"
-)
+    Falls back to Kannada (the pilot language) rather than English, and never
+    raises - a guardrail that throws is worse than one that speaks the wrong
+    dialect.
+    """
+    variants = _SCRIPTS_BY_LANG.get(category)
+    if not variants:
+        return ""
+    lang = str(getattr(language, "value", language) or "kn").split("-")[0].lower()
+    return variants.get(lang) or variants["kn"]
 
-ABUSE_WARNING_SCRIPT = (
-    "I understand you may be frustrated... I'm here to help with your "
-    "appointment. Shall we continue?"
-)
 
-ABUSE_GOODBYE_SCRIPT = (
-    "I'm sorry, I have to end this call now. You're welcome to call back "
-    "anytime. Take care."
-)
+# Module-level names kept for the existing call sites and tests. Kannada, since
+# that is what the Bidar pilot speaks.
+MEDICAL_REFUSAL_SCRIPT = script_for("medical_advice")
+EMERGENCY_SCRIPT = script_for("emergency")
+SELF_HARM_SCRIPT = script_for("self_harm")
+JAILBREAK_SCRIPT = script_for("jailbreak")
+ABUSE_WARNING_SCRIPT = script_for("abuse_warning")
+ABUSE_GOODBYE_SCRIPT = script_for("abuse_goodbye")
 
 # --- Input gate patterns ------------------------------------------------------
 
@@ -208,3 +253,313 @@ OUTPUT_REPLACEMENT = (
 
 def output_flagged(text: str) -> bool:
     return bool(_OUTPUT_BLOCK_RE.search(text or ""))
+
+
+# =============================================================================
+# DPDP + multilingual safety layer
+# =============================================================================
+#
+# Everything above this line was written for an English clinic receptionist and
+# is kept intact. This section adds what a Kannada-first maternal-health agent
+# operating under India's DPDP Act actually needs:
+#
+#   1. Medication detection in Kannada and Hindi. Measured before writing this:
+#      "which tablet for headache?" was caught, "ಯಾವ ಮಾತ್ರೆ ಕೊಡಬೇಕು?" and
+#      "कौन सी दवा दूं?" were NOT. On an agent that speaks only Kannada, an
+#      English-only medication guard is close to decorative.
+#   2. Dosage phrasing. The brief's own example, "give her 500mg paracetamol",
+#      was missed by the existing patterns.
+#   3. PII redaction before anything is logged or sent to a US-hosted LLM.
+#
+# All matching is precompiled regex over one short utterance - no model, no I/O.
+
+# --- PII ---------------------------------------------------------------------
+#
+# Ordered most-specific first: an Aadhaar is 12 digits and would otherwise be
+# partly consumed by the bank-account pattern.
+#
+# Clinical numbers are deliberately NOT matched. Blood pressure, gestational
+# weeks and age are 1-3 digits and never reach these patterns, which all
+# require 10+ digits. Redacting a BP reading would be a clinical failure
+# dressed up as a privacy win.
+_PII_PATTERNS = (
+    # Aadhaar: 12 digits, usually spoken in 4-4-4 groups, never starts 0 or 1.
+    ("aadhaar", re.compile(r"\b[2-9]\d{3}[ \-]?\d{4}[ \-]?\d{4}\b")),
+    # PAN: five letters, four digits, one letter.
+    ("pan", re.compile(r"\b[A-Z]{5}\d{4}[A-Z]\b", re.IGNORECASE)),
+    # Indian mobile: optional +91, then 10 digits starting 6-9.
+    ("phone", re.compile(r"(?:\+?91[\-\s]?)?\b[6-9]\d{9}\b")),
+    # Bank account: 11-18 digits. Deliberately last.
+    ("bank_account", re.compile(r"\b\d{11,18}\b")),
+)
+
+_PII_MASK = {
+    "aadhaar": "[AADHAAR REDACTED]",
+    "pan": "[PAN REDACTED]",
+    "phone": "[PHONE REDACTED]",
+    "bank_account": "[ACCOUNT REDACTED]",
+}
+
+
+def redact_pii(text: str):
+    """Mask identifiers in free text. Returns (masked_text, kinds_found).
+
+    Used on two paths: before a transcript is written to
+    logs/pipeline_events.jsonl, and before text reaches a post-call report.
+    Under DPDP, an identifier that never lands in a log cannot leak from one.
+    """
+    if not text:
+        return "", []
+    found = []
+    out = str(text)
+    for kind, pattern in _PII_PATTERNS:
+        if pattern.search(out):
+            found.append(kind)
+            out = pattern.sub(_PII_MASK[kind], out)
+    return out, found
+
+
+# --- Multilingual medication / dosage ---------------------------------------
+
+_MEDICATION_INDIC_RE = re.compile(
+    # Kannada: maatre (tablet), aushadha/aushadhi (medicine), gulige, injection
+    r"ಮಾತ್ರೆ|ಔಷಧ|ಔಷಧಿ|ಗುಳಿಗೆ|ಚುಚ್ಚುಮದ್ದು|ಡೋಸ್"
+    # Hindi: goli, dawa, dawai, khuraak, injection
+    r"|गोली|दवा|दवाई|दवाइयाँ|खुराक|इंजेक्शन"
+    # Transliterated forms Sarvam STT emits for spoken English
+    r"|ಟ್ಯಾಬ್ಲೆಟ್|ಮೆಡಿಸಿನ್|ಇಂಜೆಕ್ಷನ್"
+)
+
+# A number next to a dose unit, in any of the three scripts.
+_DOSAGE_RE = re.compile(
+    r"\b\d+\s*(?:mg|ml|mcg|gm|grams?|tablets?|pills?|doses?)\b"
+    r"|\d+\s*(?:ಎಂಜಿ|ಮಿಗ್ರಾ|ಮಾತ್ರೆ|ಗುಳಿಗೆ)"
+    r"|\d+\s*(?:मिलीग्राम|एमजी|गोली|खुराक)",
+    re.IGNORECASE,
+)
+
+# Named drugs. Split into two groups because the clinical stakes differ.
+#
+# HIGH-RISK / PREGNANCY-CONTRAINDICATED: abortifacients, uterotonics and known
+# teratogens. Naming a dose for any of these to an ASHA worker could end a
+# pregnancy or cause a foetal injury, so they are listed exhaustively rather
+# than relying on the generic "medicine" nouns to catch them.
+_HIGH_RISK_DRUGS_RE = re.compile(
+    r"\b(?:"
+    r"misoprostol|mifepristone|mifeprex|cytotec|methotrexate|"      # abortifacients
+    r"oxytocin|pitocin|ergometrine|methylergometrine|"              # uterotonics
+    r"warfarin|isotretinoin|valproate|valproic|thalidomide|"        # teratogens
+    r"tetracycline|doxycycline|fluconazole|"
+    r"lisinopril|enalapril|ramipril|losartan|"                      # ACE / ARB
+    r"atenolol|statins?|atorvastatin|simvastatin"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_DRUG_NAMES_RE = re.compile(
+    r"\b(?:metformin|labetalol|nifedipine|paracetamol|acetaminophen|aspirin|"
+    r"ibuprofen|methyldopa|amoxicillin|azithromycin|insulin|"
+    r"dolo|crocin|combiflam|meftal|calpol|brufen|disprin)\b"
+    r"|" + _HIGH_RISK_DRUGS_RE.pattern,
+    re.IGNORECASE,
+)
+
+# Drug names as Sarvam STT renders spoken English into Kannada/Devanagari.
+# An agent that only matches Latin spellings is blind to exactly the input it
+# actually receives on a Kannada call.
+_TRANSLITERATED_DRUGS_RE = re.compile(
+    r"ಮೆಟ್‌?ಫಾರ್ಮಿನ್|ಮೆಟ್ಫಾರ್ಮಿನ್"          # metformin
+    r"|ಮಡಿಕೇಶನ್|ಮೆಡಿಕೇಶನ್|ಮೆಡಿಸಿನ್"              # medication / medicine
+    r"|ಪ್ಯಾರಸಿಟಮಾಲ್|ಪ್ಯಾರಾಸಿಟಮಾಲ್"                # paracetamol
+    r"|ಆಸ್ಪಿರಿನ್|ಐಬುಪ್ರೊಫೇನ್|ಇನ್ಸುಲಿನ್"            # aspirin / ibuprofen / insulin
+    r"|ಮಿಸೊಪ್ರೊಸ್ಟಾಲ್|ಮೈಫೆಪ್ರಿಸ್ಟೋನ್"             # misoprostol / mifepristone
+    r"|मेटफॉर्मिन|पैरासिटामोल|एस्पिरिन|इंसुलिन"
+    r"|मिसोप्रोस्टोल|मिफेप्रिस्टोन|मेडिसिन"
+)
+
+
+def medication_requested(text: str) -> bool:
+    """True when a turn asks about medicine, in any supported language."""
+    if not text:
+        return False
+    return bool(
+        _MEDICATION_INDIC_RE.search(text)
+        or _DOSAGE_RE.search(text)
+        or _DRUG_NAMES_RE.search(text)
+        or _TRANSLITERATED_DRUGS_RE.search(text)
+    )
+
+
+# --- SQL / database injection ------------------------------------------------
+#
+# The Sakhi path holds no SQL at all - SixtyDB's mock is a JSON document store,
+# and db_helper.py (the legacy clinic SQLite) was audited and is fully
+# parameterised: every query uses `?` placeholders with a tuple, with no
+# f-strings, concatenation or .format() anywhere near a statement.
+#
+# So this is defence in depth, not a patch for a live hole. It exists because an
+# ASHA worker never says "UNION SELECT", so the presence of SQL structure in a
+# transcript means someone is probing the system, and that is worth refusing and
+# logging even when it could not have worked.
+#
+# Structure is required, not bare keywords: "select" and "union" are ordinary
+# English words, and blocking a caller for saying "please select the morning
+# slot" would be its own failure.
+_SQL_INJECTION_RE = re.compile(
+    r"\bselect\b[\s\S]{0,80}?\bfrom\b"
+    r"|\bunion\b\s+(?:all\s+)?\bselect\b"
+    r"|\binsert\b\s+\binto\b"
+    r"|\bdelete\b\s+\bfrom\b"
+    r"|\bdrop\b\s+(?:table|database)\b"
+    r"|\bupdate\b[\s\S]{0,60}?\bset\b"
+    r"|\btruncate\b\s+\btable\b"
+    r"|'\s*or\s*'?1'?\s*=\s*'?1"          # ' OR '1'='1
+    r"|\bor\b\s+1\s*=\s*1\b"
+    r"|;\s*(?:drop|delete|insert|update|select)\b"
+    r"|--\s*$|/\*|\bxp_cmdshell\b|\bsleep\s*\(",
+    re.IGNORECASE,
+)
+
+
+def sql_injection_attempt(text: str) -> bool:
+    return bool(text and _SQL_INJECTION_RE.search(text))
+
+
+# --- Prompt injection --------------------------------------------------------
+
+_INJECTION_RE = re.compile(
+    r"ignore\s+(?:all\s+|the\s+)?(?:previous|prior|above|earlier)\s+"
+    r"(?:instructions?|prompts?|rules?)"
+    r"|disregard\s+(?:your|all|the)\s+(?:instructions?|rules?|guidelines?)"
+    r"|forget\s+(?:everything|your\s+instructions?|the\s+rules?)"
+    r"|you\s+are\s+now\s+(?:a|an)\b"
+    r"|(?:system|developer)\s*(?:prompt|message)\s*[:=]"
+    r"|act\s+as\s+(?:a|an)\s+(?:doctor|physician|pharmacist)"
+    r"|pretend\s+(?:you\s+are|to\s+be)"
+    r"|reveal\s+(?:your|the)\s+(?:prompt|instructions?|system)"
+    r"|repeat\s+(?:your|the)\s+(?:prompt|instructions?)"
+    # Role/authority escalation - the caller claiming privileged status to
+    # unlock behaviour the guardrails would otherwise refuse.
+    r"|developer\s+mode|debug\s+mode|god\s+mode|admin\s+mode"
+    r"|override\s+(?:the\s+)?(?:system|safety|rules?|guardrails?)"
+    r"|system\s+administrator|i\s+am\s+(?:the\s+)?(?:admin|developer|engineer)"
+    r"|\bjailbreak\b|\bDAN\s+mode\b|unrestricted\s+mode"
+    r"|bypass\s+(?:the\s+)?(?:safety|filter|guardrails?|restrictions?)"
+    r"|enable\s+(?:developer|debug|admin)\b"
+    r"|ನಿಮ್ಮ\s*ಸೂಚನೆಗಳನ್ನು\s*ಮರೆ"
+    r"|अपने\s*निर्देश\s*भूल",
+    re.IGNORECASE,
+)
+
+
+def injection_attempt(text: str) -> bool:
+    return bool(text and _INJECTION_RE.search(text))
+
+
+# --- Combined API ------------------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class InputDecision:
+    """Outcome of the pre-LLM gate."""
+
+    text: str                    # PII-redacted; safe to log and to send on
+    category: str = None         # None means the turn may proceed
+    script: str = ""             # approved reply when blocked
+    pii_kinds: tuple = ()
+
+    @property
+    def blocked(self) -> bool:
+        return self.category is not None
+
+
+@dataclasses.dataclass(frozen=True)
+class OutputDecision:
+    """Outcome of the post-LLM gate."""
+
+    text: str
+    blocked: bool = False
+    reason: str = ""
+
+
+class SakhiGuardrails:
+    """Dual-layer local guardrails. No model, no network, no I/O.
+
+    Stateless and cheap enough to run on every turn. The performance budget is
+    asserted in tests/test_sakhi_guardrails.py rather than claimed here.
+    """
+
+    def sanitize_input(self, text: str, language: str = "kn") -> InputDecision:
+        """Pre-LLM gate.
+
+        Order is deliberate:
+
+        1. **Redact PII first.** Whatever happens next - blocked or allowed -
+           the text gets logged and may be sent to a US-hosted model. An Aadhaar
+           number must not survive either path, including on turns that are
+           otherwise perfectly safe.
+        2. **classify_turn next**, because it owns emergency and self-harm and
+           those outrank everything. A flat refusal to a bleeding mother is a
+           worse failure than answering a paracetamol question; severity is
+           escalated here, never triaged.
+        3. Medication and injection checks last, on the redacted text.
+        """
+        if not text:
+            return InputDecision(text="")
+
+        clean, pii = redact_pii(text)
+        found = tuple(pii)
+
+        category = classify_turn(clean)
+
+        if category is None:
+            if medication_requested(clean):
+                category = "medical_advice"
+            elif injection_attempt(clean) or sql_injection_attempt(clean):
+                # SQL probing is grouped with prompt injection: both are
+                # attempts to manipulate the system rather than clinical
+                # questions, and both get the same "I am Sakhi, here for the
+                # mother's health" redirect.
+                category = "jailbreak"
+
+        if category is None:
+            return InputDecision(text=clean, pii_kinds=found)
+
+        return InputDecision(
+            text=clean,
+            category=category,
+            script=script_for(category, language) or SCRIPTS.get(category, ""),
+            pii_kinds=found,
+        )
+
+    def validate_output(self, text: str, language: str = "kn") -> OutputDecision:
+        """Post-LLM gate: nothing unsafe reaches TTS.
+
+        Catches what the input gate cannot - the model volunteering a drug name
+        or a dose that nobody asked for.
+        """
+        if not text:
+            return OutputDecision(text="")
+
+        if (
+            output_flagged(text)
+            or _DRUG_NAMES_RE.search(text)
+            or _TRANSLITERATED_DRUGS_RE.search(text)
+            or _DOSAGE_RE.search(text)
+        ):
+            return OutputDecision(
+                text=script_for("medical_advice", language),
+                blocked=True,
+                reason="medication or dosage in generated text",
+            )
+
+        # A model echoing an identifier back is still a disclosure.
+        clean, pii = redact_pii(text)
+        if pii:
+            return OutputDecision(
+                text=clean, blocked=False, reason="pii_redacted:" + ",".join(pii)
+            )
+
+        return OutputDecision(text=text)
+
+
+GUARDRAILS = SakhiGuardrails()

@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 
 from sarvam_wrappers import _redact_url, _websocket_connect, _ws_headers, _ws_url
 
+__test__ = False
+
 
 def make_probe_pcm(sample_rate: int = 16000, seconds: float = 1.0) -> bytes:
     frames = int(sample_rate * seconds)

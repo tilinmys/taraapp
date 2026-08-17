@@ -37,10 +37,19 @@ from sakhi_domain import (
     SakhiCallState,
     SymptomSet,
 )
-from sakhi_repository import PatientRepository
+from sakhi_repository import (
+    BIDAR_VILLAGES,
+    PatientRepository,
+    correct_proper_noun,
+)
 from sakhi_triage import TriageEngine
 
 logger = logging.getLogger("sakhi.tools")
+
+# Used when a mother's name cannot be resolved after the one permitted spelling
+# attempt. A placeholder record that carries a real blood pressure is worth
+# more than a perfect name and no reading.
+GUEST_PATIENT_NAME = "Guest Patient"
 
 # Emitted by the agent layer for the dashboard. Injected rather than imported so
 # this module stays testable without agent.py's logging stack.
@@ -79,7 +88,7 @@ class ClinicalToolset:
         state = getattr(ctx, "userdata", None)
         return state if isinstance(state, SakhiCallState) else SakhiCallState()
 
-    async def _retriage(self, state: SakhiCallState):
+    async def _retriage(self, state: SakhiCallState) -> "tuple":
         """Re-run triage over everything known so far and persist the outcome.
 
         Called after *any* new clinical input, because risk is a function of the
@@ -94,11 +103,15 @@ class ClinicalToolset:
         )
         state.record_assessment(assessment)
 
+        # Track whether the write actually happened. The tool must not report
+        # success the database did not deliver - see _result().
+        persisted = False
         if state.patient_id and state.blood_pressure:
             try:
                 await self._repo.record_blood_pressure(
                     state.patient_id, state.blood_pressure, assessment
                 )
+                persisted = True
             except Exception:
                 logger.warning("BP persistence failed; call continues", exc_info=True)
 
@@ -112,7 +125,7 @@ class ClinicalToolset:
             requires_escalation=assessment.requires_escalation,
             patient_id=state.patient_id,
         )
-        return assessment
+        return assessment, persisted
 
     @staticmethod
     def _speak_instruction(assessment) -> str:
@@ -144,14 +157,32 @@ class ClinicalToolset:
             "then confirm the next ANC visit date."
         )
 
-    def _result(self, state: SakhiCallState, assessment, **extra: Any) -> str:
+    def _result(self, state: SakhiCallState, assessment, *, persisted: bool = True, **extra: Any) -> str:
+        """Build a tool result.
+
+        `persisted` is the tool-execution verification guard. A reading that was
+        triaged but NOT written to SixtyDB must never come back as a plain
+        success: the model would tell the ASHA worker "recorded" while the
+        database holds nothing, and the mother's chart would silently disagree
+        with what she was told. Verified live - record_bp returned
+        recorded=True with zero rows written whenever the mother had not been
+        identified yet.
+        """
         payload = {
             "risk_level": assessment.level.value,
             "reasons": list(assessment.reasons),
             "recommended_action": assessment.recommended_action,
             "escalation_required": assessment.requires_escalation,
+            "persisted": persisted,
             "instruction": self._speak_instruction(assessment),
         }
+        if not persisted:
+            payload["instruction"] = (
+                "DO NOT tell her the reading has been saved - it has not. "
+                "Say you still need the mother's name to file it, ask for her "
+                "name, and call search_patient or register_mother. "
+                + self._speak_instruction(assessment)
+            )
         payload.update(extra)
         return json.dumps(payload, ensure_ascii=False)
 
@@ -164,10 +195,7 @@ class ClinicalToolset:
         name: str | None = None,
         phone: str | None = None,
     ) -> str:
-        """Look up a registered mother in SixtyDB by her name or phone number.
-
-        Use this first, before asking for any details you might already have.
-        """
+        """Find a registered mother by name or phone. Call this first."""
         state = self._state(ctx)
         try:
             matches = await self._repo.find_patients(name=name, phone=phone)
@@ -180,11 +208,73 @@ class ClinicalToolset:
             }, ensure_ascii=False)
 
         if not matches:
+            state.lookup_attempts += 1
             self._event("tools", "info", "Patient search miss",
-                        f"No SixtyDB record for name={name} phone={phone}",
-                        event="patient_search", found=False)
+                        # Phone reduced to its last 4 digits. The live call
+                        # logged the raw argument, which on a real number is a
+                        # DPDP-reportable identifier sitting in a plaintext log.
+                        f"No SixtyDB record for name={name} "
+                        f"phone=***{str(phone)[-4:] if phone else 'none'} "
+                        f"(attempt {state.lookup_attempts})",
+                        event="patient_search", found=False,
+                        attempt=state.lookup_attempts)
+
+            # Spelling fallback, enforced here rather than left to the prompt.
+            #
+            # Name collection is the dominant bottleneck in production voice
+            # agents: a regional accent produces a mangled transcript, the
+            # agent re-asks the same way, gets the same mangling, and the
+            # worker is trapped in a loop. Switching strategy after ONE miss is
+            # what breaks the loop - and doing it in code means it happens even
+            # when the model forgets the instruction.
+            # HARD CEILING: ask for the spelling ONCE, never twice.
+            #
+            # The spelling prompt below breaks the "misheard the same way
+            # twice" loop, but on its own it creates a second loop: if the
+            # spelled name also misses, this branch would ask her to spell it
+            # again, and again. A worker with a mother in front of her cannot
+            # be held at an identity check - the clinical value of this call is
+            # the blood pressure, not the database row.
+            #
+            # So after the spelling attempt has already been made, we stop
+            # asking and move on with whatever name we have. Vitals get
+            # recorded against a real record either way; reconciling the name
+            # is a back-office problem, and a wrong name on a captured BP is
+            # recoverable in a way that a missed pre-eclampsia case is not.
+            if state.lookup_attempts >= 2:
+                fallback_name = (name or "").strip() or GUEST_PATIENT_NAME
+                return json.dumps({
+                    "found": False,
+                    "attempt": state.lookup_attempts,
+                    "instruction": (
+                        "DO NOT ask for the name or spelling again - you have "
+                        "already asked once and asking twice traps her in a loop. "
+                        f"Proceed with the mother as \"{fallback_name}\". Say "
+                        "warmly that you will note her down for now, then call "
+                        "register_mother with that name and continue to the "
+                        "blood pressure reading."
+                    ),
+                    "fallback_name": fallback_name,
+                }, ensure_ascii=False)
+
+            if state.lookup_attempts >= 1 and name:
+                return json.dumps({
+                    "found": False,
+                    "attempt": state.lookup_attempts,
+                    "instruction": (
+                        "DO NOT ask for the name the same way again - it will be "
+                        "misheard the same way. Ask her to spell it letter by "
+                        "letter, separated by commas, and give this example: "
+                        "\"ದಯವಿಟ್ಟು ಹೆಸರನ್ನು ಅಕ್ಷರ-ಅಕ್ಷರವಾಗಿ ಹೇಳಿ... "
+                        "ಉದಾಹರಣೆಗೆ: S, U, M, A\". "
+                        "If she confirms the mother is new, ask for age, village "
+                        "and weeks pregnant, then call register_mother."
+                    ),
+                }, ensure_ascii=False)
+
             return json.dumps({
                 "found": False,
+                "attempt": state.lookup_attempts,
                 "instruction": "SAY: she is not registered yet. Ask for her name, age, "
                                "village, and how many weeks pregnant she is, then call "
                                "register_mother.",
@@ -232,12 +322,20 @@ class ClinicalToolset:
         village: str | None = None,
         phone: str | None = None,
     ) -> str:
-        """Register a new mother in SixtyDB.
-
-        Call this only after search_patient found no existing record.
-        gestational_weeks is how many weeks pregnant she is.
-        """
+        """Register a new mother. Only after search_patient found nothing."""
         state = self._state(ctx)
+        # Snap a mangled village back to a known Bidar village. Proper nouns are
+        # where ASR degrades worst, and a village recorded as "Kamalnagara" or
+        # "Kamal Nagar" fragments the catchment data for every later report.
+        if village:
+            corrected = correct_proper_noun(village, list(BIDAR_VILLAGES))
+            if corrected and corrected != village:
+                self._event(
+                    "tools", "info", "Village corrected",
+                    f"{village!r} -> {corrected!r} (nearest Bidar village)",
+                    event="proper_noun_corrected", heard=village, resolved=corrected,
+                )
+                village = corrected
         try:
             record = await self._repo.create_patient(
                 name=name, age=age, gestational_weeks=gestational_weeks,
@@ -269,11 +367,7 @@ class ClinicalToolset:
 
     @llm.function_tool
     async def record_bp(self, ctx: RunContext, systolic: int, diastolic: int) -> str:
-        """Record the mother's blood pressure reading in mmHg and assess pre-eclampsia risk.
-
-        systolic is the upper number, diastolic the lower one. For "145 over 95",
-        systolic=145 and diastolic=95.
-        """
+        """Record a blood pressure reading in mmHg and assess risk. For "145 over 95": systolic=145, diastolic=95."""
         state = self._state(ctx)
         try:
             bp = BloodPressure(int(systolic), int(diastolic))
@@ -289,7 +383,7 @@ class ClinicalToolset:
             }, ensure_ascii=False)
 
         state.record_blood_pressure(bp)
-        assessment = await self._retriage(state)
+        assessment, persisted = await self._retriage(state)
 
         self._event("tools", "warn" if assessment.requires_escalation else "ok",
                     f"BP {bp} recorded", assessment.recommended_action,
@@ -298,7 +392,8 @@ class ClinicalToolset:
 
         return self._result(
             state, assessment,
-            recorded=True,
+            persisted=persisted,
+            recorded=persisted,
             blood_pressure=str(bp),
             # The screening questions are mandatory on every visit, so the model
             # is told to ask them unless they have already been asked.
@@ -318,11 +413,7 @@ class ClinicalToolset:
         blurry_vision: bool = False,
         swelling: bool = False,
     ) -> str:
-        """Record the three pre-eclampsia danger symptoms and re-assess risk.
-
-        Pass true only for symptoms she actually reports. Call this once you have
-        asked about severe headache, blurry vision, and swelling of face or hands.
-        """
+        """Record the three danger symptoms and re-assess risk. True only for symptoms she reports."""
         state = self._state(ctx)
         symptoms = SymptomSet(
             headache=bool(headache),
@@ -337,7 +428,7 @@ class ClinicalToolset:
             except Exception:
                 logger.warning("Symptom persistence failed; call continues", exc_info=True)
 
-        assessment = await self._retriage(state)
+        assessment, persisted = await self._retriage(state)
         self._event("tools", "warn" if assessment.requires_escalation else "ok",
                     "Symptoms screened",
                     ", ".join(state.symptoms.present_names) or "none reported",
@@ -345,16 +436,14 @@ class ClinicalToolset:
 
         return self._result(
             state, assessment,
+            persisted=persisted or bool(state.patient_id),
             recorded=True,
             symptoms_reported=list(state.symptoms.present_names) or ["none"],
         )
 
     @llm.function_tool
     async def connect_smfmi_specialist(self, ctx: RunContext, reason: str) -> str:
-        """Connect an SMFMI maternal-fetal medicine specialist for a teleconsultation.
-
-        Call this immediately whenever the risk assessment says escalation is required.
-        """
+        """Connect a specialist. Call immediately when a tool says escalation is required."""
         state = self._state(ctx)
         if state.escalated:
             # Idempotent: the model sometimes re-calls after the tool result.
@@ -362,6 +451,41 @@ class ClinicalToolset:
                 "connected": True,
                 "instruction": "SAY: the specialist is already on the line - do not "
                                "connect again. Reassure her and stay with her.",
+            }, ensure_ascii=False)
+
+        # Refuse escalation the triage engine did not ask for.
+        #
+        # Observed live: triage returned MODERATE ("raised BP, no danger
+        # symptoms" - a 48-hour re-check), and the model called this tool
+        # anyway, with a reason that itself said the risk was moderate. The
+        # audit trail then contained an escalation contradicting its own
+        # stated grounds.
+        #
+        # This is the mirror of the deterministic net in SakhiAgent: that one
+        # stops the model UNDER-escalating, this one stops it OVER-escalating.
+        # Between them, the decision belongs to TriageEngine in both directions.
+        #
+        # A call with no assessment yet is allowed through - there is no
+        # decision to contradict, and refusing would block a genuine emergency
+        # raised before any reading was taken.
+        assessment = state.assessment
+        if assessment is not None and not assessment.requires_escalation:
+            self._event(
+                "tools", "warn", "Escalation refused",
+                f"Model requested a specialist at {assessment.level.value}; "
+                "triage does not indicate escalation",
+                event="escalation_refused",
+                risk_level=assessment.level.value,
+                patient_id=state.patient_id,
+            )
+            return json.dumps({
+                "connected": False,
+                "risk_level": assessment.level.value,
+                "instruction": (
+                    "DO NOT say a specialist is being connected - one is not. "
+                    "The reading does not meet the referral threshold. Give her "
+                    f"this advice instead: {assessment.recommended_action}"
+                ),
             }, ensure_ascii=False)
 
         patient_id = state.patient_id or "UNREGISTERED"

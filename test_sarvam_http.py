@@ -7,6 +7,8 @@ from livekit.agents.tts import AudioEmitter, SynthesizedAudio
 import aiohttp
 from livekit import rtc
 
+__test__ = False
+
 async def test_tts():
     tts = SarvamTTS(
         api_key=os.environ.get("SARVAM_API_KEY"),

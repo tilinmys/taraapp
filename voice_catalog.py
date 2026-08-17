@@ -25,7 +25,28 @@ from __future__ import annotations
 # Kept here too (mirrors agent.py's SARVAM_V3_SPEAKERS) so the UI/catalog
 # endpoint has one place to read from. agent.py remains the source of truth
 # for what it actually accepts; this list is for display/selection only.
-SARVAM_VOICES = {
+# bulbul:v2 speakers. These are the ones the pilot actually uses - v2 is
+# 2.3-3.4x faster than v3 (438ms vs 1012ms per clause, measured 2026-08-14) and
+# is the configured default.
+#
+# The two model families share NO speakers: sending a v3 name like "pooja" to
+# bulbul:v2 is a hard 400 from the API. Listing v3 voices as the catalog default
+# is what produced the "Voice remapped" warning on every call.
+SARVAM_V2_VOICES = {
+    "manisha": {"name": "Manisha", "gender": "female", "style": "warm, clear - default for Kannada and Hindi"},
+    "vidya": {"name": "Vidya", "gender": "female", "style": "calm, measured"},
+    "anushka": {"name": "Anushka", "gender": "female", "style": "bright, friendly"},
+    "arya": {"name": "Arya", "gender": "female", "style": "soft, reassuring"},
+    "ritu": {"name": "Ritu", "gender": "female", "style": "steady, professional"},
+    "abhilash": {"name": "Abhilash", "gender": "male", "style": "calm, clear"},
+    "karun": {"name": "Karun", "gender": "male", "style": "warm, conversational"},
+    "hitesh": {"name": "Hitesh", "gender": "male", "style": "confident"},
+    "aditya": {"name": "Aditya", "gender": "male", "style": "professional, steady"},
+}
+
+# bulbul:v3 speakers. Kept for deployments that set SARVAM_TTS_MODEL=bulbul:v3
+# and accept the extra latency for the newer voice model.
+SARVAM_V3_VOICES = {
     "ishita": {"name": "Ishita", "gender": "female", "style": "warm, default clinic voice"},
     "priya": {"name": "Priya", "gender": "female", "style": "calm, professional"},
     "neha": {"name": "Neha", "gender": "female", "style": "friendly, clear"},
@@ -41,6 +62,11 @@ SARVAM_VOICES = {
     "rohan": {"name": "Rohan", "gender": "male", "style": "warm, conversational"},
     "amit": {"name": "Amit", "gender": "male", "style": "professional, steady"},
 }
+
+# What the picker shows. v2 first because it is the configured model; the merge
+# order also means a bare name resolves to its v2 entry when both define it
+# (e.g. "aditya" exists in both families).
+SARVAM_VOICES = {**SARVAM_V3_VOICES, **SARVAM_V2_VOICES}
 
 # --- Rumik Silk (mulberry model) -----------------------------------------
 # Replaces ElevenLabs, which was permanently blocked on the configured
@@ -122,20 +148,46 @@ GEMINI_VOICES = {
     "Leda": {"name": "Leda", "gender": "female", "style": "youthful, clear"},
 }
 
-PROVIDERS = ("sarvam",)
+# --- Gnani.ai Timbre (timbre-v2.5) ---------------------------------------
+# Second Kannada provider. Benchmarked against Sarvam on identical Kannada text,
+# interleaved to control for network drift (2026-08-17):
+#
+#   Sarvam bulbul:v2 / manisha   p50 636ms   spread 253ms
+#   Gnani  timbre-v2.5 / Janaki  p50 655ms   spread 415ms
+#
+# Effectively tied on median; Sarvam has the tighter tail so it stays default.
+# Gnani speaks slower for the same sentence (6.2s vs 4.6s), which may suit a
+# rural ASHA worker better - a field judgement, hence both are selectable.
+#
+# Female voices only: Sakhi is a female persona addressed as akkara.
+GNANI_VOICES = {
+    "Janaki":  {"name": "Janaki",  "gender": "female", "style": "warm, steady - fastest measured"},
+    "Nayana":  {"name": "Nayana",  "gender": "female", "style": "soft, gentle"},
+    "Lavanya": {"name": "Lavanya", "gender": "female", "style": "clear, measured"},
+    "Vidya":   {"name": "Vidya",   "gender": "female", "style": "calm, professional"},
+    "Lalita":  {"name": "Lalita",  "gender": "female", "style": "bright, friendly"},
+    "Kaveri":  {"name": "Kaveri",  "gender": "female", "style": "even pace"},
+}
+
+PROVIDERS = ("sarvam", "gnani")
 
 CATALOG = {
     "sarvam": SARVAM_VOICES,
+    "gnani": GNANI_VOICES,
 }
 
 PROVIDER_AVAILABLE = {
     "sarvam": True,
+    "gnani": True,
 }
 PROVIDER_UNAVAILABLE_REASON: dict[str, str] = {}
 
 
 def default_voice(provider: str) -> str | None:
-    defaults = {"sarvam": "pooja"}
+    # "manisha", not "pooja": pooja is a bulbul:v3 speaker and the pilot runs
+    # bulbul:v2, so every call was logging a "Voice remapped" warning and
+    # falling back anyway. Naming the real default removes the remap entirely.
+    defaults = {"sarvam": "manisha", "gnani": "Janaki"}
     return defaults.get(provider)
 
 

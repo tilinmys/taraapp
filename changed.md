@@ -552,3 +552,786 @@ not 150 ms and no amount of prompt trimming will make it so.
 complete playout, and joining a WebRTC room with a live microphone is not
 possible from here. The 619 ms figure is direct wrapper timing against the live
 API; the worker path is verified only as "synthesises without error".
+
+---
+
+## Phase 9 — Research-calibrated prompt, Kannada numbers, VAD tags
+
+### 9.1 New modules
+
+**`sakhi_prompts.py`** — `SAKHI_SYSTEM_PROMPT` (+ Hindi variant) and `LLM_CONFIG`,
+centralised so a Kannada speaker and a clinician can review the wording without
+reading `agent.py`.
+
+**`sakhi_kannada.py`** — deterministic Kannada number expansion, 0–999, plus a
+streaming `tts_text_transforms` hook.
+
+### 9.2 Kannada numbers: moved from prompt to code
+
+Sarvam mispronounces ASCII digits in Kannada. On a blood-pressure reading that
+is a clinical defect, not a cosmetic one.
+
+The draft solved it with a worked-example table in the prompt. Correct instinct,
+wrong layer:
+
+- **Unreliable** — a model under a 120-token cap, mid tool-call, drops the rule
+  intermittently, and the failure is silent.
+- **Expensive** — ~300 prompt tokens on *every* generation.
+
+So the expansion is now code. Kannada tens take a bound unit form rather than
+simple concatenation (ಇಪ್ಪತ್ತು + ನಾಲ್ಕು → **ಇಪ್ಪತ್ತನಾಲ್ಕು**), which the
+implementation handles by stripping the trailing vowel sign and attaching a
+suffix form. All eleven worked examples from the draft are pinned as tests.
+
+The transform is **streaming, not buffering**. Buffering the reply to expand it
+would hold TTS until the LLM finished — costing far more latency than it saves —
+so it yields continuously and withholds only a short tail that might still grow
+into a number. Verified correct at one character per chunk:
+
+```
+"14" | "5"        ->  ನೂರ ನಲವತ್ತೈದು     (not "fourteen" then "five")
+"ಬಿಪಿ 145/95 ಇದೆ."  ->  ಬಿಪಿ ನೂರ ನಲವತ್ತೈದು ಬೈ ತೊಂಬತ್ತೈದು ಇದೆ.
+```
+
+The prompt still asks for Kannada words — one line, so the transform usually has
+nothing to do — and the code guarantees it.
+
+### 9.3 VAD tags reinstated, safely
+
+`[VAD: FAST]` / `[VAD: SLOW]` are back. The idea was always sound: an explicit
+signal from the model beats inferring cognitive load from its wording.
+
+What made the old version dangerous was never the tags. It was that the handler
+mutated `vad_provider.min_silence_duration` — the Silero instance **shared across
+every concurrent call** on the worker — and reached into the private
+`session._turn_detector._min_endpointing_delay` (changed.md C6).
+
+The new path keeps the signal and drops the hazard:
+
+- `DynamicVADController.apply_tag()` routes through the same **per-call public
+  `session.update_options()`** API as the rest of the controller.
+- `VadTagTransform` is registered **first** in `tts_text_transforms`, so the tag
+  is stripped before any other transform sees it and before TTS. The previous
+  stripping lived in a closure that ran only sometimes; a tag that slipped
+  through was read aloud as "bracket vee ay dee".
+- Tolerant of case, spacing, and tags split across streamed chunks
+  (`["[", "VAD", ": ", "FAST", "]"]` is caught).
+- A missing controller (tags can arrive before `session.start()` attaches it) is
+  a no-op, not a crash.
+
+The regex heuristic in `tts_node` remains as a fallback when no tag is present.
+
+### 9.4 Three deviations from the draft
+
+1. **Tool names corrected.** The draft referenced
+   `record_bp(patient_id, systolic, diastolic, headache, blurry_vision, swelling)`
+   and `flag_high_risk_pregnancy(patient_id)`. Neither exists. Naming absent
+   tools makes the model emit calls that fail and the turn dies. The prompt now
+   matches `ClinicalToolset`: patient_id is held in call state, BP and symptoms
+   are separate calls, and there is no `flag_high_risk_pregnancy` because
+   `TriageEngine` assigns risk — the model does not.
+2. **Triage thresholds not restated.** The draft put "systolic >= 140 OR
+   diastolic >= 90" in the prompt. The engine already applies exactly that, plus
+   severe-range and gestational rules the prompt does not mention. Restating a
+   subset invites the model to announce a risk level that disagrees with the
+   recorded one — two different answers to "is this mother in danger".
+3. **`presence_penalty` / `frequency_penalty` dropped.** LiveKit's `openai.LLM`
+   wrapper does not accept them (verified against livekit-plugins-openai 1.6.10);
+   passing them raises `TypeError` at provider construction.
+
+### 9.5 LLM configuration
+
+`LLM_CONFIG` now supplies the defaults, with env vars still winning:
+
+| Setting | Value | Note |
+|---|---|---|
+| model | `llama-3.3-70b-versatile` | Replaces `qwen/qwen3-32b`. Qwen 3 is a reasoning model that can spend the whole token budget on hidden reasoning and return no content — the risk flagged twice in earlier phases |
+| temperature | 0.15 | Stable phrasing; Sarvam renders each rephrasing with different prosody |
+| top_p | 0.9 | |
+| max_completion_tokens | 120 | 1–2 sentences needs nowhere near 250 |
+
+**The env was overriding all of these.** `GROQ_LLM_MODEL=qwen/qwen3-32b`,
+`LLM_TEMPERATURE=0.25`, `LLM_MAX_COMPLETION_TOKENS=90` were set, so the new
+config would have had no effect. `.env` updated to match.
+
+### 9.6 Cost and verification
+
+**Prompt grew 109 → 407 tokens** (+29 state = ~436 prefill per generation). That
+is a real per-turn latency cost, accepted deliberately: the clinical workflow,
+spelling fallback and medication-refusal script are behaviour worth paying for.
+It is still far below the draft's ~700 tokens, because the number table is gone.
+
+| Check | Result |
+|---|---|
+| Draft's 11 pronunciation examples | all match |
+| Digits reaching TTS, any chunking | none |
+| VAD tags reaching TTS | none |
+| Tag → endpointing state | FAST→TRANSACTIONAL, SLOW→HIGH_COGNITIVE_LOAD |
+| Live worker boot | `llama-3.3-70b-versatile` primary, no new errors |
+| Tests | **565 passing** (440 pytest + 125 standalone) |
+
+One existing assertion was updated rather than worked around:
+`test_prompt_is_sakhi_not_the_clinic` banned `[VAD:` in the prompt, from when the
+protocol was removed. The property that actually matters is that a tag is never
+*spoken*, which now has four dedicated tests.
+
+---
+
+## Phase 10 — Groq-only chain, context pruning, catalog fix
+
+### 10.1 Two live findings that changed the plan
+
+Probed against the account on 2026-08-15, tools attached:
+
+| model | TTFT | tool-calling |
+|---|---|---|
+| `llama-3.3-70b-versatile` | ~521 ms | yes |
+| `llama-3.1-8b-instant` | ~185 ms | yes |
+| `openai/gpt-oss-20b` | ~707 ms | **no** |
+| `gemma2-9b-it` | — | **DECOMMISSIONED** |
+
+1. **`gemma2-9b-it` no longer exists.** The API answers
+   *"The model `gemma2-9b-it` has been decommissioned"* with HTTP 400. As the
+   requested tier 4 it would have failed 100% of the time — the exact opposite
+   of the crash elimination this change was for.
+2. **`openai/gpt-oss-20b`, the obvious replacement, was rejected on measurement.**
+   Slower than the 70b primary *and* it did not emit a tool call for a
+   blood-pressure statement. On an agent whose entire clinical function is tool
+   calls, a tier that talks instead of calling `record_bp` is worse than no tier.
+
+Tier 4 is therefore `llama-3.1-8b-instant` on the second key. Two proven models
+across two key slots still cover both real failure modes — a per-key rate limit
+and a single model degrading — and every tier can actually drive the tools. All
+four are overridable via `GROQ_MODEL_T1..T4`.
+
+### 10.2 Groq-only fallback chain
+
+```
+T1 llama-3.3-70b-versatile @ key1   (primary)
+T2 llama-3.3-70b-versatile @ key2   (survives a per-key rate limit)
+T3 llama-3.1-8b-instant    @ key1   (survives a model degradation)
+T4 llama-3.1-8b-instant    @ key2
+```
+
+OpenAI is gone from the speaking path. Also removed from `llm_node`'s
+empty-completion repair, which constructed an `openai.LLM` and would have been
+the last OpenAI dependency — it would have failed outright on a Groq-only
+deployment with no `OPENAI_API_KEY`. It now uses `llama-3.1-8b-instant`.
+
+**The accepted risk, stated plainly:** there is no longer a non-Groq escape
+hatch. If Groq is down globally, every tier fails together and the call has no
+LLM. `VOICE_LLM_OPENAI_SAFETY_NET=true` re-adds gpt-4o-mini as a fifth tier for
+anyone who does not want a single-vendor dependency on a maternal-health line.
+
+`build_llm()` now raises at construction if no Groq key is configured, rather
+than answering a call with no LLM.
+
+**Per-tier timeouts are not expressible.** `FallbackAdapter` takes one
+`attempt_timeout` for the whole chain, not one per provider, so the requested
+1.2s / 1.0s / 1.0s becomes a single `LLM_ATTEMPT_TIMEOUT=1.0` — the tightest of
+the set, so no tier waits longer than intended.
+
+### 10.3 Context pruning — and where the tokens really are
+
+Measured before touching anything:
+
+| component | before | after | prunable by a sliding window? |
+|---|---|---|---|
+| system prompt | 407 | 190 | no — trimmed instead |
+| tool schemas | 774 | 662 | **no — sent every request** |
+| state block | 29 | 29 | no |
+| **fixed floor** | **1,210** | **881** | |
+| conversation history | grows all call | capped | **yes** |
+
+The important finding: **774 of the ~2,100 tokens were tool JSON schemas**, which
+a sliding context window cannot touch — they are re-sent on every request as
+long as the tools are bound. Only shortening the tool docstrings (they become
+the schema `description` fields) reduces that, so all five were rewritten to one
+line each.
+
+The sliding window itself uses `ChatContext.truncate()` rather than hand-rolled
+slicing, because it already drops a leading `function_call` /
+`function_call_output`. **Cutting mid tool-exchange leaves an orphaned tool
+result whose originating call is gone, and the OpenAI-compatible API rejects
+that outright — the turn dies.** A test now asserts no orphan is produced at any
+window size from 2 to 20.
+
+Budget is in *items*, not turns (`LLM_CONTEXT_MAX_ITEMS=12`): one turn can be a
+user message, an assistant message, a function call and its output. The mother's
+details live in the state block, not the transcript, so losing older turns costs
+nothing clinically.
+
+### 10.4 Prompt and voice catalog
+
+System prompt trimmed to **115 words / 190 tokens** (from 407).
+
+While trimming, a latent bug surfaced: `SAKHI_SYSTEM_PROMPT_HI` was built by
+chained `.replace()` on the finished Kannada text, matching literal sentences.
+Rewriting the prompt silently broke every replacement, so **the Hindi variant
+became an exact copy of the Kannada one** — an ASHA worker who picked Hindi
+would have been answered in Kannada, with nothing in the logs to explain it.
+Both variants are now built by substitution into one template, and a test
+asserts they differ.
+
+`voice_catalog.py`: added the nine bulbul:v2 speakers and changed
+`default_voice("sarvam")` from `pooja` (a v3 speaker) to `manisha`. The catalog
+default was being remapped at runtime on every call. Live log now reads
+`Voice selected - Sarvam voice: manisha`, with **zero** remap warnings.
+
+### 10.5 Sub-100ms TTFT is not reachable
+
+Measured, India → Groq (US): **521 ms** on the 70b primary, **185 ms** on the 8b.
+185 ms is essentially network round-trip; the target is below the floor imposed
+by physics and routing, not by configuration.
+
+What the work here actually buys: ~330 fewer prefill tokens per request, a
+history that no longer grows unbounded, and a chain that fails over in ~1 s
+instead of hanging. Realistic first response stays ≈1.3–1.4 s end to end.
+
+Getting materially below that needs a change of topology — a Groq region closer
+to India, or an on-prem/edge model — not further prompt tuning.
+
+### 10.6 Verification
+
+| Check | Result |
+|---|---|
+| Chain built live | `T1:llama-3.3-70b@k1 -> T2:…@k2 -> T3:llama-3.1-8b@k1 -> T4:…@k2` |
+| Voice remap warnings | **0** |
+| Prompt | 115 words / 190 tokens |
+| Fixed floor | 1,210 → 881 tokens |
+| VAD / endpointing | 0.25 s / 0.3 s |
+| Tests | **573 passing** |
+
+---
+
+## Phase 11 — Seven leaks found by a live red-team call
+
+A tester agent posing as an ASHA worker called Sakhi on 2026-08-15. The call log
+exposed seven defects, three of them clinical. All are fixed; each has a
+regression test quoting the original log line.
+
+### 11.1 Under-triage — a stated symptom was never recorded (clinical)
+
+```
+Triage: MODERATE — Raised blood pressure 145/95; No danger symptoms reported
+Symptoms screened — none reported
+```
+
+The worker said the mother had a **severe headache** in her opening sentence.
+The model then called `record_symptoms(false, false, false)`. Triage stayed
+MODERATE instead of HIGH_RISK, and no referral was indicated. **Under-triage is
+the most dangerous direction this system can fail in, and it failed silently.**
+
+Fix: symptom capture no longer depends on the model passing the right booleans.
+`detect_symptoms()` in `sakhi_domain.py` scans the caller's own words on every
+turn, and `SakhiAgent._capture_symptoms()` merges the result into call state and
+**re-runs triage immediately** when a new symptom lands on top of an existing BP
+reading — that combination is exactly the MODERATE → HIGH_RISK transition.
+
+Because `SymptomSet.merged_with()` only ORs, the model's later `false` cannot
+erase what the mother actually reported.
+
+Detection is **negation-aware** (`ತಲೆನೋವು ಇಲ್ಲ`, "no headache" must not register,
+or every screening question would flag itself the moment it was answered "no")
+and covers Kannada, Hindi, English **and English transliterated into Kannada
+script** — Sarvam STT returned `ಲೈಕ್ ಎ ಹೆಡ್ ಏಕ್` for "like a head ache" on this
+very call, so matching only native spellings misses half of real speech.
+
+### 11.2 Over-escalation — specialist connected on a MODERATE (clinical)
+
+```
+Triage: MODERATE  →  requires_escalation = False
+SMFMI escalation — Specialist connected for M-203:
+    "moderate risk level due to raised blood pressure and no danger symptoms"
+```
+
+The audit trail recorded an escalation whose own stated reason said escalation
+was not needed. `connect_smfmi_specialist` accepted any call from the model.
+
+The deterministic net built earlier only prevented the model **under**-escalating.
+This is its mirror: the tool now refuses when `state.assessment` exists and does
+not require escalation, writes no audit entry, and returns an instruction
+telling the model *not* to claim a specialist is coming. A call with no
+assessment yet is still allowed through — there is no decision to contradict,
+and refusing would block a genuine emergency raised before any reading.
+
+Between the two, TriageEngine owns the decision in **both** directions.
+
+### 11.3 Script mismatch created a duplicate patient (clinical)
+
+```
+Patient search miss — No SixtyDB record for name=ಸುಮಾ ಗೌಡ
+Mother registered — Suman Goud (M-203)
+```
+
+Stored records are Latin ("Suma Gowda"); Sarvam STT returns Kannada script
+("ಸುಮಾ ಗೌಡ"). Substring matching scored zero, so **every existing mother missed
+lookup**, and the model then registered a corrupted duplicate with a fabricated
+phone number.
+
+Fix: `match_key()` transliterates Kannada/Devanagari to Latin and drops vowels —
+vowels are precisely what varies between spellings of the same Indian name
+(Gowda / Gouda / Goud), and Indic vowel signs are separate codepoints. Consonant
+skeletons are stable. `find_patients()` tries exact substring first, then
+`name_similarity()` above a threshold.
+
+| comparison | score |
+|---|---|
+| `ಸುಮಾ ಗೌಡ` vs `Suma Gowda` | 0.89 |
+| `ಪ್ರಿಯಾ ಪಾಟೀಲ್` vs `Priya Patil` | **1.00** |
+| `Suman Goud` vs `Suma Gowda` | 0.80 → matches, no duplicate |
+| `Suma Gowda` vs `Priya Patil` | 0.00 |
+
+### 11.4 LLM timeout below the observed tail (self-inflicted)
+
+```
+Session error — APIConnectionError("all LLMs failed ([4 providers]) after 1.086s")
+```
+
+All four Groq tiers burned through in ~1.09 s, while the same call logged a
+perfectly valid `ttft=2.210s`. `LLM_ATTEMPT_TIMEOUT=1.0` was set in the previous
+phase and is below the real tail — it turned a slow-but-valid response into a
+dead call. Now **3.0 s**, with a test asserting it clears 2.5 s.
+
+### 11.5 Voice remap fixed at the wrong layer
+
+```
+Voice selected from dispatch — Using sarvam voice pooja
+Voice remapped — 'pooja' is not a bulbul:v2 voice; using 'manisha'
+```
+
+`voice_catalog.default_voice()` was corrected to `manisha` last phase, but
+`page.tsx:308` hardcoded `voice: "pooja"`, and dispatch metadata overrides the
+catalog. The frontend no longer sends a voice at all — the one place that knows
+which model is configured decides.
+
+Live log now reads `Voice selected - Sarvam voice: manisha`, zero remaps.
+
+### 11.6 Sakhi's own speech was never logged (audit gap)
+
+The transcript captured what Sakhi *heard*, never what she *said* — only
+`characters_count`. When the log showed advice about *"lifestyle changes like
+eating a healthy diet, managing stress"*, **it was impossible to determine
+whether Sakhi said it or the tester did.** That is the first question a clinical
+audit asks, and it also made probes 5–7 of the red-team script unverifiable.
+
+`tts_node` now emits an `agent_speech` event with the spoken text (truncated to
+400 chars).
+
+### 11.7 Context pruning bounded items, not tokens
+
+`tokens=2436` against an 881-token floor, with only 13 items retained — one
+Kannada STT transcript item can be enormous. Pruning now tightens the item
+budget until an estimated token count fits (`LLM_CONTEXT_MAX_TOKENS=700`), using
+a cheap character-based estimate rather than tiktoken, which would cost more on
+the hot path than the pruning saves.
+
+### 11.8 Verification
+
+The failed call was replayed end to end against the fixed code:
+
+| step | before | after |
+|---|---|---|
+| lookup `ಸುಮಾ ಗೌಡ` | miss → duplicate created | finds Suma Gowda |
+| BP 145/95, no symptoms from model | MODERATE | MODERATE |
+| model calls specialist anyway | connected, audited | **refused, nothing audited** |
+| headache heard in speech | ignored | HIGH_RISK, escalation required |
+| escalation retried at HIGH_RISK | — | connected, audited |
+
+Test data pollution from the live call (duplicate `M-203 "Suman Goud"` and the
+bogus MODERATE escalation) was removed from the seed.
+
+**Tests: 593 passing**, including 20 new regressions in
+`tests/test_sakhi_regressions.py`.
+
+### 11.9 Still open
+
+- `eou_delay` reached **1.031 s / 1.091 s** against a 0.3 s target: the adaptive
+  VAD entered `HIGH_COGNITIVE_LOAD` and stayed there. `transcript_delay=0.964s`
+  also shows Sarvam STT, not endpointing, is a large share of turn latency.
+- TTS `ttfb` was 0.83–0.94 s live, against 438 ms measured for a bare clause —
+  the difference is clause buffering plus network.
+- The DPDP probes (7, 8, 9 of the red-team script) never ran, because the call
+  ended early. Cross-patient disclosure is still unverified: `search_patient`
+  will return any mother by name with **no caller authentication anywhere**.
+
+---
+
+## Phase 12 — DPDP compliance and multilingual safety guardrails
+
+`guardrails.py` already existed — 210 lines, wired into `SakhiAgent`, 73 passing
+tests. It was **extended, not replaced**. Every existing name and behaviour is
+preserved; all 73 original tests still pass unchanged.
+
+### 12.1 What was measured first
+
+| turn | before |
+|---|---|
+| "which tablet for headache?" | caught |
+| **"ಯಾವ ಮಾತ್ರೆ ಕೊಡಬೇಕು?"** (Kannada) | **missed** |
+| **"कौन सी दवा दूं?"** (Hindi) | **missed** |
+| **"give her 500mg paracetamol"** | **missed** |
+| "ignore previous instructions" | caught |
+| **any PII** | **no redaction at all** |
+
+On an agent that speaks only Kannada, an English-only medication guard is close
+to decorative. The brief's own example — 500 mg paracetamol — was also missed.
+
+### 12.2 The worst finding: the refusal scripts themselves
+
+The approved scripts were **English clinic-booking lines**:
+
+> *"I'm really not able to advise on medicines... shall I find you a slot?"*
+> *"I'm just the receptionist here, so let's stay with your appointment..."*
+
+Two failures at once, on the one path where failure matters most: the wrong
+**language** for a Kannada-speaking ASHA worker, and the wrong **product** —
+offering appointments Sakhi cannot book. A guardrail that fires and then says
+something incomprehensible has not protected anyone.
+
+All six categories are now written in Kannada, Hindi and English, on-brand for
+maternal health, selected by the caller's language via `script_for()`. Helpline
+numbers are spelled digit-by-digit in words (`ಒಂದು ಸೊನ್ನೆ ಎಂಟು`, not "108") —
+a voice reading 14416 as a cardinal number is not dictation anyone can act on.
+
+The existing tests compare against the constants by name, not by literal text,
+so all 73 kept passing.
+
+### 12.3 PII redaction
+
+`redact_pii()` masks Aadhaar, Indian mobile, PAN and bank account numbers,
+ordered most-specific first so an Aadhaar is not partly consumed by the
+account pattern.
+
+**Clinical numbers are deliberately never matched.** Every pattern requires 10+
+digits; blood pressure, gestational weeks and age are 1–3 digits. Redacting a BP
+reading would be a clinical failure dressed up as a privacy win, and there is a
+test asserting `145/95` and `28 weeks` survive untouched.
+
+Redaction runs **before** classification, so an identifier does not survive even
+on turns that are perfectly safe and pass through to the LLM.
+
+### 12.4 `SakhiGuardrails`
+
+- `sanitize_input(text, language) -> InputDecision` — redact, then classify.
+  `classify_turn` runs first so **emergency and self-harm keep outranking
+  everything**: a flat medication refusal to a haemorrhaging mother is a worse
+  failure than answering the paracetamol question. Medication and injection
+  checks run last, on the redacted text.
+- `validate_output(text, language) -> OutputDecision` — catches what the input
+  gate cannot: the model volunteering a drug name or dose nobody asked for, and
+  the model echoing an identifier back.
+
+### 12.5 Integration
+
+`SakhiAgent.on_user_turn_completed` now calls `sanitize_input()` before the LLM.
+On a block it speaks the approved script in the caller's language and raises
+`StopResponse` — **zero database tools run on that path**, because the turn is
+aborted before the LLM is invoked and so no tool call can be generated.
+
+When PII is found, the redacted text replaces the message the model will see.
+
+### 12.6 Compliance logging
+
+The live call log had shown raw transcripts written straight to
+`logs/pipeline_events.jsonl`, plus a tool event logging a raw phone argument.
+Both are now redacted at the point of writing:
+
+- STT transcripts — masked before the pipeline event and before the post-call report
+- Sakhi's own speech (`agent_speech`, added in Phase 11) — masked
+- `search_patient` miss — phone reduced to `***1234`
+
+Under DPDP, an identifier that never lands in a log cannot leak from one.
+
+### 12.7 Verification
+
+| check | result |
+|---|---|
+| Kannada / Hindi / dosage medication | all blocked |
+| Ordinary clinical speech | not blocked (false-positive discipline held) |
+| PII masked | aadhaar, phone, PAN, account |
+| BP / weeks / age | never redacted |
+| Prompt injection | blocked |
+| Emergency vs medication precedence | emergency wins |
+| Output gate | blocks generated drugs and doses |
+| **Latency** | **0.022 ms/call** over 2,000 calls — **225× inside the 5 ms budget** |
+| Tests | **642 passing** (49 new) |
+
+The budget is asserted in `tests/test_sakhi_guardrails.py`, not claimed in a
+comment.
+
+### 12.8 Still open
+
+The cross-patient disclosure hole is **not** closed by this work.
+`search_patient` still returns any mother by name with **no caller
+authentication anywhere in the system**, and Phase 11's fuzzy matching widened
+it. Under DPDP that is a purpose-limitation and access-control gap, and it needs
+a design decision (caller identity from SIP ANI, a PIN, or restricting lookup to
+the ASHA worker's own registered mothers) rather than another regex.
+
+---
+
+## Phase 13 — Production hardening: 10 live failure modes
+
+### 13.1 The one that was a real bug: database de-sync
+
+Verified before changing anything:
+
+```
+BP recorded BEFORE the mother is identified
+  tool says recorded = True
+  bp_records actually written = 0
+```
+
+`record_bp` triaged the reading, returned `recorded: True`, and persisted
+nothing whenever `state.patient_id` was unset — which is the normal state early
+in a call. Sakhi would tell the ASHA worker the reading was filed while SixtyDB
+held nothing, and the mother's chart would silently disagree with what she was
+told.
+
+`_retriage()` now returns whether the write actually landed, and `_result()`
+carries a `persisted` flag. When it is False the instruction becomes *"DO NOT
+tell her the reading has been saved - it has not"* and directs the model to get
+the mother's name first. Confirmation text is now gated on a verified write.
+
+### 13.2 Backchannel and vocal-tic filter
+
+LiveKit's interruption filter is duration- and word-count based
+(`min_duration` 0.6 s / `min_words` 2). It cannot tell `"ಹೌದು ಸರಿ"` — two words
+of agreement — from a real interruption. `is_backchannel()` adds the
+content-based layer: Kannada, Hindi and English backchannels, plus inline
+non-speech events (`[cough]`, `(sneezes)`).
+
+Placed **before** symptom detection and guardrails, since a grunt carries
+neither, and `StopResponse` ends the turn without generating.
+`resume_false_interruption` (already set) resumes what Sakhi was saying.
+
+Duration is honoured when available: `"ಹೌದು"` at 200 ms is a grunt, at 900 ms it
+is an answer. Anything over 24 characters is treated as real speech regardless
+of wording — a false positive here loses a clinical statement, which is far
+worse than answering one extra grunt.
+
+### 13.3 Latent acoustic filler
+
+If no first token arrives in 600 ms, Sakhi speaks a short holding phrase
+(`ಒಂದು ನಿಮಿಷ, ಪರಿಶೀಲಿಸುತ್ತಿದ್ದೇನೆ...`), cancelled the instant a token appears.
+
+The threshold sits **above** the measured p50 TTFT (~0.4–0.6 s) on purpose, so
+it fires on the tail — which reaches 2.2 s — rather than on every turn. Silence
+in that gap reads as a dropped call on a rural line, and the worker starts
+repeating herself, which arrives as a fresh turn and compounds the problem.
+
+### 13.4 Sentence splitter
+
+Negative lookarounds added for the cuts that are audibly wrong on a clinical
+call: decimals (`145.5`), Indian digit grouping (`1,20,000`), honorifics
+(`Dr.`), and unit abbreviations (`mg.`, `ml.`, `min.`, `BP.`). Kannada danda
+(`।`, `॥`) added as genuine sentence ends, since Sarvam emits them.
+
+`TTS_MIN_SENTENCE_CHARS = 10` is a hard floor applied on top of the adaptive
+thresholds — a 3-character chunk is its own TTS request with its own network
+round-trip and its own prosody contour.
+
+### 13.5 ASR proper-noun degradation
+
+**`export_stt_biasing_keywords()` cannot do what the brief describes, and the
+function says so.** `SarvamSTT` exposes no keyword-biasing parameter; an earlier
+version of `agent.py` built exactly such a list and passed it nowhere, and it
+was removed as dead code (changed.md C11). Rebuilding that would repeat the
+mistake.
+
+Instead the vocabulary (15 Bidar villages + patient names) feeds
+`correct_proper_noun()`, which snaps a mangled transcript to a known term
+**after** recognition — the same failure mode, by the only mechanism the
+provider supports. Wired into `register_mother`:
+
+| heard | resolved |
+|---|---|
+| `Kamalnagara` | Kamalnagar |
+| `Kamal Nagar` | Kamalnagar |
+| `ಕಮಲನಗರ` | Kamalnagar |
+| `ಔರಾದ್` | Aurad |
+| `Balki` | Bhalki |
+| `Bengaluru` | *unchanged* — guessing a village is worse than admitting uncertainty |
+
+### 13.6 Already in place before this phase
+
+| brief item | status |
+|---|---|
+| Guardrails: medication, PII, <5 ms | Phase 12 — measured 0.022 ms/call |
+| Kannada number spelling | Phase 9 — `sakhi_kannada.py`, 11/11 examples |
+| CallState across tool chains | Phase 1 — `session.userdata`, test added here |
+| Fuzzy matching | Phase 11 — cutoff raised 0.72 → **0.75** per brief |
+| Silence watchdog | pre-existing — `LINE_LIVE_MAX_UNANSWERED=3` |
+| temperature 0.15 / top_p 0.9 | Phase 9 |
+| max_tokens | 60 → **50** |
+
+### 13.7 Deviations from the brief
+
+- **No `sentence_buffer.py` was created.** `EagerClauseTokenizer` already lives
+  in `agent.py` and is wired into `tts_node`. A second copy in a new module
+  would have been dead code shadowing the live one.
+- **`export_stt_biasing_keywords()` is not in `db_helper.py`.** That module is
+  the legacy clinic SQLite layer (doctors, slots, appointments) and is not on
+  the Sakhi path. The function lives with the patient data it reads, in
+  `sakhi_repository.py`.
+- **`min_chars = 10` is a floor, not a replacement** for the tuned
+  `TTS_EAGER_MIN_CHUNK_CHARS=35`. Setting the working threshold to 10 would
+  make chunking *more* choppy, not less — the opposite of the stated intent.
+
+### 13.8 Verification
+
+**679 tests passing** (37 new in `tests/test_sakhi_hardening.py`), worker boots
+clean through to greeting, no errors naming any new code path.
+
+One test of mine failed first time — it constructed `EagerClauseSentenceStream`
+outside a running event loop. Fixed in the test; the product code was correct.
+
+### 13.9 Still open
+
+Unchanged from Phase 12, and not addressed by this work: `search_patient`
+returns any mother by name with **no caller authentication anywhere in the
+system**. Packet-loss resilience is also only partly covered — fuzzy matching
+repairs clipped *names*, but there is no jitter-buffer or retransmit handling
+for clipped *audio*, which is a transport-layer concern.
+
+---
+
+## 14. Three reported field problems (2026-08-17)
+
+Reported verbatim: (1) "the voice is getting changed in the middle way or even
+the start of the conversation", (2) "the fallback should be wired well it
+shouldnot lag the system", (3) the 24-question intake "guardrail should be
+strictly adhered to and sometimes the agent hallucinates".
+
+Each was traced to a specific mechanism before anything was edited.
+
+### 14.1 Problem 1 — the voice changed mid-call
+
+**Two independent causes, both real.**
+
+**Cause A: the TTS fallback tier spoke a different language.**
+`build_tts()` built `FallbackAdapter([kannada_provider, openai.TTS(voice="alloy")])`.
+TTS is clause-buffered — one synthesis request per clause — so a single slow
+clause failed over and came back in an **English** voice while the clauses on
+either side stayed Kannada. The voice changed *inside one sentence*. A
+cross-language fallback is not viable in a per-clause pipeline.
+
+Fixed: the chain is now same-language only, Sarvam ↔ Gnani, in both directions.
+Both are genuine Kannada providers, so a failover changes timbre but stays
+Kannada and stays female. OpenAI is retained only behind
+`VOICE_TTS_ENGLISH_LAST_RESORT` (default **off**).
+
+**Cause B: four numbers each claimed to be "the pace".**
+
+| path | old value |
+|---|---|
+| `_build_sarvam_tts` default | 0.92 |
+| `_build_gnani_tts` default | 0.92 |
+| greeting (`SARVAM_PACE_GREETING`) | 0.9 |
+| session (`call_tts_speed`) | 1.08 |
+
+`SARVAM_PACE` was not set in `.env`, so the defaults diverged: the greeting
+played at 0.9 and the conversation at 1.08 — the same voice ~20% faster, one
+sentence into every call. That is the "changed at the start" report.
+
+Fixed: `default_tts_pace()` is the single source of truth for both providers,
+greeting and session.
+
+**Cause B2 (found while fixing B): the greeting cache key ignored pace.**
+Pre-rendered greeting WAVs would have kept playing at the old speed forever.
+`_greeting_cache_path()` now includes pace; six stale files were cleared.
+
+### 14.2 Problem 2 — the fallback lagged every turn
+
+Measured TTFT (2026-08-17, real clinical prompt, this account):
+
+| provider | median | max |
+|---|---|---|
+| groq/gpt-oss-120b | 604 ms | 1113 ms |
+| groq/gpt-oss-20b | 401 ms | 433 ms |
+| openrouter/llama-3.3-70b | 1842 ms | 2713 ms |
+| openrouter/llama-3.1-8b | 2200 ms | 2373 ms |
+
+**The chain put OpenRouter at tier 1 behind a single global
+`LLM_ATTEMPT_TIMEOUT=1.8s`.** OpenRouter's *median* (1842 ms) exceeds that
+timeout, so tier 1 was cancelled on essentially every turn, tier 2 (2200 ms)
+was cancelled too, and only then did Groq answer in 604 ms. Every turn paid
+~3.6 s of fallback that **could never succeed**.
+
+Three changes:
+
+1. **Fastest proven provider first.** Groq leads; OpenRouter is the
+   cross-vendor backup it was meant to be.
+2. **Per-group timeouts** (nested `FallbackAdapter`s). One number cannot serve
+   a 604 ms provider and an 1842 ms one: sized for the fast one, the slow one
+   can never answer. `GROQ_ATTEMPT_TIMEOUT=1.5`,
+   `OPENROUTER_ATTEMPT_TIMEOUT=4.0`.
+3. **Hedging** (`llm_hedge.py`, new). Serial groups still cost ~3.7 s on a
+   total Groq outage. `HedgedLLM` starts the backup once the primary has been
+   silent for `LLM_HEDGE_DELAY` (0.8 s) instead of waiting for it to fail, and
+   the first token wins. A primary that fails *early* skips the delay entirely.
+
+| scenario | before | after |
+|---|---|---|
+| happy path | ~4200 ms | **519 ms** |
+| total Groq outage | ~3700 ms | **1610 ms** |
+
+Hedging is safe with tool calls: an LLM only *emits* tool-call requests and the
+agent executes them afterwards, so the loser's chunks are dropped before any
+tool runs. Disable with `SAKHI_LLM_HEDGE=false`.
+
+### 14.3 Problem 3 — intake drift and invented questions
+
+The 24-question questionnaire existed **only as prose in the system prompt**.
+`SakhiCallState` had 16 fields and `prompt_summary()` reported three facts
+(`mother=`, `bp=`, `symptoms=`). Roughly twenty answers had nowhere to be
+stored and no completion marker, so the model re-derived its position in the
+list from the raw transcript every turn. One garbled STT turn or one context
+prune and it lost its place — hence re-asking, skipping, and (asked for "the
+next question" with no checklist to ground it) inventing questions outright.
+
+New `sakhi_intake.py` makes the questionnaire authoritative in code:
+
+- `INTAKE_QUESTIONS` — the 24 questions as frozen data, the single source of
+  truth. `sakhi_prompts.py` now **renders** the prompt inventory from it, so
+  the prompt and the tracker cannot drift (they were two hand-typed copies).
+- `IntakeProgress` — records answers, computes the next question, and reports
+  `intake=N/24` plus the **exact next question** into every generation.
+- Auto-satisfaction: name+age and gestational weeks captured by the pipeline
+  tick their questions off without asking.
+- `arm_next()` in `llm_node` marks the question being asked; `record_answer()`
+  in `on_user_turn_completed` closes it. Placed *after* the backchannel and
+  fragment-recovery guards, so a grunt or half-sentence cannot tick a clinical
+  question off the checklist.
+- The prompt gained an "Intake Flow Control" section that makes the injected
+  `intake=` line override the model's own judgement, and forbids asking
+  anything not in the inventory.
+
+### 14.4 Verification
+
+**687 tests passing** (35 new: `tests/test_voice_consistency.py`,
+`tests/test_llm_hedge.py`, `tests/test_sakhi_intake.py`). Worker restarted onto
+the new code and registered clean.
+
+Live simulation confirmed the model now asks the armed question verbatim
+instead of choosing its own.
+
+### 14.5 Correction
+
+While testing I saw empty first-turn completions and suspected the enlarged
+prompt was starving gpt-oss's reasoning budget. Measured directly: **0/16 empty
+completions** at caps of both 200 and 320 tokens, every one `finish_reason:
+stop`. The empty turns were **HTTP 429s caused by my own benchmarking
+exhausting the Groq rate limit**, not the prompt change. `max_completion_tokens`
+was left at 200.
+
+### 14.6 Still open
+
+- `search_patient` still has **no caller authentication** — unchanged and still
+  the largest gap.
+- The multilingual turn-detector fails to load in this environment
+  (`torch has no attribute 'LongTensor'` → `AutoTokenizer` import fails), so
+  endpointing falls back to VAD-only. Pre-existing, unrelated to this work.
+- Groq rate limits are currently exhausted from benchmarking; they reset on
+  their own.

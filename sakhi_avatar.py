@@ -222,9 +222,24 @@ class TavusAvatarBackend(AvatarBackend):
 
     key = "tavus"
 
-    # "Olivia - Doctor" - female, clinical setting, which is the closest stock
-    # match for a maternal-health co-pilot. Overridable per deployment.
-    DEFAULT_REPLICA_ID = "rd3ba0f30551"
+    # "Ruby - Office" (phoenix-4): a South Asian WOMAN, professional setting.
+    #
+    # Chosen by actually looking at the thumbnails rather than guessing from
+    # names. Of the 21 female phoenix-4 replicas, Ruby is the only one who reads
+    # as South Asian - Anna is fair-haired and Northern European, Ivy is East
+    # Asian, the rest are Western.
+    #
+    # This replaces "Raj - Doctor", which was Indian but male. A male face over
+    # Sarvam's female Kannada voice is a worse mismatch than an ethnicity gap,
+    # because face and voice are perceived in the same instant - and Sakhi is
+    # ಸಖಿ, a female companion who calls the worker ಅಕ್ಕಾರ, elder sister. Gender
+    # coherence with the voice matters more than the clinical backdrop Raj had.
+    #
+    # A CUSTOM REPLICA IS STILL THE RIGHT ANSWER for the pilot: Tavus trains one
+    # from ~2 minutes of footage, and a local Kannada-speaking woman would beat
+    # every stock option here. Set TAVUS_REPLICA_ID when that exists - nothing
+    # else in the pipeline changes.
+    DEFAULT_REPLICA_ID = "rcc28da86847"
 
     def __init__(
         self,
@@ -263,7 +278,65 @@ class TavusAvatarBackend(AvatarBackend):
             kwargs["persona_id"] = self._persona_id
 
         self._session = _tavus_plugin.AvatarSession(**kwargs)
+        self._inject_conversation_properties(self._session)
         await self._session.start(session, room)
+
+    def _inject_conversation_properties(self, avatar_session) -> None:
+        """Add our conversation properties to the plugin's create call.
+
+        `AvatarSession` takes no `properties` argument - it hardcodes
+        `{livekit_ws_url, livekit_room_token}` and passes nothing else. Rather
+        than fork the plugin's whole start() to add fields, the API client's
+        bound method is wrapped so our properties are merged in while the
+        plugin's transport fields are preserved untouched.
+
+        On `language`: Tavus documents it as driving CVI's own STT and TTS. We
+        run pipeline_mode "echo", where Tavus does NEITHER - so this is a no-op
+        today, NOT the reason Kannada works. Kannada works because Sarvam
+        produces the waveform and Tavus lip-syncs whatever it is handed,
+        language-agnostically. It is set for correctness and so the field is
+        already right if this ever moves off echo mode.
+
+        The timeouts are not cosmetic: without them a conversation left open by
+        a dropped call keeps consuming a Tavus concurrency slot until the
+        account default expires.
+        """
+        properties = {
+            "language": os.getenv("TAVUS_LANGUAGE", "Kannada"),
+            # DO NOT ADD `turn_taking_patience` HERE. It is not a real field on
+            # this API, and sending it does not degrade gracefully - Tavus
+            # rejects the ENTIRE create-conversation request:
+            #
+            #   HTTP 400 {'properties': {'turn_taking_patience': ['Unknown field.']}}
+            #
+            # which surfaces as "Failed to call Tavus API after all retries" and
+            # takes the whole avatar down to audio-only. Verified against the
+            # live API on 2026-08-17.
+            #
+            # It would have been inert even if accepted: Tavus turn-taking is
+            # Sparrow-0 in the Perception/STT layer, and echo mode bypasses
+            # Perception entirely. Our turn-taking is Silero VAD + LiveKit
+            # endpointing in build_turn_handling(), which is where the latency
+            # actually lives.
+            "max_call_duration": int(os.getenv("TAVUS_MAX_CALL_SECONDS", "900")),
+            "participant_left_timeout": int(os.getenv("TAVUS_LEFT_TIMEOUT", "10")),
+            "participant_absent_timeout": int(os.getenv("TAVUS_ABSENT_TIMEOUT", "30")),
+        }
+
+        api_client = getattr(avatar_session, "_api", None)
+        original = getattr(api_client, "create_conversation", None)
+        if api_client is None or original is None:
+            logger.warning(
+                "Tavus plugin internals changed; conversation properties not applied"
+            )
+            return
+
+        async def _with_properties(**kwargs):
+            merged = dict(kwargs.pop("properties", None) or {})
+            merged.update(properties)          # ours win on conflict
+            return await original(properties=merged, **kwargs)
+
+        api_client.create_conversation = _with_properties
 
     async def aclose(self) -> None:
         session, self._session = self._session, None

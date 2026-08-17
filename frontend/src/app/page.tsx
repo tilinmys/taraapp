@@ -35,7 +35,26 @@ import { Room, RoomEvent, Track } from "livekit-client";
 import "@livekit/components-styles";
 import styles from "./page.module.css";
 
-type LangKey = "kannada" | "hindi";
+type LangKey = "english" | "kannada" | "hindi";
+type TtsProvider = "sarvam" | "gnani";
+
+const VOICES: Record<TtsProvider, { id: string; label: string; note: string }[]> = {
+  sarvam: [
+    { id: "manisha", label: "Manisha", note: "Warm, clear — default voice" },
+    { id: "vidya",   label: "Vidya",   note: "Calm, balanced" },
+    { id: "anushka", label: "Anushka", note: "Bright, friendly" },
+    { id: "arya",    label: "Arya",    note: "Soft, reassuring" },
+    { id: "ritu",    label: "Ritu",    note: "Steady, professional" },
+  ],
+  gnani: [
+    { id: "Janaki",  label: "Janaki",  note: "Warm, steady" },
+    { id: "Nayana",  label: "Nayana",  note: "Soft, gentle" },
+    { id: "Lavanya", label: "Lavanya", note: "Clear, balanced" },
+    { id: "Vidya",   label: "Vidya",   note: "Calm, professional" },
+    { id: "Lalita",  label: "Lalita",  note: "Bright, friendly" },
+    { id: "Kaveri",  label: "Kaveri",  note: "Even pace" },
+  ],
+};
 type RiskLevel = "HIGH_RISK" | "MODERATE" | "OBSERVATION" | "ROUTINE";
 
 interface LogMessage {
@@ -45,84 +64,77 @@ interface LogMessage {
   kind: "info" | "ok" | "warn" | "error";
 }
 
-/* -------------------------------------------------------------------------
- * Copy. Kannada is the primary string; English is the small subtitle beneath
- * it, never a replacement. Kept in one table so a reviewer who speaks Kannada
- * can check every user-facing word in one place without reading JSX.
- * ---------------------------------------------------------------------- */
 const COPY = {
+  english: {
+    tagline: "Maternal Health Voice Assistant",
+    taglineSub: "Clinical co-pilot for ASHA healthcare workers",
+    idleTitle: "Ready to Assist",
+    idleSub: "Press the green button below to start your call",
+    connecting: "Connecting to Sakhi...",
+    connectingSub: "Establishing WebRTC voice session",
+    start: "Start Conversation",
+    end: "End Call",
+    hint: "After pressing start, speak naturally. Sakhi is listening.",
+    chooseLang: "Select Language",
+    chooseVoice: "Choose Voice Engine",
+    micNote: "Please allow microphone access when prompted",
+  },
   kannada: {
-    tagline: "ತಾಯಿಯ ಆರೋಗ್ಯ ಸಹಾಯಕಿ",
-    taglineEn: "Maternal health assistant for ASHA workers",
-    idleTitle: "ಮಾತನಾಡಲು ಸಿದ್ಧ",
-    idleSub: "ಕೆಳಗಿನ ಹಸಿರು ಗುಂಡಿಯನ್ನು ಒತ್ತಿರಿ",
-    idleSubEn: "Press the green button below to start",
-    connecting: "ಸಂಪರ್ಕಿಸುತ್ತಿದೆ...",
-    connectingEn: "Connecting, please wait",
-    start: "ಮಾತನಾಡಿ",
-    startEn: "Start talking",
-    end: "ಕರೆ ಮುಗಿಸಿ",
-    endEn: "End call",
-    hint: "ಗುಂಡಿ ಒತ್ತಿದ ನಂತರ ಸಾಮಾನ್ಯವಾಗಿ ಮಾತನಾಡಿ. ಸಖಿ ಕೇಳುತ್ತಾಳೆ.",
-    hintEn: "After pressing, just speak normally. Sakhi is listening.",
-    chooseLang: "ಭಾಷೆ ಆಯ್ಕೆ ಮಾಡಿ / Choose language",
-    micNote: "ಮೈಕ್ರೊಫೋನ್ ಅನುಮತಿ ನೀಡಿ",
-    micNoteEn: "Please allow microphone access",
+    tagline: "Maternal Health Voice Assistant",
+    taglineSub: "ತಾಯಿಯ ಆರೋಗ್ಯ ಸಹಾಯಕಿ",
+    idleTitle: "Ready to Assist (ಮಾತನಾಡಲು ಸಿದ್ಧ)",
+    idleSub: "Press the green button below (ಕೆಳಗಿನ ಹಸಿರು ಗುಂಡಿಯನ್ನು ಒತ್ತಿರಿ)",
+    connecting: "Connecting... (ಸಂಪರ್ಕಿಸುತ್ತಿದೆ...)",
+    connectingSub: "Please wait a moment",
+    start: "Start Talking (ಮಾತನಾಡಿ)",
+    end: "End Call (ಕರೆ ಮುಗಿಸಿ)",
+    hint: "After pressing, just speak normally. Sakhi is listening.",
+    chooseLang: "Select Language / ಭಾಷೆ ಆಯ್ಕೆ ಮಾಡಿ",
+    chooseVoice: "Choose Voice / ಧ್ವನಿ ಆಯ್ಕೆ ಮಾಡಿ",
+    micNote: "Please allow microphone access (ಮೈಕ್ರೊಫೋನ್ ಅನುಮತಿ ನೀಡಿ)",
   },
   hindi: {
-    tagline: "माँ के स्वास्थ्य की सहायक",
-    taglineEn: "Maternal health assistant for ASHA workers",
-    idleTitle: "बात करने के लिए तैयार",
-    idleSub: "नीचे हरा बटन दबाएँ",
-    idleSubEn: "Press the green button below to start",
-    connecting: "जुड़ रहे हैं...",
-    connectingEn: "Connecting, please wait",
-    start: "बात करें",
-    startEn: "Start talking",
-    end: "कॉल समाप्त करें",
-    endEn: "End call",
-    hint: "बटन दबाने के बाद सामान्य रूप से बोलें। सखी सुन रही है।",
-    hintEn: "After pressing, just speak normally. Sakhi is listening.",
-    chooseLang: "भाषा चुनें / Choose language",
-    micNote: "माइक्रोफ़ोन की अनुमति दें",
-    micNoteEn: "Please allow microphone access",
+    tagline: "Maternal Health Voice Assistant",
+    taglineSub: "माँ के स्वास्थ्य की सहायक",
+    idleTitle: "Ready to Assist (बात करने के लिए तैयार)",
+    idleSub: "Press the green button below (नीचे हरा बटन दबाएँ)",
+    connecting: "Connecting... (जुड़ रहे हैं...)",
+    connectingSub: "Please wait a moment",
+    start: "Start Talking (बात करें)",
+    end: "End Call (कॉल समाप्त करें)",
+    hint: "After pressing, just speak normally. Sakhi is listening.",
+    chooseLang: "Select Language / भाषा चुनें",
+    chooseVoice: "Choose Voice / आवाज़ चुनें",
+    micNote: "Please allow microphone access (माइक्रोफ़ोन की अनुमति दें)",
   },
 } as const;
 
-/* Agent state -> what the worker sees. Icon + colour + word, so the state is
-   readable without relying on text or on colour perception alone. */
-const STATE_COPY: Record<string, { kn: string; hi: string; en: string; icon: string }> = {
-  listening: { kn: "ಕೇಳುತ್ತಿದ್ದೇನೆ", hi: "सुन रही हूँ", en: "Listening", icon: "👂" },
-  thinking: { kn: "ಯೋಚಿಸುತ್ತಿದ್ದೇನೆ", hi: "सोच रही हूँ", en: "Thinking", icon: "💭" },
-  speaking: { kn: "ಮಾತನಾಡುತ್ತಿದ್ದೇನೆ", hi: "बोल रही हूँ", en: "Speaking", icon: "🗣️" },
-  idle: { kn: "ಸಿದ್ಧ", hi: "तैयार", en: "Ready", icon: "🌸" },
+const STATE_COPY: Record<string, { label: string; icon: string }> = {
+  listening: { label: "Listening...", icon: "👂" },
+  thinking: { label: "Thinking...", icon: "💭" },
+  speaking: { label: "Speaking...", icon: "🗣️" },
+  idle: { label: "Ready", icon: "🌸" },
 };
 
-/* Risk copy. Deliberately instructional, addressed to the ASHA worker, and it
-   never names a diagnosis - Sakhi is decision support, not a practitioner. */
-const RISK_COPY: Record<RiskLevel, { kn: string; hi: string; en: string; icon: string }> = {
+const RISK_COPY: Record<RiskLevel, { title: string; body: string; icon: string }> = {
   HIGH_RISK: {
-    kn: "ತಕ್ಷಣ ಆಸ್ಪತ್ರೆಗೆ ಕರೆದೊಯ್ಯಿರಿ",
-    hi: "तुरंत अस्पताल ले जाएँ",
-    en: "High risk — refer to Bidar District Hospital now. A specialist is being connected.",
+    title: "High Risk — Immediate Hospital Referral Required",
+    body: "Refer mother to District Hospital immediately. Specialist auto-escalation active.",
     icon: "🔴",
   },
   MODERATE: {
-    kn: "48 ಗಂಟೆಗಳಲ್ಲಿ ಬಿ.ಪಿ. ಮತ್ತೆ ಪರೀಕ್ಷಿಸಿ",
-    hi: "48 घंटे में बी.पी. दोबारा जाँचें",
-    en: "Raised blood pressure, no danger symptoms. Re-check within 48 hours.",
+    title: "Moderate Risk — Blood Pressure Elevated",
+    body: "Raised blood pressure detected without danger symptoms. Re-check within 48 hours.",
     icon: "🟡",
   },
   OBSERVATION: {
-    kn: "ಲಕ್ಷಣಗಳನ್ನು ಗಮನಿಸುತ್ತಿರಿ",
-    hi: "लक्षणों पर नज़र रखें",
-    en: "Blood pressure normal, but symptoms reported. Keep watching.",
+    title: "Under Observation — Symptoms Reported",
+    body: "Blood pressure normal, but symptoms reported. Continue monitoring closely.",
     icon: "🟡",
   },
   ROUTINE: {
-    kn: "ಎಲ್ಲವೂ ಸಾಮಾನ್ಯವಾಗಿದೆ",
-    hi: "सब सामान्य है",
-    en: "Reading and screening both normal. Confirm the next ANC visit.",
+    title: "Routine Care — All Vital Signs Normal",
+    body: "Blood pressure and screening are normal. Schedule next routine ANC checkup.",
     icon: "🟢",
   },
 };
@@ -147,8 +159,8 @@ function AvatarStage({ lang }: { lang: LangKey }) {
       <div className={styles.avatarCard}>
         <div className={styles.idleArt}>
           <div className={styles.idleFace} aria-hidden="true">👩‍⚕️</div>
-          <p className={styles.idleLine}>{STATE_COPY.idle[lang === "kannada" ? "kn" : "hi"]}</p>
-          <p className={styles.idleSub}>{t.hintEn}</p>
+          <p className={styles.idleLine}>{STATE_COPY.idle.label}</p>
+          <p className={styles.idleSub}>{t.hint}</p>
         </div>
       </div>
     );
@@ -169,7 +181,7 @@ function StatusPill({ lang }: { lang: LangKey }) {
   return (
     <div className={styles.statusPill} data-state={key} role="status" aria-live="polite">
       <span className={styles.statusIcon} aria-hidden="true">{copy.icon}</span>
-      <span>{lang === "kannada" ? copy.kn : copy.hi}</span>
+      <span>{copy.label}</span>
       {key === "listening" && <span className={styles.pulse} aria-hidden="true" />}
     </div>
   );
@@ -208,11 +220,17 @@ function RoomLogger({ onLog }: { onLog: (text: string, kind?: LogMessage["kind"]
 export default function Home() {
   const [token, setToken] = useState<string | null>(null);
   const [url, setUrl] = useState<string | null>(null);
-  const [lang, setLang] = useState<LangKey>("kannada");
+  const [lang, setLang] = useState<LangKey>("english");
+  const [provider, setProvider] = useState<TtsProvider>("sarvam");
+  const [voice, setVoice] = useState<string>("manisha");
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [room, setRoom] = useState<Room | null>(null);
   const [risk, setRisk] = useState<RiskLevel | null>(null);
+  // Live position in the clinical intake, derived from the worker's
+  // intake_armed / intake_answered pipeline events. The ASHA worker can see
+  // which question Sakhi is on and how much of the screening remains.
+  const [intake, setIntake] = useState<{ done: number; total: number; question: string } | null>(null);
   const [logsOpen, setLogsOpen] = useState(true);
   const roomRef = useRef<Room | null>(null);
 
@@ -229,10 +247,6 @@ export default function Home() {
     setLogs((prev) => [...prev.slice(-399), { id: logIdRef.current++, time, text, kind }]);
   }, []);
 
-  /* Poll worker pipeline events. Same plumbing as before; additionally, the
-     triage labels emitted by ClinicalToolset drive the risk banner, so the
-     worker's deterministic decision is what the ASHA worker sees - the UI
-     never infers a risk level for itself. */
   useEffect(() => {
     let cancelled = false;
     let inFlight = false;
@@ -275,9 +289,15 @@ export default function Home() {
           const label = String(ev.label || "");
           const match = label.match(/^Triage:\s*(HIGH_RISK|MODERATE|OBSERVATION|ROUTINE)/);
           if (match) setRisk(match[1] as RiskLevel);
+
+          // "q07 (6/26): Does she know her estimated due date?"
+          if (label === "Intake question armed") {
+            const m = String(ev.message || "").match(/^\S+\s+\((\d+)\/(\d+)\):\s*(.+)$/);
+            if (m) setIntake({ done: Number(m[1]), total: Number(m[2]), question: m[3] });
+          }
         }
       } catch {
-        /* transient poll failure is not worth surfacing to a field user */
+        /* transient poll failure */
       } finally {
         inFlight = false;
       }
@@ -302,10 +322,11 @@ export default function Home() {
     setConnecting(true);
     setError(null);
     setRisk(null);
+    setIntake(null);
     addLog("Requesting token from /api/token…", "info");
 
     try {
-      const params = new URLSearchParams({ language: lang, provider: "sarvam", voice: "pooja" });
+      const params = new URLSearchParams({ language: lang, provider, voice });
       const res = await fetch(`/api/token?${params.toString()}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -331,6 +352,7 @@ export default function Home() {
     setUrl(null);
     setConnecting(false);
     setRisk(null);
+    setIntake(null);
     addLog("Call ended by user", "info");
   }, [addLog]);
 
@@ -372,14 +394,14 @@ export default function Home() {
       {/* ---------- Main stage ---------- */}
       <main className={styles.stage}>
         <header className={styles.header}>
-          <div className={styles.brandMark} aria-hidden="true">ಸ</div>
+          <div className={styles.brandMark} aria-hidden="true">S</div>
           <div className={styles.brandText}>
-            <h1 className={styles.brandName}>ಸಖಿ · Sakhi</h1>
-            <p className={styles.brandSub}>{t.tagline}</p>
+            <h1 className={styles.brandName}>Sakhi · AI Clinical Co-Pilot</h1>
+            <p className={styles.brandSub}>{t.tagline} — {t.taglineSub}</p>
           </div>
           <span className={styles.linkPill}>
             <span className={styles.dot} data-live={connected} />
-            {connected ? "Live" : "Offline"}
+            {connected ? "Connected" : "Standby"}
           </span>
         </header>
 
@@ -387,9 +409,31 @@ export default function Home() {
           <div className={styles.riskBanner} data-level={risk!} role="alert">
             <span className={styles.riskIcon} aria-hidden="true">{riskCopy.icon}</span>
             <div>
-              <p className={styles.riskTitle}>{lang === "kannada" ? riskCopy.kn : riskCopy.hi}</p>
-              <p className={styles.riskBody}>{riskCopy.en}</p>
+              <p className={styles.riskTitle}>{riskCopy.title}</p>
+              <p className={styles.riskBody}>{riskCopy.body}</p>
             </div>
+          </div>
+        )}
+
+        {intake && (
+          <div className={styles.intakePanel}>
+            <div className={styles.intakeHead}>
+              <span className={styles.intakeLabel}>Clinical intake</span>
+              <span className={styles.intakeCount}>{intake.done} / {intake.total}</span>
+            </div>
+            <div
+              className={styles.intakeTrack}
+              role="progressbar"
+              aria-valuenow={intake.done}
+              aria-valuemin={0}
+              aria-valuemax={intake.total}
+            >
+              <div
+                className={styles.intakeFill}
+                style={{ width: `${Math.round((intake.done / intake.total) * 100)}%` }}
+              />
+            </div>
+            <p className={styles.intakeQuestion}>{intake.question}</p>
           </div>
         )}
 
@@ -401,7 +445,7 @@ export default function Home() {
             connect
             audio
             video={false}
-            onConnected={() => { setConnecting(false); addLog("Connected to Sakhi", "ok"); }}
+            onConnected={() => { setConnecting(false); addLog("Connected to Sakhi voice session", "ok"); }}
             onDisconnected={endCall}
             onError={(e) => { addLog(`Room error: ${e.message}`, "error"); setError(e.message); }}
             style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: 18 }}
@@ -414,7 +458,7 @@ export default function Home() {
               <button className={`${styles.bigButton} ${styles.end}`} onClick={endCall}>
                 <span aria-hidden="true">✕</span> {t.end}
               </button>
-              <p className={styles.buttonHint}>{t.endEn}</p>
+              <p className={styles.buttonHint}>Click to finish the consultation and generate summary</p>
             </div>
           </LiveKitRoom>
         ) : (
@@ -424,14 +468,13 @@ export default function Home() {
                 <div className={styles.connectingWrap}>
                   <div className={styles.spinner} />
                   <p className={styles.idleLine}>{t.connecting}</p>
-                  <p className={styles.idleSub}>{t.connectingEn}</p>
+                  <p className={styles.idleSub}>{t.connectingSub}</p>
                 </div>
               ) : (
                 <div className={styles.idleArt}>
                   <div className={styles.idleFace} aria-hidden="true">👩‍⚕️</div>
                   <p className={styles.idleLine}>{t.idleTitle}</p>
                   <p className={styles.idleSub}>{t.idleSub}</p>
-                  <p className={styles.idleSub}>{t.idleSubEn}</p>
                 </div>
               )}
             </div>
@@ -445,7 +488,7 @@ export default function Home() {
                 <span aria-hidden="true">🎤</span> {connecting ? t.connecting : t.start}
               </button>
               <p className={styles.buttonHint}>{t.hint}</p>
-              <p className={styles.buttonHint}>{t.micNote} · {t.micNoteEn}</p>
+              <p className={styles.buttonHint}>{t.micNote}</p>
 
               {error && <div className={styles.errorBox}>{error}</div>}
 
@@ -453,11 +496,19 @@ export default function Home() {
               <div className={styles.langRow}>
                 <button
                   className={styles.langPill}
+                  data-active={lang === "english"}
+                  onClick={() => setLang("english")}
+                  disabled={connecting}
+                >
+                  English
+                </button>
+                <button
+                  className={styles.langPill}
                   data-active={lang === "kannada"}
                   onClick={() => setLang("kannada")}
                   disabled={connecting}
                 >
-                  ಕನ್ನಡ
+                  ಕನ್ನಡ (Kannada)
                 </button>
                 <button
                   className={styles.langPill}
@@ -465,8 +516,38 @@ export default function Home() {
                   onClick={() => setLang("hindi")}
                   disabled={connecting}
                 >
-                  हिंदी
+                  हिंदी (Hindi)
                 </button>
+              </div>
+
+              <p className={styles.sectionLabel}>{t.chooseVoice}</p>
+              <div className={styles.langRow}>
+                {(["sarvam", "gnani"] as TtsProvider[]).map((p) => (
+                  <button
+                    key={p}
+                    className={styles.voicePill}
+                    data-active={provider === p}
+                    onClick={() => { setProvider(p); setVoice(VOICES[p][0].id); }}
+                    disabled={connecting}
+                  >
+                    {p === "sarvam" ? "Sarvam AI (Neural)" : "Gnani AI"}
+                  </button>
+                ))}
+              </div>
+              <div className={styles.voiceRow}>
+                {VOICES[provider].map((v) => (
+                  <button
+                    key={v.id}
+                    className={styles.voicePill}
+                    data-active={voice === v.id}
+                    onClick={() => setVoice(v.id)}
+                    disabled={connecting}
+                    title={v.note}
+                  >
+                    {v.label}
+                    <span className={styles.voiceNote}>{v.note}</span>
+                  </button>
+                ))}
               </div>
             </div>
           </>

@@ -20,6 +20,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -33,6 +34,126 @@ logger = logging.getLogger("sakhi.repository")
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# Kannada / Devanagari -> Latin, enough to make names comparable across scripts.
+#
+# WHY: seeded records hold "Suma Gowda" in Latin, while Sarvam STT returns
+# "ಸುಮಾ ಗೌಡ" in Kannada script. A plain substring match scores zero, so on a
+# live call EVERY existing mother missed lookup and the model registered a
+# duplicate - it created "Suman Goud" alongside the real "Suma Gowda".
+#
+# This is transliteration for MATCHING ONLY. It is lossy and is never shown to
+# anyone or written back to a record.
+_TRANSLIT = {
+    # Kannada vowels
+    "ಅ": "a", "ಆ": "aa", "ಇ": "i", "ಈ": "ii", "ಉ": "u", "ಊ": "uu",
+    "ಎ": "e", "ಏ": "ee", "ಐ": "ai", "ಒ": "o", "ಓ": "oo", "ಔ": "au",
+    # Kannada consonants
+    "ಕ": "k", "ಖ": "kh", "ಗ": "g", "ಘ": "gh", "ಚ": "ch", "ಛ": "chh",
+    "ಜ": "j", "ಝ": "jh", "ಟ": "t", "ಠ": "th", "ಡ": "d", "ಢ": "dh",
+    "ಣ": "n", "ತ": "t", "ಥ": "th", "ದ": "d", "ಧ": "dh", "ನ": "n",
+    "ಪ": "p", "ಫ": "ph", "ಬ": "b", "ಭ": "bh", "ಮ": "m", "ಯ": "y",
+    "ರ": "r", "ಲ": "l", "ವ": "v", "ಶ": "sh", "ಷ": "sh", "ಸ": "s",
+    "ಹ": "h", "ಳ": "l",
+    # Devanagari
+    "अ": "a", "आ": "aa", "इ": "i", "ई": "ii", "उ": "u", "ऊ": "uu",
+    "ए": "e", "ऐ": "ai", "ओ": "o", "औ": "au",
+    "क": "k", "ख": "kh", "ग": "g", "घ": "gh", "च": "ch", "ज": "j",
+    "ट": "t", "ठ": "th", "ड": "d", "ण": "n", "त": "t", "थ": "th",
+    "द": "d", "ध": "dh", "न": "n", "प": "p", "फ": "ph", "ब": "b",
+    "भ": "bh", "म": "m", "य": "y", "र": "r", "ल": "l", "व": "v",
+    "श": "sh", "ष": "sh", "स": "s", "ह": "h",
+}
+
+
+def match_key(name: str | None) -> str:
+    """Fold a name to a script-independent, vowel-light comparison key.
+
+    Vowels are dropped after transliteration because they are exactly what
+    varies between spellings of the same Indian name ("Gowda"/"Gouda"/"Goud"),
+    and because Indic vowel signs are separate codepoints this function does not
+    map. Consonant skeletons are far more stable.
+    """
+    if not name:
+        return ""
+    out = []
+    for ch in str(name).strip().lower():
+        if ch in _TRANSLIT:
+            out.append(_TRANSLIT[ch])
+        elif ch.isalpha() and ch.isascii():
+            out.append(ch)
+        # everything else (vowel signs, virama, spaces, punctuation) is dropped
+    key = "".join(out)
+    return re.sub(r"[aeiou]", "", key)
+
+
+def name_similarity(a: str | None, b: str | None) -> float:
+    """0..1 similarity between two names, across scripts."""
+    from difflib import SequenceMatcher
+
+    ka, kb = match_key(a), match_key(b)
+    if not ka or not kb:
+        return 0.0
+    if ka == kb:
+        return 1.0
+    return SequenceMatcher(None, ka, kb).ratio()
+
+
+# Villages in the Bidar pilot catchment. Proper nouns are where ASR degrades
+# worst, and these are the ones an ASHA worker says on every call.
+BIDAR_VILLAGES = (
+    "Aurad", "Kamalnagar", "Bhalki", "Basavakalyan", "Humnabad",
+    "Chitguppa", "Hulsoor", "Santpur", "Janwada", "Manhalli",
+    "Nirna", "Kamthana", "Mannaekhelli", "Halhalli", "Chincholi",
+)
+
+
+def export_stt_biasing_keywords(patients: "list[PatientRecord] | None" = None) -> list[str]:
+    """Vocabulary of proper nouns the STT layer is likely to mangle.
+
+    IMPORTANT - what this can and cannot do:
+
+    `SarvamSTT` exposes **no keyword-biasing parameter**. An earlier version of
+    agent.py built exactly such a list and passed it nowhere; it was removed as
+    dead code (changed.md C11). Reinstating that would repeat the mistake.
+
+    So this list is not sent to the recogniser. It is the reference vocabulary
+    for `correct_proper_noun()`, which snaps a mangled transcript back to a
+    known name AFTER recognition. Same failure addressed, by the only mechanism
+    the provider actually supports.
+
+    If Sarvam adds keyword boosting, this is the function to feed it.
+    """
+    vocabulary = list(BIDAR_VILLAGES)
+    for record in patients or []:
+        if record.name:
+            vocabulary.append(record.name)
+        if record.village:
+            vocabulary.append(record.village)
+    # Stable, de-duplicated.
+    return sorted(set(vocabulary))
+
+
+def correct_proper_noun(
+    heard: str | None,
+    vocabulary: "list[str]",
+    cutoff: float = 0.75,
+) -> "str | None":
+    """Snap a misheard proper noun to the closest known one, or leave it alone.
+
+    Uses the same cross-script key as patient matching, so "ಕಮಲನಗರ" resolves to
+    "Kamalnagar". Returns the corrected term, or the original when nothing
+    clears the cutoff - guessing a village is worse than admitting uncertainty.
+    """
+    if not heard or not vocabulary:
+        return heard
+    best, best_score = heard, cutoff
+    for candidate in vocabulary:
+        score = name_similarity(heard, candidate)
+        if score > best_score:
+            best, best_score = candidate, score
+    return best
 
 
 def normalize_phone(value: str | None) -> str | None:
@@ -193,6 +314,10 @@ class MockSixtyDBRepository(PatientRepository):
     ) -> None:
         self._path = Path(path)
         self._flush_delay = flush_delay
+        # Tuned to accept cross-script and spelling variants of the same name
+        # while refusing genuinely different mothers. Raise it if unrelated
+        # names start matching; lower it if duplicates reappear.
+        self._name_match_threshold = float(os.getenv("SIXTYDB_NAME_MATCH_THRESHOLD", "0.75"))
         self._data: dict[str, Any] = {"patients": [], "bp_records": [], "teleconsult_logs": []}
         self._lock = asyncio.Lock()
         self._dirty = False
@@ -279,14 +404,40 @@ class MockSixtyDBRepository(PatientRepository):
             return []
 
         matches: list[PatientRecord] = []
+        near: list[tuple[float, PatientRecord]] = []
+
         for raw in self._data["patients"]:
             record = PatientRecord.from_dict(raw)
+
             if search_phone and record.phone and record.phone == search_phone:
                 matches.append(record)
                 continue
-            if search_name and search_name in record.name.lower():
+            if not search_name:
+                continue
+
+            # Same-script substring match first - cheap and exact.
+            if search_name in record.name.lower():
                 matches.append(record)
-        return matches
+                continue
+
+            # Cross-script / spelling-variant match. This is what makes a
+            # Kannada-script name from STT find a Latin-script stored record,
+            # and what stops "Suman Goud" being registered as a new mother
+            # alongside the existing "Suma Gowda".
+            score = name_similarity(search_name, record.name)
+            if score >= self._name_match_threshold:
+                near.append((score, record))
+
+        if matches:
+            return matches
+
+        near.sort(key=lambda pair: pair[0], reverse=True)
+        if near:
+            logger.info(
+                "Fuzzy name match: %r -> %r (score %.2f)",
+                name, near[0][1].name, near[0][0],
+            )
+        return [record for _, record in near]
 
     async def get_patient(self, patient_id: str) -> PatientRecord | None:
         raw = self._raw_patient(patient_id)

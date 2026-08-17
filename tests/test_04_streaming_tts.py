@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 from sarvam_wrappers import SarvamTTS, SarvamTTSChunkedStream
 from livekit.agents.tts import AudioEmitter
+from livekit.agents._exceptions import APIConnectionError, APIStatusError
 from livekit import rtc
 
 # TC-21: Zero audio prevention
@@ -33,13 +34,14 @@ async def test_tts_zero_audio_prevention():
     # Wait, in the current implementation, SarvamTTSChunkedStream._run fetches audio for any input.
     # We should mock aiohttp to return empty or error, but let's just assert it doesn't crash.
     with patch("aiohttp.ClientSession.post") as mock_post:
-        # Mock a valid empty response or error response
+        # Mock a valid empty response
         mock_resp = AsyncMock()
         mock_resp.status = 200
-        mock_resp.json.return_value = {"audios": []}
+        mock_resp.json = AsyncMock(return_value={"audios": []})
         mock_post.return_value.__aenter__.return_value = mock_resp
         
-        await stream._run(mock_emitter)
+        with pytest.raises(APIConnectionError):
+            await stream._run(mock_emitter)
         
         # Should not push any audio because audios list is empty
         mock_emitter.push.assert_not_called()
@@ -75,7 +77,7 @@ async def test_sarvam_wav_to_pcm_decoding():
     with patch("aiohttp.ClientSession.post") as mock_post:
         mock_resp = AsyncMock()
         mock_resp.status = 200
-        mock_resp.json.return_value = {"audios": [b64_wav]}
+        mock_resp.json = AsyncMock(return_value={"audios": [b64_wav]})
         mock_post.return_value.__aenter__.return_value = mock_resp
         
         await stream._run(mock_emitter)
@@ -104,12 +106,11 @@ async def test_sarvam_api_error_graceful_recovery():
     
     with patch("aiohttp.ClientSession.post") as mock_post:
         mock_resp = AsyncMock()
-        mock_resp.raise_for_status.side_effect = Exception("503 Service Unavailable")
+        mock_resp.status = 503
+        mock_resp.text = AsyncMock(return_value="Service Unavailable")
         mock_post.return_value.__aenter__.return_value = mock_resp
         
-        # The _run function should catch the exception and log it, or raise it
-        # Actually in our code, it catches Exception and logs it:
-        # except Exception as e: logger.error(...)
-        await stream._run(mock_emitter)
+        with pytest.raises((APIStatusError, APIConnectionError)):
+            await stream._run(mock_emitter)
         
         mock_emitter.push.assert_not_called()

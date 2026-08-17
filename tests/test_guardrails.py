@@ -274,7 +274,12 @@ async def hook_tests() -> None:
     check("legitimate symptom turn reaches the LLM", not fired and not session.say.called)
 
 
-asyncio.run(hook_tests())
+def test_guardrails_suite():
+    asyncio.run(hook_tests())
+    assert FAIL == 0, f"{FAIL} guardrails checks failed"
 
-print(f"\n{PASS} passed, {FAIL} failed")
-sys.exit(1 if FAIL else 0)
+
+if __name__ == "__main__":
+    asyncio.run(hook_tests())
+    print(f"\n{PASS} passed, {FAIL} failed")
+    sys.exit(1 if FAIL else 0)

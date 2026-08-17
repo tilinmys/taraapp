@@ -289,6 +289,11 @@ from sarvam_wrappers import (
 )
 from rumik_wrappers import RumikTTS
 from gemini_wrappers import GeminiTTS
+from gnani_wrappers import (
+    GNANI_FEMALE_KANNADA_VOICES,
+    GnaniTTS,
+    resolve_gnani_voice,
+)
 import guardrails
 
 # --- Sakhi maternal-health core ---------------------------------------------
@@ -301,9 +306,15 @@ from sakhi_domain import (
     RiskLevel,
     SakhiCallState,
     SymptomSet,
+    detect_symptoms,
 )
 from sakhi_avatar import build_avatar_backend
+from sakhi_kannada import kannada_number_normalization
+from llm_hedge import DEFAULT_HEDGE_DELAY, HedgedLLM
+from sakhi_intake import INTAKE_QUESTIONS, QUESTIONS_BY_ID
+from sakhi_prompts import LLM_CONFIG, system_prompt_for
 from sakhi_repository import MockSixtyDBRepository, PatientRepository
+from sakhi_sql_repository import SQLitePatientRepository
 from sakhi_tools import ClinicalToolset
 from sakhi_triage import TRIAGE, TriageEngine
 from voice_catalog import (
@@ -400,17 +411,49 @@ def env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# The greeting must open on the FIRST INTAKE QUESTION, not on blood pressure.
+#
+# It used to say "shall we check the mother's blood pressure?" - which is the
+# very first thing spoken on every call. No amount of intake tracking can beat
+# that: Sakhi opened by asking for BP, the ASHA worker answered with BP, and the
+# whole 24-question flow was skipped before it began. This was the single
+# largest cause of "it asks blood pressure at the first shot itself".
+#
+# Keep this in sync with INTAKE_QUESTIONS[0] (name and age).
 GREETING_TEXT = (
-    "ನಮಸ್ಕಾರ, ನಾನು ಸಖಿ. ತಾಯಿಯ ರಕ್ತದೊತ್ತಡ ಪರಿಶೀಲಿಸೋಣವೇ?"
+    "ನಮಸ್ಕಾರ, ನಾನು ಸಖಿ. ತಾಯಿಯ ಹೆಸರು ಮತ್ತು ವಯಸ್ಸು ಹೇಳಿ."
 )
+
+GREETINGS = {
+    Language.KANNADA: "ನಮಸ್ಕಾರ, ನಾನು ಸಖಿ. ತಾಯಿಯ ಹೆಸರು ಮತ್ತು ವಯಸ್ಸು ಹೇಳಿ.",
+    Language.HINDI: "नमस्ते, मैं सखी हूँ। माँ का नाम और उम्र बताइए।",
+    Language.ENGLISH: "Hello, I am Sakhi. Please tell me the mother's name and age.",
+}
+
+
+def greeting_for(language: "Language | str" = Language.KANNADA) -> str:
+    """Return the localized initial greeting for the given call language."""
+    lang = language if isinstance(language, Language) else Language.parse(language)
+    return GREETINGS.get(lang, GREETINGS[Language.KANNADA])
+
+
 GREETING_CACHE_DIR = Path(os.getenv("GREETING_CACHE_DIR", "assets/audio/greetings"))
 
 
 def _greeting_cache_path(voice: str) -> Path:
+    """Cache path keyed by voice, greeting text AND pace.
+
+    Pace belongs in the key. It was previously omitted, so retuning the
+    speaking rate left every cached greeting rendered at the OLD speed while
+    the live conversation used the new one - the greeting and the first real
+    turn audibly differed, and no amount of fixing the pace constants could
+    change it until the cache expired (it never did).
+    """
     import hashlib
 
     text_tag = hashlib.md5(GREETING_TEXT.encode()).hexdigest()[:8]
-    return GREETING_CACHE_DIR / f"{voice}-{text_tag}.wav"
+    pace_tag = f"p{default_tts_pace():.2f}".replace(".", "")
+    return GREETING_CACHE_DIR / f"{voice}-{text_tag}-{pace_tag}.wav"
 
 
 def load_cached_greeting(voice: str):
@@ -979,6 +1022,25 @@ def groq_api_keys() -> list[str]:
     return deduped
 
 
+def openrouter_api_keys() -> list[str]:
+    keys: list[str] = []
+    raw_multi = os.getenv("OPENROUTER_API_KEYS")
+    if raw_multi:
+        keys.extend(item.strip() for item in raw_multi.split(",") if item.strip())
+    for name in ("OPENROUTER_API_KEY", "OPENROUTER_API_KEY_1", "OPENROUTER_API_KEY_2"):
+        value = os.getenv(name)
+        if value:
+            keys.append(value.strip())
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(key)
+    return deduped
+
+
 def required_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
@@ -994,6 +1056,8 @@ def env_diagnostics() -> dict[str, dict[str, object]]:
         "OPENAI_API_KEY",
         "GROQ_API_KEY",
         "GROQ_API_KEYS",
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_API_KEYS",
         "ASSEMBLYAI_API_KEY",
         "DEEPGRAM_API_KEY",
         "LIVEKIT_URL",
@@ -1136,6 +1200,21 @@ def build_stt(language: "Language | str" = Language.KANNADA) -> stt.STT:
       reinstate it here and pass it through.
     """
     lang = language if isinstance(language, Language) else Language.parse(language)
+    stt_primary = os.getenv("STT_PRIMARY", "sarvam").strip().lower()
+    deepgram_key = os.getenv("DEEPGRAM_API_KEY")
+
+    if stt_primary == "deepgram" and deepgram_key:
+        pipeline_event(
+            "stt", "info", "Deepgram STT provider",
+            f"Streaming Deepgram STT in {lang.display_name}",
+            provider="deepgram", language="en" if lang == Language.ENGLISH else lang.value,
+        )
+        return deepgram.STT(
+            model=os.getenv("DEEPGRAM_STT_MODEL", "nova-3"),
+            language="en" if lang == Language.ENGLISH else lang.value,
+            api_key=deepgram_key,
+        )
+
     pipeline_event(
         "stt", "info", "Sarvam STT provider",
         f"Streaming saarika STT in {lang.display_name}",
@@ -1149,65 +1228,178 @@ def build_stt(language: "Language | str" = Language.KANNADA) -> stt.STT:
 
 
 
+# Tier plan for the Groq-only chain. Ordered fastest-acceptable-quality first,
+# with model AND key-slot diversity so the two most likely failure modes are
+# covered by different tiers:
+#
+#   - a per-key rate limit (Groq's on-demand tier caps tokens/minute) is
+#     survived by moving to the other key slot;
+#   - a single model being degraded or withdrawn is survived by moving to a
+#     different model family.
+#
+# 70b first because clinical tool-calling accuracy matters more than the ~200ms
+# the 8b model would save; 8b and gemma exist to keep the call alive, not to be
+# equals.
+# Verified live against this account on 2026-08-15, with tools attached:
+#
+#   llama-3.3-70b-versatile   TTFT ~521ms   tool-calling: yes
+#   llama-3.1-8b-instant      TTFT ~185ms   tool-calling: yes
+#   openai/gpt-oss-20b        TTFT ~707ms   tool-calling: NO
+#   gemma2-9b-it              DECOMMISSIONED - HTTP 400 on every request
+#
+# gemma2-9b-it was the requested tier 4. It no longer exists ("The model
+# `gemma2-9b-it` has been decommissioned"), so that tier would have failed 100%
+# of the time - the opposite of the crash-elimination this change is for.
+#
+# gpt-oss-20b was the obvious replacement and was rejected on measurement: it is
+# slower than the 70b primary AND did not emit a tool call for a blood-pressure
+# statement. On an agent whose entire clinical function is tool calls, a tier
+# that talks instead of calling record_bp is worse than no tier.
+#
+# So tier 4 is the 8b model on the second key. Two proven models across two key
+# slots still covers both real failure modes - a per-key rate limit and a single
+# model degrading - and every tier can actually drive the tools.
+# REWRITTEN 2026-08-17: Groq decommissioned its entire Llama lineup.
+# `llama-3.3-70b-versatile` and `llama-3.1-8b-instant` return HTTP 404 "model
+# does not exist" - all four tiers failed in ~250ms and every turn died on a
+# live call. Of the 13 models now listed, the only viable chat pair is gpt-oss
+# (qwen3.6 leaks its `<think>` block into VISIBLE content, which would be
+# spoken aloud - excluded).
+#
+# gpt-oss models are REASONING models - the qwen3 trap again. Measured on the
+# real clinical prompt: default effort + 50-token cap burned every token on
+# reasoning and returned ZERO visible characters. reasoning_effort="low" (set
+# in build_llm) + a 200-token cap produced clean Kannada at ~550-640ms. Both
+# knobs are load-bearing; loosen either and turns go silent again.
+_GROQ_TIERS = (
+    (os.getenv("GROQ_MODEL_T1", "openai/gpt-oss-120b"), 0),  # primary, key 1
+    (os.getenv("GROQ_MODEL_T2", "openai/gpt-oss-120b"), 1),  # same model, key 2
+    (os.getenv("GROQ_MODEL_T3", "openai/gpt-oss-20b"), 0),   # smaller/faster, key 1
+    (os.getenv("GROQ_MODEL_T4", "openai/gpt-oss-20b"), 1),   # backup, key 2
+)
+
+
 def build_llm(
-    temperature: float = 0.3,
+    temperature: float = 0.15,
     language: "Language | str" = Language.KANNADA,
 ) -> llm.LLM:
-    """Groq-primary LLM with an OpenAI fallback, wired through FallbackAdapter.
+    """Multi-provider resilient LLM fallback chain.
 
-    THE BUG THIS FIXES (changed.md L1): the previous version built the entire
-    Groq provider list, appended each key slot to `groq_providers`, emitted
-    "Groq key configured" pipeline events for every one of them - and then
-    ended with an unconditional `return openai_fallback`. Every Groq provider it
-    constructed was discarded. The dashboard reported Groq was configured while
-    100% of turns went to gpt-4o-mini, and the commit that claimed to "promote
-    Groq to primary after benchmarking (~3.5x faster)" had, in the code, done
-    the exact opposite.
-
-    Time-to-first-token is the single largest controllable slice of the latency
-    budget (400-700ms of a ~1.25-1.9s target), so this is the highest-value
-    latency fix in the refactor.
-
-    FallbackAdapter is used rather than the old hand-rolled chain because it
-    fails over on a per-request basis with its own attempt timeout - a Groq
-    rate-limit (the on-demand tier's TPM cap is the real risk with a multi-
-    thousand-token clinical prompt) costs one attempt_timeout, not the turn.
+    Supports OpenRouter, Groq, and OpenAI with cross-vendor redundancy so an
+    outage, rate-limit, or model deprecation on one provider fails over to
+    the next provider within 1-2 seconds with zero dead air.
     """
-    providers: list[llm.LLM] = []
+    openrouter_keys = openrouter_api_keys()
+    groq_keys = groq_api_keys()
+    openai_key = os.getenv("OPENAI_API_KEY")
 
-    groq_keys = groq_api_keys() if env_flag("GROQ_PRIMARY", True) else []
-    groq_model = os.getenv("GROQ_LLM_MODEL", "llama-3.3-70b-versatile")
+    if not openrouter_keys and not groq_keys and not openai_key:
+        raise RuntimeError(
+            "No LLM API key configured. Set OPENROUTER_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY."
+        )
+
+    openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    openrouter_primary_model = os.getenv("OPENROUTER_LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
+    openrouter_backup_model = os.getenv("OPENROUTER_BACKUP_MODEL", "meta-llama/llama-3.1-8b-instruct")
+
     groq_base_url = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
-    max_tokens = int(os.getenv("LLM_MAX_COMPLETION_TOKENS", "250"))
-    top_p = float(os.getenv("LLM_TOP_P", "0.9"))
+    max_tokens = int(os.getenv("LLM_MAX_COMPLETION_TOKENS", "200"))
+    top_p = float(os.getenv("LLM_TOP_P", LLM_CONFIG["top_p"]))
 
-    for index, groq_key in enumerate(groq_keys, start=1):
-        providers.append(
+    # ORDER AND TIMEOUT BUDGETS - both measured, both load-bearing.
+    #
+    # Measured TTFT on this account, 2026-08-17, real clinical prompt:
+    #
+    #   groq/gpt-oss-120b                    median  604ms   max 1113ms
+    #   groq/gpt-oss-20b                     median  401ms   max  433ms
+    #   openrouter/llama-3.3-70b-instruct    median 1842ms   max 2713ms
+    #   openrouter/llama-3.1-8b-instruct     median 2200ms   max 2373ms
+    #
+    # The previous build put OpenRouter FIRST behind a single global
+    # attempt_timeout of 1.8s. OpenRouter's MEDIAN is 1842ms - above that
+    # timeout - so tier 1 was cancelled on essentially every turn, tier 2
+    # (2200ms) was cancelled too, and only then did Groq answer. Every single
+    # turn paid ~3.6s of fallback that could never succeed, to reach a provider
+    # that responds in 604ms. That is the "fallback lags the system" report.
+    #
+    # Two fixes:
+    #   1. Fastest proven provider first. Groq leads; OpenRouter is the
+    #      cross-vendor backup it was meant to be, not the hot path.
+    #   2. Per-GROUP timeouts instead of one global one. A single number cannot
+    #      fit a 600ms provider and a 1900ms provider: set it for the fast one
+    #      and the slow one can never answer; set it for the slow one and a
+    #      hung fast tier stalls the call. Groups are nested FallbackAdapters,
+    #      each with a budget sized from its own measurements.
+    groups: list[llm.LLM] = []
+    described: list[str] = []
+
+    def _group(members: list[llm.LLM], timeout: float) -> llm.LLM:
+        if len(members) == 1:
+            return members[0]
+        return llm.FallbackAdapter(
+            members, attempt_timeout=timeout, max_retry_per_llm=0, retry_interval=0.0,
+        )
+
+    # 1. Groq - the hot path. Budget covers the 1113ms worst case with headroom
+    #    while still cutting off a genuinely hung tier fast.
+    if groq_keys:
+        groq_timeout = float(os.getenv("GROQ_ATTEMPT_TIMEOUT", "1.5"))
+        members = []
+        for model, key_index in _GROQ_TIERS:
+            key = groq_keys[key_index % len(groq_keys)]
+            members.append(
+                openai.LLM(
+                    model=model,
+                    api_key=key,
+                    base_url=groq_base_url,
+                    max_completion_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    reasoning_effort="low",
+                    max_retries=0,
+                )
+            )
+            described.append(f"groq/{model}@k{(key_index % len(groq_keys)) + 1}")
+        groups.append(_group(members, groq_timeout))
+
+    # 2. OpenRouter - cross-vendor backup, reached only when all of Groq is
+    #    down. Its budget is 4.0s, not 1.8s: at a 1842ms median and 2713ms
+    #    worst case, anything under ~3s guarantees it is cancelled before it
+    #    can speak, which is strictly worse than not configuring it at all.
+    if openrouter_keys:
+        or_timeout = float(os.getenv("OPENROUTER_ATTEMPT_TIMEOUT", "4.0"))
+        members = [
             openai.LLM(
-                model=groq_model,
-                api_key=groq_key,
-                base_url=groq_base_url,
+                model=openrouter_primary_model,
+                api_key=openrouter_keys[0],
+                base_url=openrouter_base_url,
                 max_completion_tokens=max_tokens,
                 temperature=temperature,
-                # Nucleus sampling cap keeps word choice in the most likely band -
-                # a voice persona sounds erratic when rare phrasings slip through,
-                # because the TTS renders each phrasing with different prosody.
                 top_p=top_p,
                 max_retries=0,
             )
-        )
-        pipeline_event(
-            "llm", "info", "Groq provider configured",
-            f"Groq key slot {index} added to the fallback chain",
-            provider="groq", model=groq_model, key_slot=index,
-        )
+        ]
+        described.append(f"openrouter/{openrouter_primary_model}")
+        if openrouter_backup_model and openrouter_backup_model != openrouter_primary_model:
+            members.append(
+                openai.LLM(
+                    model=openrouter_backup_model,
+                    api_key=openrouter_keys[1 % len(openrouter_keys)],
+                    base_url=openrouter_base_url,
+                    max_completion_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_retries=0,
+                )
+            )
+            described.append(f"openrouter/{openrouter_backup_model}")
+        groups.append(_group(members, or_timeout))
 
-    openai_key = os.getenv("OPENAI_API_KEY")
-    openai_model = os.getenv("OPENAI_LLM_MODEL", os.getenv("LLM_MODEL", "gpt-4o-mini"))
-    if openai_key:
-        providers.append(
+    # 3. OpenAI safety net.
+    if openai_key and (env_flag("VOICE_LLM_OPENAI_SAFETY_NET", False) or not groups):
+        groups.append(
             openai.LLM(
-                model=openai_model,
+                model=os.getenv("OPENAI_LLM_MODEL", "gpt-4o-mini"),
                 api_key=openai_key,
                 max_completion_tokens=max_tokens,
                 temperature=temperature,
@@ -1215,37 +1407,78 @@ def build_llm(
                 max_retries=0,
             )
         )
+        described.append("openai/gpt-4o-mini")
 
-    if not providers:
-        # Fail loudly at build time rather than starting a call that can never
-        # produce a reply.
-        raise RuntimeError(
-            "No LLM provider is configured. Set GROQ_API_KEY (or GROQ_API_KEYS) "
-            "and/or OPENAI_API_KEY."
-        )
+    providers = groups
 
-    if len(providers) == 1:
-        pipeline_event(
-            "llm", "warn" if not groq_keys else "ok", "Single LLM provider",
-            f"Only one provider configured ({'openai' if not groq_keys else 'groq'}); no failover available",
-            provider="openai" if not groq_keys else "groq",
-        )
-        return providers[0]
+    provider_name = (
+        "openrouter+groq" if openrouter_keys and groq_keys
+        else ("openrouter" if openrouter_keys else ("groq" if groq_keys else "openai"))
+    )
 
     pipeline_event(
         "llm", "ok", "LLM fallback chain",
-        f"{len(groq_keys)} Groq provider(s) primary, OpenAI {openai_model} as fallback",
-        provider="groq" if groq_keys else "openai",
-        primary_model=groq_model if groq_keys else openai_model,
-        fallback_model=openai_model,
-        chain_length=len(providers),
+        " -> ".join(described),
+        provider=provider_name,
+        tiers=len(providers),
+        openrouter_keys=len(openrouter_keys),
+        groq_keys=len(groq_keys),
+        max_tokens=max_tokens,
+        temperature=temperature,
     )
+
+    if groq_keys and len(groq_keys) < 2 and not openrouter_keys:
+        pipeline_event(
+            "llm", "warn", "Single Groq key",
+            "Only one Groq key is configured, so all four tiers share it - a "
+            "per-key rate limit will take out the whole chain at once. Set "
+            "GROQ_API_KEYS with two comma-separated keys or configure OPENROUTER_API_KEY.",
+            key_slots=1,
+        )
+
+    if len(providers) == 1:
+        return providers[0]
+
+    # HEDGING: race the cross-vendor backup instead of queueing behind it.
+    #
+    # Serial groups fixed the common case (Groq healthy: 591ms) but a total
+    # Groq outage still cost ~3.7s - Groq's four tiers failing (~1.8s) and only
+    # THEN OpenRouter starting (~1.9s). Hedging starts OpenRouter as soon as
+    # Groq is merely late, so the two overlap and the outage costs ~1.9s.
+    # See llm_hedge.py for the algorithm and why it is safe with tool calls.
+    if (
+        len(groups) >= 2
+        and env_flag("SAKHI_LLM_HEDGE", True)
+    ):
+        hedged = HedgedLLM(
+            groups[0],
+            groups[1],
+            hedge_delay=float(os.getenv("LLM_HEDGE_DELAY", str(DEFAULT_HEDGE_DELAY))),
+            primary_timeout=float(os.getenv("GROQ_ATTEMPT_TIMEOUT", "1.5")),
+            backup_timeout=float(os.getenv("OPENROUTER_ATTEMPT_TIMEOUT", "4.0")),
+        )
+        pipeline_event(
+            "llm", "ok", "LLM hedging enabled",
+            f"backup starts if the primary group is silent for "
+            f"{os.getenv('LLM_HEDGE_DELAY', DEFAULT_HEDGE_DELAY)}s, instead of "
+            "waiting for it to fail",
+            hedge_delay=float(os.getenv("LLM_HEDGE_DELAY", str(DEFAULT_HEDGE_DELAY))),
+        )
+        providers = [hedged, *groups[2:]]
+        if len(providers) == 1:
+            return providers[0]
+
+    # The OUTER adapter must not gate the inner groups - each group already
+    # enforces a budget sized to its own measured latency, and an outer timeout
+    # smaller than a group's internal worst case would cancel that group
+    # mid-attempt, re-creating exactly the bug this restructure fixes (a
+    # provider killed before it could answer). So the outer budget is a
+    # backstop against a group hanging entirely, not a per-attempt deadline.
     return llm.FallbackAdapter(
         providers,
-        # Short on purpose: a stalled primary must cost a fraction of a turn,
-        # not the whole turn. Groq TTFT is normally well under 500ms.
-        attempt_timeout=float(os.getenv("LLM_ATTEMPT_TIMEOUT", "3.5")),
+        attempt_timeout=float(os.getenv("LLM_GROUP_TIMEOUT", "30.0")),
         max_retry_per_llm=0,
+        retry_interval=0.0,
     )
 
 
@@ -1288,11 +1521,8 @@ def _build_sarvam_tts(voice_id: str | None, pace_override: float | None = None, 
 
     sarvam_language = language
     sarvam_base_url = os.getenv("SARVAM_BASE_URL", "https://api.sarvam.ai")
-    # Rest-of-call pace defaults faster than natural (1.0) - per-minute call
-    # cost matters, and this is the pace used for every LLM turn after the
-    # greeting. The greeting itself uses a separate, slower pace - see
-    # _build_greeting_tts and SARVAM_PACE_GREETING.
-    sarvam_pace = pace_override if pace_override is not None else float(os.getenv("SARVAM_PACE", "1.08"))
+    # Natural, calm, slightly slower pace (0.92) designed for clear rural clinical comprehension
+    sarvam_pace = pace_override if pace_override is not None else default_tts_pace()
     sarvam_min_buffer_size = int(os.getenv("SARVAM_MIN_BUFFER_SIZE", "35"))
     sarvam_max_chunk_length = int(os.getenv("SARVAM_MAX_CHUNK_LENGTH", "160"))
     pipeline_event(
@@ -1396,6 +1626,48 @@ def _build_gemini_tts(voice_id: str | None) -> tts.TTS:
     )
 
 
+def default_tts_pace() -> float:
+    """The ONE speaking pace for the whole call, both providers, all turns.
+
+    Previously four numbers claimed to be "the pace": 0.92 (Sarvam default),
+    0.92 (Gnani default), 0.9 (greeting) and 1.08 (session metadata default).
+    They were reached by different paths, so the greeting played ~20% slower
+    than the conversation and a provider failover changed speed again. Same
+    voice, different tempo, one sentence apart - which is exactly what "the
+    voice is changing" sounds like to a listener.
+    """
+    return float(os.getenv("SARVAM_PACE", "1.0"))
+
+
+def _build_gnani_tts(
+    voice_id: str | None,
+    *,
+    speed_override: float | None = None,
+    language: "Language" = Language.KANNADA,
+) -> tts.TTS:
+    """Gnani Timbre TTS. See gnani_wrappers.py for which API surface and why."""
+    voice = resolve_gnani_voice(voice_id)
+    provider = GnaniTTS(
+        api_key=required_env("GNANI_API_KEY"),
+        voice=voice,
+        language=language.sarvam_code,   # kn-IN / hi-IN, same shape Gnani wants
+        speed=speed_override if speed_override is not None else default_tts_pace(),
+    )
+    pipeline_event(
+        "tts", "ok", "Gnani TTS provider",
+        f"Gnani {provider.model} voice {provider.voice} via REST, clause-buffered",
+        provider="gnani", model=provider.model, voice=provider.voice,
+        language=language.sarvam_code, sample_rate=provider.sample_rate,
+    )
+    if voice_id and voice_id.strip().lower() != provider.voice.lower():
+        pipeline_event(
+            "tts", "warn", "Voice remapped",
+            f"'{voice_id}' is not a Timbre voice; using '{provider.voice}'",
+            requested=voice_id, voice=provider.voice,
+        )
+    return provider
+
+
 def build_tts(
     tts_provider: str = "sarvam",
     voice_id: str | None = None,
@@ -1416,62 +1688,113 @@ def build_tts(
     call.
     """
     lang = language if isinstance(language, Language) else Language.parse(language)
-    if tts_provider and tts_provider.strip().lower() not in {"", "sarvam"}:
-        pipeline_event(
-            "tts", "warn", "TTS provider override ignored",
-            f"'{tts_provider}' was requested; Sakhi runs Sarvam as primary "
-            "(the only provider with native Kannada bulbul voices)",
-            requested=tts_provider,
+    requested = (tts_provider or "sarvam").strip().lower()
+
+    # Two real Kannada providers now. Benchmarked head-to-head on identical
+    # Kannada text, interleaved to control for network drift (2026-08-17):
+    #
+    #   Sarvam bulbul:v2 / manisha   p50 636ms   min 431   max  684   spread 253ms
+    #   Gnani  timbre-v2.5 / Janaki  p50 655ms   min 627   max 1043   spread 415ms
+    #
+    # Effectively tied on median. Sarvam has the tighter tail, and tail latency
+    # is what a caller hears as dead air, so it stays the default. Gnani speaks
+    # noticeably slower for the same sentence (6.2s vs 4.6s), which may suit a
+    # rural ASHA worker better - that is a field judgement, not a benchmark one,
+    # which is why this is selectable per call rather than hardcoded.
+    if requested == "gnani":
+        primary = _build_gnani_tts(voice_id, speed_override=speed_override, language=lang)
+    else:
+        if requested not in {"", "sarvam"}:
+            pipeline_event(
+                "tts", "warn", "Unknown TTS provider",
+                f"'{tts_provider}' is not a configured provider; using Sarvam",
+                requested=tts_provider,
+            )
+        primary = _build_sarvam_tts(
+            voice_id,
+            pace_override=speed_override,
+            language=lang.sarvam_code,
         )
 
-    primary = _build_sarvam_tts(
-        voice_id,
-        pace_override=speed_override,
-        language=lang.sarvam_code,
-    )
-
-    # Fallback chain. Sarvam is the only provider that speaks Kannada properly,
-    # so OpenAI here is a DEGRADED path, not an equal one - it will pronounce
-    # Kannada text with an English voice. That is deliberately still better than
-    # dead air on a call where a mother may be in danger: the ASHA worker hears
-    # something, knows the line is alive, and can repeat herself.
+    # Fallback chain - SAME-LANGUAGE ONLY.
     #
-    # Enable/disable with VOICE_TTS_FALLBACK_ENABLED. If Sarvam is healthy this
-    # costs nothing - FallbackAdapter only reaches the second provider after the
-    # first raises, which the 3s HTTP ceiling in sarvam_wrappers guarantees
-    # happens quickly rather than hanging.
+    # ROOT CAUSE OF "THE VOICE CHANGES MID-CONVERSATION":
+    # TTS is clause-buffered, so every clause is its own synthesis request. The
+    # old chain was [Kannada provider, OpenAI alloy]. When ONE clause was slow
+    # and tripped the 3s ceiling, that clause alone came back in an ENGLISH
+    # voice and the next clause returned to Kannada - the voice audibly
+    # switching inside a single sentence. A cross-language fallback is simply
+    # not safe in a per-clause pipeline.
+    #
+    # We now have two genuine Kannada providers, so the fallback stays in
+    # language: Sarvam <-> Gnani. A failover still changes timbre, but it stays
+    # Kannada, stays female, and stays intelligible to an ASHA worker.
+    #
+    # OpenAI is retained ONLY as a last resort and OFF by default: an English
+    # voice reading Kannada text is not a degraded experience, it is an
+    # unusable one. Set VOICE_TTS_ENGLISH_LAST_RESORT=true to re-add it.
     if not env_flag("VOICE_TTS_FALLBACK_ENABLED", True):
         return primary
 
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if not openai_key:
+    primary_is_gnani = isinstance(primary, GnaniTTS)
+    primary_name = "gnani" if primary_is_gnani else "sarvam"
+    primary_model = getattr(primary, "_model", None) or getattr(primary, "model", "?")
+    primary_voice = getattr(primary, "voice", None) or getattr(primary, "_speaker", "?")
+
+    chain = [primary]
+    described = [f"{primary_name}/{primary_voice}"]
+
+    # Cross-provider, same-language backup.
+    try:
+        if primary_is_gnani and os.getenv("SARVAM_API_KEY"):
+            backup = _build_sarvam_tts(
+                os.getenv("SARVAM_SPEAKER", "manisha"),
+                pace_override=speed_override,
+                language=lang.sarvam_code,
+            )
+            chain.append(backup)
+            described.append("sarvam/manisha")
+        elif not primary_is_gnani and os.getenv("GNANI_API_KEY"):
+            backup = _build_gnani_tts(
+                os.getenv("GNANI_VOICE", "Janaki"),
+                speed_override=speed_override,
+                language=lang,
+            )
+            chain.append(backup)
+            described.append("gnani/Janaki")
+    except Exception:
+        logger.warning("Could not build the same-language TTS backup", exc_info=True)
+
+    if env_flag("VOICE_TTS_ENGLISH_LAST_RESORT", False) and os.getenv("OPENAI_API_KEY"):
+        try:
+            chain.append(openai.TTS(
+                model=os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
+                voice=os.getenv("OPENAI_TTS_VOICE", "alloy"),
+                api_key=os.getenv("OPENAI_API_KEY"),
+            ))
+            described.append("openai/alloy (ENGLISH - last resort)")
+        except Exception:
+            logger.warning("Could not build the OpenAI TTS last resort", exc_info=True)
+
+    if len(chain) == 1:
         pipeline_event(
             "tts", "warn", "No TTS fallback",
-            "OPENAI_API_KEY is not set; Sarvam has no backup and a failure is dead air",
+            f"{primary_name} has no same-language backup; a failure is dead air. "
+            "Configure the other Indic provider's API key.",
+            primary=primary_name, voice=primary_voice,
         )
-        return primary
-
-    try:
-        secondary = openai.TTS(
-            model=os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
-            voice=os.getenv("OPENAI_TTS_VOICE", "alloy"),
-            api_key=openai_key,
-        )
-    except Exception:
-        logger.warning("Could not build the OpenAI TTS fallback", exc_info=True)
         return primary
 
     pipeline_event(
-        "tts", "ok", "TTS fallback chain",
-        f"Sarvam {primary._model}/{primary._speaker} primary, OpenAI "
-        f"{os.getenv('OPENAI_TTS_VOICE', 'alloy')} as emergency fallback",
-        primary="sarvam", primary_model=primary._model,
-        fallback="openai", sample_rate=primary.sample_rate,
+        "tts", "ok", "TTS fallback chain (same-language)",
+        " -> ".join(described),
+        primary=primary_name, primary_model=primary_model, voice=primary_voice,
+        chain=described, sample_rate=primary.sample_rate,
     )
-    # Pin the chain to Sarvam's rate so a failover cannot change the track's
-    # sample rate mid-call (OpenAI returns 24kHz; Sarvam is 22.05kHz).
+    # Pin the chain to the primary's rate so a failover cannot change the
+    # track's sample rate mid-call.
     return tts.FallbackAdapter(
-        [primary, secondary],
+        chain,
         sample_rate=primary.sample_rate,
         max_retry_per_tts=0,
     )
@@ -1482,16 +1805,39 @@ def _build_greeting_tts(
     voice_id: str | None,
     language: "Language | str" = Language.KANNADA,
 ) -> tts.TTS | None:
-    """A short-lived, slower-paced TTS instance used only for the opening greeting."""
+    """A short-lived, slower-paced TTS instance used only for the opening greeting.
+
+    THIS USED TO IGNORE `provider` AND ALWAYS RETURN SARVAM.
+
+    The effect was invisible in the logs unless you read them closely, and it
+    silently invalidated voice A/B testing: the session TTS was built correctly
+    from the picker, but the GREETING - the only thing a caller hears before
+    speaking - was always Sarvam. Selecting a Gnani voice produced
+    "Voice remapped: 'nayana' is not a bulbul:v2 voice; using 'manisha'",
+    because the greeting builder was handing a Gnani voice name to Sarvam.
+    Anyone comparing voices by connecting and listening to the greeting was
+    hearing the same Sarvam voice every time.
+    """
     lang = language if isinstance(language, Language) else Language.parse(language)
+    # Slower than the rest of the call: a caller's first impression is worth the
+    # few tenths of a second. Both providers accept this range.
+    # Greeting pace now MATCHES the conversation by default. It used to be 0.9
+    # against a 1.08 session pace - the same voice ~20% slower, changing speed
+    # one sentence into every call. Users reported this as "the voice changes at
+    # the start". Override only if you accept that seam.
+    slow_pace = float(os.getenv("SARVAM_PACE_GREETING", str(default_tts_pace())))
+
+    if (provider or "").strip().lower() == "gnani":
+        return _build_gnani_tts(voice_id, speed_override=slow_pace, language=lang)
+
     return _build_sarvam_tts(
         voice_id,
-        pace_override=float(os.getenv("SARVAM_PACE_GREETING", "0.9")),
+        pace_override=slow_pace,
         language=lang.sarvam_code,
     )
 
 
-def build_turn_handling(silence_threshold: float = 0.35) -> TurnHandlingOptions:
+def build_turn_handling(silence_threshold: float = 0.55) -> TurnHandlingOptions:
     # "vad": commit the turn at Silero end-of-speech once the final transcript
     # is in. "stt": additionally wait for the provider's own end-of-turn signal
     # - with Deepgram primary that signal (speech_final) was measured trailing
@@ -1508,16 +1854,9 @@ def build_turn_handling(silence_threshold: float = 0.35) -> TurnHandlingOptions:
     elif MultilingualModel is None:
         logger.warning("livekit-agents-turn-detector is not installed; falling back to VAD/STT turn detection.")
 
-    # Without a semantic turn-detector model the endpointing delay is always
-    # min_delay. 0.05 was tuned for stt mode where the provider's end-of-turn
-    # already added its own silence wait; in vad mode it would commit on the
-    # caller's first breath. 0.35s keeps natural turn-taking.
-    # Target architecture specifies 250-350ms trailing silence: fast enough for
-    # real turn-taking, slow enough not to clip a hesitant speaker. Silero's own
-    # silence wait (VAD_MIN_SILENCE, 0.2s) STACKS on top of this sequentially,
-    # so 0.3 here lands at roughly 0.5s of perceived silence before commit.
+    # Paced for rural ASHA communication: allows unhurried turn-taking and thinking pauses.
     min_delay = float(silence_threshold)
-    max_delay = min(float(os.getenv("MAX_ENDPOINTING_DELAY", "1.2")), 1.2)
+    max_delay = min(float(os.getenv("MAX_ENDPOINTING_DELAY", "2.0")), 2.0)
     pipeline_event(
         "turn",
         "info",
@@ -1599,19 +1938,7 @@ def build_initial_context(
     # tool's instruction" contract, and the three hard safety rules. Those are
     # the lines that change model behaviour on a clinical call.
     initial_ctx = llm.ChatContext()
-    initial_ctx.add_message(
-        role="system",
-        content=(
-            f"You are Sakhi, a maternal-health co-pilot for ASHA workers in Bidar. "
-            f"Speak {lang.display_name} only; address her as {lang.honorific}. "
-            "Short sentences, one question per turn, no lists or markdown.\n"
-            "Order: search_patient, then register_mother if new, then record_bp, "
-            "then record_symptoms (headache, blurry vision, swelling).\n"
-            "Every tool returns an 'instruction' field - follow it exactly.\n"
-            "Never state a risk the tools did not give. Never name a medicine or "
-            "dose. Never say you are an AI."
-        ),
-    )
+    initial_ctx.add_message(role="system", content=system_prompt_for(lang))
 
     if preloaded_user:
         initial_ctx.add_message(
@@ -1628,25 +1955,58 @@ GOODBYE_TEXT = (
     "ಧನ್ಯವಾದಗಳು ಅಕ್ಕಾರ... ತಾಯಿಯನ್ನು ಚೆನ್ನಾಗಿ ನೋಡಿಕೊಳ್ಳಿ. ನಮಸ್ಕಾರ."
 )
 
+GOODBYE_TEXTS = {
+    Language.KANNADA: "ಧನ್ಯವಾದಗಳು ಅಕ್ಕಾರ... ತಾಯಿಯನ್ನು ಚೆನ್ನಾಗಿ ನೋಡಿಕೊಳ್ಳಿ. ನಮಸ್ಕಾರ.",
+    Language.HINDI: "धन्यवाद दीदी... माँ का ख़्याल रखिएगा। नमस्ते।",
+    Language.ENGLISH: "Thank you Didi... Take good care of the mother. Goodbye.",
+}
+
+
+def goodbye_for(language: "Language | str" = Language.KANNADA) -> str:
+    lang = language if isinstance(language, Language) else Language.parse(language)
+    return GOODBYE_TEXTS.get(lang, GOODBYE_TEXTS[Language.KANNADA])
+
+
 # Markers unique to the scripted farewell lines (prompt CLOSE + GOODBYE_TEXT).
 # Spoken by Sakhi = the conversation is over; used to auto-end the call.
 #
-# The previous pattern only matched the English clinic goodbye ("pranaam",
-# "have a beautiful day"), so on a Kannada or Hindi call the auto-hangup could
-# never fire and the line stayed open until the ~45-75s silence timeout.
-# Matching all three scripts is what makes deterministic call-ending work in the
-# pilot's actual languages. See changed.md C9.
+# THIS REGEX USED TO END CALLS ON THE GREETING.
+#
+# It matched "ನಮಸ್ಕಾರ" / "नमस्ते" / "namaste" - which in Kannada and Hindi mean
+# BOTH hello and goodbye. Every greeting opens with that word, so Sakhi said
+# hello, the farewell detector fired, and the room was deleted before the ASHA
+# worker could say anything. That is the "frontend gets stopped when talking"
+# report: it stopped the moment the greeting finished.
+#
+# It also matched bare "ಧನ್ಯವಾದಗಳು" / "धन्यवाद" / "thank you", which Sakhi says
+# routinely mid-call ("Thank you Akkara, I have noted the reading") - so even
+# without the greeting bug, an ordinary courteous turn could hang up the call.
+#
+# The fix is to anchor on the one clause that appears ONLY in the scripted
+# goodbye and nowhere else in the protocol: "take good care of the mother".
+# Greetings and thanks are no longer farewell evidence.
 _FAREWELL_RE = re.compile(
-    r"ನಮಸ್ಕಾರ|ಧನ್ಯವಾದಗಳು"          # Kannada: namaskara / dhanyavaadagalu
-    r"|नमस्ते|नमस्कार|धन्यवाद"        # Hindi
-    r"|namaskara|namaste|pranaam|dhanyavaad"   # transliterations
-    r"|take\s+care\s+of\s+the\s+mother",
+    r"ತಾಯಿಯನ್ನು\s*ಚೆನ್ನಾಗಿ\s*ನೋಡಿಕೊಳ್ಳಿ"      # Kannada: "take good care of the mother"
+    r"|माँ\s*का\s*ख़्याल\s*रखिएगा"              # Hindi, same clause
+    r"|maa\s*ka\s*khayal\s*rakhiega"
+    r"|taayiyannu\s*chennaagi\s*nodikolli"
+    r"|take\s+good\s+care\s+of\s+the\s+mother",
     re.IGNORECASE,
 )
 
-# Spoken when the LLM produces a completely empty turn. Kannada, because the
-# fallback must not switch language mid-call on the ASHA worker.
+# Spoken when the LLM produces a completely empty turn. Localized per call language.
 _RETRY_PROMPT = "ಕ್ಷಮಿಸಿ ಅಕ್ಕಾರ, ಸರಿಯಾಗಿ ಕೇಳಿಸಲಿಲ್ಲ... ಇನ್ನೊಮ್ಮೆ ಹೇಳುತ್ತೀರಾ?"
+
+RETRY_PROMPTS = {
+    Language.KANNADA: "ಕ್ಷಮಿಸಿ ಅಕ್ಕಾರ, ಸರಿಯಾಗಿ ಕೇಳಿಸಲಿಲ್ಲ... ಇನ್ನೊಮ್ಮೆ ಹೇಳುತ್ತೀರಾ?",
+    Language.HINDI: "माफ़ कीजिए दीदी, ठीक से सुनाई नहीं दिया... क्या आप फिर से कह सकती हैं?",
+    Language.ENGLISH: "Sorry Didi, I could not hear that clearly... Could you please repeat?",
+}
+
+
+def retry_prompt_for(language: "Language | str" = Language.KANNADA) -> str:
+    lang = language if isinstance(language, Language) else Language.parse(language)
+    return RETRY_PROMPTS.get(lang, RETRY_PROMPTS[Language.KANNADA])
 # NOTE: the deterministic fast path lived here - looks_incomplete,
 # extract_spoken_name, assemble_spelled_name, fast_path_reply and their regex
 # tables (~145 lines). It answered a handful of turns without an LLM round trip,
@@ -1681,7 +2041,28 @@ _RETRY_PROMPT = "ಕ್ಷಮಿಸಿ ಅಕ್ಕಾರ, ಸರಿಯಾಗಿ
 # amount of cross-clause prosody compared to synthesizing the whole sentence
 # at once - acceptable for a short clinic reply, verify by listening before
 # assuming it's free.
-_TTS_CLAUSE_CUT_RE = re.compile(r"[.!?…][\"'”’]?\s+|[,;:]\s+|—\s+")
+# Clause boundaries for TTS chunking, with negative lookarounds for the cases
+# that produce audibly wrong cuts on a clinical call:
+#
+#   (?<!\d) and (?!\d)  - "145.5", "1,20,000", "9:30" must not split. A BP
+#                         reading cut in half mid-number is read as two numbers.
+#   (?<!\bDr|Mr|Mrs)    - "Dr. Rao" must not split after the honorific.
+#   (?<!\bmg|ml|min)    - "500 mg. twice" and "20 min." are unit abbreviations.
+#   (?<!\bBP)           - "BP. 145" appears when STT punctuates an initialism.
+#
+# The Kannada danda (।) and Devanagari punctuation are included because Sarvam
+# emits them in Indic output and they are genuine sentence ends.
+_TTS_CLAUSE_CUT_RE = re.compile(
+    r"(?<!\d)(?<!\bDr)(?<!\bMr)(?<!\bMrs)(?<!\bmg)(?<!\bml)(?<!\bmin)(?<!\bBP)"
+    r"(?:[.!?…।॥][\"'”’]?\s+|[,;:]\s+|—\s+)"
+    r"(?!\d)"
+)
+
+# Never emit a fragment shorter than this. A 3-character chunk is its own TTS
+# request with its own network round-trip and its own prosody contour, so it
+# sounds clipped and costs more than it saves. Applies on top of the adaptive
+# min/rest thresholds below.
+TTS_MIN_SENTENCE_CHARS = int(os.getenv("TTS_MIN_SENTENCE_CHARS", "10"))
 
 
 class EagerClauseSentenceStream(SentenceStream):
@@ -1704,7 +2085,9 @@ class EagerClauseSentenceStream(SentenceStream):
 
     @property
     def _active_min(self) -> int:
-        return self._min_chunk_chars if not self._emitted_first else self._rest_min_chunk_chars
+        base = self._min_chunk_chars if not self._emitted_first else self._rest_min_chunk_chars
+        # Hard floor regardless of how the thresholds are tuned.
+        return max(base, TTS_MIN_SENTENCE_CHARS)
 
     def _find_cut(self) -> int | None:
         buf = self._buf
@@ -1824,18 +2207,59 @@ CallState = SakhiCallState
 # The cases that need a longer window are the ones where the ASHA worker has to
 # recall, read off a monitor, or spell: BP readings, gestational age, names,
 # villages, and symptom descriptions.
-_VAD_SLOW_TRIGGER_RE = re.compile(
-    # English / transliterated
-    r"spell|letter by letter|her name|your name|name,?\s+please"
-    r"|how many weeks|weeks pregnant|gestational|how old"
-    r"|blood pressure|reading|systolic|diastolic|the numbers"
-    r"|which village|describe|tell me more|what did she say"
-    # Kannada: name / village / weeks / blood pressure / how much
-    r"|ಹೆಸರು|ಊರು|ವಾರ|ರಕ್ತದೊತ್ತಡ|ಎಷ್ಟು"
-    # Hindi: name / village / weeks / blood pressure / how much
-    r"|नाम|गाँव|गांव|सप्ताह|हफ़्ते|रक्तचाप|कितना|कितने",
+# Topic words that MIGHT need a long window - a reading, a name, a village, a
+# gestational age. On their own they mean nothing: the entire workflow is about
+# blood pressure, so "ರಕ್ತದೊತ್ತಡ" appears in almost every turn Sakhi speaks.
+# Kannada and Hindi are agglutinative: "ಹೆಸರು" (name) becomes "ಹೆಸರನ್ನು" when
+# inflected, so these are STEMS, not whole words. Matching the citation form
+# alone silently missed the spelling prompt - the single turn that most needs a
+# long window.
+_VAD_SLOW_TOPIC_RE = re.compile(
+    r"spell|letter by letter|name|village|week|gestational|old"
+    r"|blood pressure|reading|systolic|diastolic|number|symptom|describe"
+    r"|headache|vision|swelling"
+    r"|ಹೆಸರ|ಊರ|ವಾರ|ರಕ್ತದೊತ್ತಡ|ಲಕ್ಷಣ|ವಯಸ"          # stems
+    r"|ನೋವು|ಮಂಜ|ಕಣ್ಣ|ಊತ|ಅಕ್ಷರ"                       # symptoms + "letter"
+    r"|नाम|गाँव|गांव|सप्ताह|हफ़्ते|रक्तचाप|लक्षण|उम्र"
+    r"|सिरदर्द|दर्द|सूजन",
     re.IGNORECASE,
 )
+
+# ...so a topic word only earns the long window when Sakhi is ASKING. A
+# statement ("ರಕ್ತದೊತ್ತಡ ದಾಖಲಿಸಿದೆ" - blood pressure recorded) requires no
+# recall from the worker and must stay on the fast endpoint.
+#
+# THIS IS THE FIX FOR THE BIGGEST TURN-TAKING COST IN THE SYSTEM. Measured
+# across live calls: 403 of 569 turns (71%) took the 1.0s slow window because
+# the old pattern matched topic words alone. The adaptive VAD was not adaptive;
+# it was stuck slow, adding ~0.7s to two turns in every three.
+_VAD_QUESTION_RE = re.compile(
+    r"\?"                                        # any script, explicit question
+    r"|\b(?:what|which|how|when|who|whose|tell me|say again|repeat)\b"
+    r"|ಎಷ್ಟು|ಯಾವ|ಹೇಗೆ|ಯಾರು|ಏನು"                 # Kannada interrogatives
+    r"|ಇದೆಯೇ|ಇದೆಯಾ|ಹೇಳಿ|ಹೇಳಿರಿ"                  # ...and request forms
+    r"|कितना|कितने|कौन|क्या|कैसे|बताइए|बताओ",
+    re.IGNORECASE,
+)
+
+
+class _SlowTriggerMatcher:
+    """Slow window only when Sakhi asks something that needs recall.
+
+    Kept as an object with .search() so DynamicVADController's call site is
+    unchanged - it still does `_VAD_SLOW_TRIGGER_RE.search(text)`.
+    """
+
+    @staticmethod
+    def search(text: str):
+        if not text:
+            return None
+        if not _VAD_QUESTION_RE.search(text):
+            return None
+        return _VAD_SLOW_TOPIC_RE.search(text)
+
+
+_VAD_SLOW_TRIGGER_RE = _SlowTriggerMatcher()
 
 
 class DynamicVADController:
@@ -1863,7 +2287,7 @@ class DynamicVADController:
         self._session = session
         self._state = "TRANSACTIONAL"
         self._delays = {
-            "TRANSACTIONAL": float(os.getenv("MIN_ENDPOINTING_DELAY", "0.35")),
+            "TRANSACTIONAL": float(os.getenv("MIN_ENDPOINTING_DELAY", "0.55")),
             "HIGH_COGNITIVE_LOAD": float(os.getenv("VAD_ENDPOINT_SLOW_S", "1.0")),
             "FRAGMENT_RECOVERY": float(os.getenv("VAD_ENDPOINT_FRAGMENT_S", "1.3")),
         }
@@ -1919,12 +2343,328 @@ class DynamicVADController:
         if self._state == "FRAGMENT_RECOVERY":
             self._apply("TRANSACTIONAL", "Fragment window consumed; back to fast endpointing")
 
+    def apply_tag(self, tag: str) -> None:
+        """Set endpointing from an explicit [VAD: FAST|SLOW] tag in the reply.
+
+        An explicit signal from the model beats inferring intent from its
+        wording, so a tag overrides the regex heuristic for that turn.
+
+        Note what this does NOT do: it never touches the Silero VAD instance,
+        which is shared across every concurrent call on this worker via
+        proc.userdata. The earlier tag implementation mutated
+        `vad_provider.min_silence_duration` and reached into the private
+        `session._turn_detector._min_endpointing_delay`, so one caller's reply
+        retuned turn-taking for every other live call. This routes through the
+        same per-call public API as the rest of the controller.
+        """
+        normalized = (tag or "").strip().upper()
+        if normalized == "FAST":
+            self._apply("TRANSACTIONAL", "Model tagged this turn [VAD: FAST]")
+        elif normalized == "SLOW":
+            self._apply("HIGH_COGNITIVE_LOAD", "Model tagged this turn [VAD: SLOW]")
+
+
+# Matches the tag anywhere in the reply, tolerant of spacing and case - models
+# drift on exact formatting and a missed tag would otherwise be spoken aloud.
+_VAD_TAG_RE = re.compile(r"\[\s*VAD\s*:\s*(FAST|SLOW)\s*\]", re.IGNORECASE)
+
+# Longest possible tag plus slack, so a tag split across streamed chunks is
+# still caught before any of it reaches TTS.
+_VAD_TAG_MAX = 20
+_VAD_PARTIAL_RE = re.compile(r"\[[^\]]{0,18}$")
+
+
+class VadTagTransform:
+    """Strips [VAD: ...] tags from spoken text and routes them to the controller.
+
+    Registered in `tts_text_transforms`, so it sits between the LLM and TTS and
+    guarantees the tag is removed before synthesis. The old implementation put
+    this stripping in a closure that ran only sometimes; a tag that slipped
+    through was read aloud to the ASHA worker as "bracket vee ay dee".
+
+    The controller is attached after `session.start()` (it needs a live
+    session), so this holds a mutable reference rather than the controller
+    itself.
+    """
+
+    def __init__(self) -> None:
+        self.controller: "DynamicVADController | None" = None
+
+    def _route(self, tag: str) -> None:
+        if self.controller is None:
+            return
+        try:
+            self.controller.apply_tag(tag)
+        except Exception:
+            logger.warning("Failed to apply VAD tag %r", tag, exc_info=True)
+
+    async def __call__(self, text):
+        held = ""
+        async for chunk in text:
+            if not chunk:
+                continue
+            held += chunk
+
+            # Complete tags: route, then remove from the spoken stream.
+            def _capture(match: re.Match) -> str:
+                self._route(match.group(1))
+                return ""
+
+            held = _VAD_TAG_RE.sub(_capture, held)
+
+            # Hold back a trailing fragment that could still become a tag.
+            partial = _VAD_PARTIAL_RE.search(held)
+            if partial and len(held) - partial.start() <= _VAD_TAG_MAX:
+                safe, held = held[: partial.start()], held[partial.start():]
+            else:
+                safe, held = held, ""
+
+            if safe:
+                yield safe
+
+        if held:
+            # Stream ended mid-fragment: strip any complete tag and speak the
+            # rest rather than swallowing real words.
+            held = _VAD_TAG_RE.sub(_capture_final(self), held)
+            if held:
+                yield held
+
+
+def _capture_final(transform: "VadTagTransform"):
+    def _sub(match: re.Match) -> str:
+        transform._route(match.group(1))
+        return ""
+    return _sub
+
 
 # NOTE: _AFFIRMATIVE_RE / _NEGATIVE_RE lived here. They resolved a bare
 # "yes"/"no" answer to the clinic's digit-by-digit phone-number confirmation
 # without an LLM round trip. That confirmation step no longer exists, and both
 # patterns were English/Hindi-transliterated only - they would not have matched
 # "ಹೌದು" or "ಇಲ್ಲ" anyway.
+
+
+# Backchannels and vocal tics. An ASHA worker saying "ಹೌದು" while Sakhi is
+# mid-sentence is agreeing, not taking the floor - answering it restarts the
+# turn and makes the agent feel jumpy.
+#
+# LiveKit's own interruption filter is duration- and word-count based
+# (min_duration 0.6s / min_words 2), which cannot tell "ಹೌದು ಸರಿ" (two words of
+# agreement) from a real interruption. This is the content-based layer on top.
+_BACKCHANNEL_RE = re.compile(
+    r"^\W*(?:"
+    r"mm+|hm+|mhm+|mm[\s-]?hmm?|uh[\s-]?huh|uh|ah|oh|ok(?:ay)?|right|yeah|yep|yes|"
+    r"ಹೌದು|ಆಯ್ತು|ಸರಿ|ಹೂಂ|ಅಹಾ|"
+    r"हाँ|हां|जी|अच्छा|ठीक|हूँ"
+    r")[\s,.!?]*$",
+    re.IGNORECASE,
+)
+
+# Non-speech events some STT engines emit inline.
+_VOCAL_TIC_RE = re.compile(
+    r"^\W*(?:\[[^\]]*\]|\([^)]*\))\W*$"     # [cough], (sneezes), [laughs]
+    r"|^\W*(?:cough|sneez\w*|laugh\w*|clears? throat|breath\w*)\W*$",
+    re.IGNORECASE,
+)
+
+# Non-directed speech: the ASHA worker talking to someone else in the room, or
+# asking Sakhi to wait. Not a turn, and answering it is actively wrong - she is
+# mid-task and about to come back.
+#
+# Kept separate from backchannels because the correct response differs: a
+# backchannel means "keep going", this means "pause". Both suppress the turn,
+# but this one must not be mistaken for agreement in any future handling.
+_NON_DIRECTED_RE = re.compile(
+    r"^\W*(?:"
+    r"(?:hold|wait|hang)\s*on(?:\s+a\s+(?:sec\w*|min\w*|moment))?"
+    r"|(?:just|wait|hold)\s+a\s+(?:sec\w*|min\w*|moment)"
+    r"|one\s+(?:sec\w*|min\w*|moment)"
+    r"|give\s+me\s+a\s+(?:sec\w*|min\w*|moment)"
+    r"|ಒಂದು\s*(?:ನಿಮಿಷ|ಕ್ಷಣ)(?:\s*ತಡೀರಿ|\s*ಇರಿ)?"      # one minute / wait
+    r"|ಸ್ವಲ್ಪ\s*ಇರಿ|ತಡೀರಿ|ನಿಲ್ಲಿ"                        # wait / stop
+    r"|एक\s*(?:मिनट|सेकंड|पल)(?:\s*रुको|\s*रुकिए)?"
+    r"|रुको|रुकिए|ठहरो"
+    r")[\s,.!?]*$",
+    re.IGNORECASE,
+)
+
+# --- side-talk to the patient ---------------------------------------------
+#
+# An ASHA worker runs the call and the examination at the same time. She turns
+# away constantly: "Suma, sit down", "ಉಸಿರು ತೆಗೆದುಕೊಳ್ಳಿ", "don't worry, it
+# won't hurt". None of it is addressed to Sakhi, and answering it is worse than
+# useless - it burns an LLM round trip, restarts TTS over the worker's voice,
+# and can make Sakhi respond to a clinical instruction meant for a patient.
+#
+# This is enforced HERE rather than in the system prompt on purpose. A prompt
+# rule cannot suppress a turn: the model still generates, the audio still
+# plays, and the worker is still interrupted. Only StopResponse actually keeps
+# Sakhi quiet, and only code can raise it.
+#
+# The gate is deliberately asymmetric. Suppressing a real question is far more
+# damaging than answering one stray aside, so:
+#   - any mention of Sakhi means the turn IS for us, whatever else it contains;
+#   - a question is never suppressed;
+#   - only second-person imperatives aimed at a patient's body or posture
+#     count as evidence.
+_ADDRESSED_TO_SAKHI_RE = re.compile(r"ಸಖಿ|सखी|\bsakhi\b", re.IGNORECASE)
+
+_PATIENT_DIRECTED_RE = re.compile(
+    # English
+    r"\b(?:sit|lie|lay)\s+(?:down|back|here|still)\b"
+    r"|\b(?:take|draw)\s+a\s+(?:deep\s+)?breath\b"
+    r"|\bbreathe\s+(?:in|out|deeply|slowly)\b"
+    r"|\b(?:don'?t|do\s+not)\s+(?:worry|move|be\s+afraid|be\s+scared)\b"
+    r"|\b(?:come|move)\s+(?:here|closer)\b"
+    r"|\b(?:give|show)\s+me\s+your\s+(?:hand|arm|finger)\b"
+    r"|\broll\s+up\s+your\s+sleeve\b"
+    r"|\b(?:stay|keep)\s+still\b"
+    r"|\b(?:relax|hold\s+still)\b"
+    # Kannada: sit / lie down / breathe / don't be afraid / give your hand
+    r"|ಕುಳಿತುಕೊಳ್ಳಿ|ಕೂತ್ಕೊಳ್ಳಿ|ಮಲಗಿ|ಮಲಗಿಕೊಳ್ಳಿ"
+    r"|ಉಸಿರು\s*ತೆಗೆದುಕೊಳ್ಳಿ|ಉಸಿರಾಡಿ"
+    r"|ಹೆದರಬೇಡಿ|ಚಿಂತೆ\s*ಮಾಡಬೇಡಿ|ಅಲುಗಾಡಬೇಡಿ"
+    r"|ಕೈ\s*ಕೊಡಿ|ಇಲ್ಲಿ\s*ಬನ್ನಿ|ಸುಮ್ಮನೆ\s*ಇರಿ"
+    # Hindi
+    r"|बैठ\s*जाओ|बैठिए|लेट\s*जाओ|लेटिए"
+    r"|साँस\s*(?:लो|लीजिए)|गहरी\s*साँस"
+    r"|डरो\s*मत|चिंता\s*मत\s*करो|हिलो\s*मत"
+    r"|हाथ\s*दो|यहाँ\s*आओ",
+    re.IGNORECASE,
+)
+
+
+def is_side_talk(text: str) -> bool:
+    """True when the worker is talking to her patient, not to Sakhi.
+
+    Sakhi must stay silent for these. Errs heavily toward answering: silence
+    when the worker actually asked something is the worse failure on a clinical
+    call, so ambiguity always resolves to "this was for me".
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if _ADDRESSED_TO_SAKHI_RE.search(stripped):
+        return False            # named us - it is our turn, whatever it says
+    if "?" in stripped:
+        return False            # a question is for the one who can answer it
+    return bool(_PATIENT_DIRECTED_RE.search(stripped))
+
+
+# --- "say that again" ------------------------------------------------------
+#
+# Answered deterministically by re-speaking the question that is already armed
+# in the intake tracker, rather than by asking the LLM to recall what it said.
+# A model asked to "repeat" paraphrases, and on a clinical call a paraphrased
+# question is a different question - it invites a different answer and the
+# checklist records it against the same slot.
+_REPEAT_REQUEST_RE = re.compile(
+    r"^\W*(?:"
+    r"(?:can\s+you\s+|please\s+)?(?:say\s+(?:that\s+)?again|repeat(?:\s+(?:that|please|it))?)"
+    r"|what(?:\s+was\s+that)?|pardon|sorry\s*\?*"
+    r"|ಇನ್ನೊಮ್ಮೆ(?:\s*ಹೇಳಿ|\s*ಹೇಳು)?|ಮತ್ತೊಮ್ಮೆ\s*ಹೇಳಿ|ಏನು\s*ಅಂದ್ರಿ|ಏನಂದ್ರಿ"
+    r"|फिर\s*से\s*(?:कहो|कहिए|बोलो)|दोबारा\s*(?:कहिए|बोलिए)|क्या\s*कहा"
+    r")[\s,.!?]*$",
+    re.IGNORECASE,
+)
+
+
+def is_repeat_request(text: str) -> bool:
+    """True when the worker asked Sakhi to say her last question again."""
+    stripped = (text or "").strip()
+    if not stripped or len(stripped) > 40:
+        return False
+    return bool(_REPEAT_REQUEST_RE.match(stripped))
+
+
+# Above this, a short utterance is treated as real speech even if it looks like
+# a backchannel - a deliberate, drawn-out "ಹೌದು" is an answer.
+BACKCHANNEL_MAX_MS = int(os.getenv("BACKCHANNEL_MAX_MS", "400"))
+
+# Holding phrases for the latent filler. Short on purpose: a long filler
+# collides with the real reply arriving right behind it.
+_LATENT_FILLER = {
+    Language.KANNADA: "ಒಂದು ನಿಮಿಷ, ಪರಿಶೀಲಿಸುತ್ತಿದ್ದೇನೆ...",
+    Language.HINDI: "एक सेकंड, मैं देख रही हूँ...",
+    Language.ENGLISH: "One moment, I am checking...",
+}
+
+
+def is_backchannel(text: str, duration_ms: float | None = None) -> bool:
+    """True when a turn is agreement noise or a vocal tic, not a contribution.
+
+    `duration_ms` is honoured when the STT layer provides it: a long utterance
+    is real speech whatever its wording. When it is unavailable - Sarvam's
+    streaming events do not carry per-utterance duration - the decision falls
+    back to wording plus length, which is why the patterns are anchored and
+    allow no trailing content.
+    """
+    if not text or not text.strip():
+        return False
+    if duration_ms is not None and duration_ms > BACKCHANNEL_MAX_MS:
+        return False
+    stripped = text.strip()
+    if len(stripped) > 30:          # too long to be a grunt in any script
+        return False
+    return bool(
+        _BACKCHANNEL_RE.match(stripped)
+        or _VOCAL_TIC_RE.match(stripped)
+        or _NON_DIRECTED_RE.match(stripped)
+    )
+
+
+# Dangling connectives: the caller was cut off mid-thought. Committing the turn
+# here answers half a sentence, and on a clinical call the missing half is
+# often the important one ("her BP is one forty five and ---").
+#
+# This restores the fragment guard that was removed with the clinic fast path.
+# The old one matched English booking phrases ("my name is", "i want to"), so on
+# a Kannada call it never fired and FRAGMENT_RECOVERY was unreachable.
+_DANGLING_RE = re.compile(
+    r"(?:^|\s)(?:"
+    r"and|but|because|so|or|if|then|with|for|that|which|when|while"
+    r"|ಮತ್ತು|ಆದರೆ|ಏಕೆಂದರೆ|ಅಥವಾ|ಆಗ|ಜೊತೆ"            # Kannada connectives
+    r"|और|लेकिन|क्योंकि|या|तो|के\s*साथ"              # Hindi connectives
+    r")[\s,]*$",
+    re.IGNORECASE,
+)
+
+
+def looks_incomplete(text: str) -> bool:
+    """True when an utterance ends on a connective, i.e. more is coming.
+
+    Conservative on purpose: a false positive makes Sakhi wait in silence for a
+    continuation that never arrives, which is worse than answering slightly
+    early. So it requires a trailing connective AND a short-enough utterance
+    that a cut-off is plausible.
+    """
+    if not text:
+        return False
+    stripped = text.strip().rstrip(".!?।")
+    if not stripped or len(stripped) > 200:
+        return False
+    return bool(_DANGLING_RE.search(stripped))
+
+
+def _approx_context_tokens(chat_ctx) -> int:
+    """Rough token count for a ChatContext.
+
+    Deliberately an estimate, not tiktoken: this runs on the hot path before
+    every generation, and a real tokenizer would cost more than the pruning
+    saves. Kannada and Devanagari are far less token-dense than English, so the
+    divisor is conservative (~3 chars/token) to avoid under-counting the very
+    scripts that caused the bloat.
+    """
+    total = 0
+    for item in chat_ctx.items:
+        if getattr(item, "type", None) == "message":
+            total += len(item.text_content or "")
+        else:
+            # function_call / function_call_output carry JSON payloads.
+            total += len(str(getattr(item, "arguments", "") or "")) + len(
+                str(getattr(item, "output", "") or "")
+            )
+    return total // 3
 
 
 class SakhiAgent(Agent):
@@ -1958,6 +2698,11 @@ class SakhiAgent(Agent):
         # session); None means adaptive VAD is off and endpointing stays fixed.
         self._vad_controller: DynamicVADController | None = None
         self._farewell_hangup_scheduled = False
+        # A farewell before the ASHA worker has said ANYTHING is by definition
+        # a false positive - there is no conversation to end yet. Independent
+        # of the regex, so a future loosening of the pattern cannot resurrect
+        # the "call ends on the greeting" failure.
+        self._user_has_spoken = False
         self._escalation_in_flight = False
 
     # --- helpers -------------------------------------------------------
@@ -1987,6 +2732,14 @@ class SakhiAgent(Agent):
         """
         if self._farewell_hangup_scheduled:
             return
+        if not self._user_has_spoken:
+            pipeline_event(
+                "worker", "warn", "Farewell ignored - no user turn yet",
+                "Farewell wording detected before the ASHA worker spoke; "
+                "treating it as a greeting, not a goodbye",
+                event="farewell_suppressed",
+            )
+            return
         if not spoken_text or not _FAREWELL_RE.search(spoken_text):
             return
         self._farewell_hangup_scheduled = True
@@ -2001,6 +2754,94 @@ class SakhiAgent(Agent):
             logger.warning("Farewell hangup scheduling failed", exc_info=True)
 
     # --- deterministic clinical safety net -----------------------------
+
+    # --- latent acoustic filler ----------------------------------------
+
+    def _start_latent_filler(self):
+        """Speak a short holding phrase if the model has not answered in time.
+
+        Returns a task to cancel, or None when disabled. Never raises: a filler
+        that breaks a turn is far worse than a moment of silence.
+        """
+        if not env_flag("VOICE_LATENT_FILLER_ENABLED", True):
+            return None
+
+        delay = float(os.getenv("LATENT_FILLER_DELAY", "0.6"))
+        state = self._state()
+        language = state.language if state is not None else Language.KANNADA
+        phrase = _LATENT_FILLER.get(language, _LATENT_FILLER[Language.KANNADA])
+
+        async def _speak_later() -> None:
+            try:
+                await asyncio.sleep(delay)
+                pipeline_event(
+                    "tts", "info", "Latent filler",
+                    f"No first token in {delay}s; speaking a holding phrase",
+                    event="latent_filler", delay_s=delay,
+                )
+                _safe_say(self.session, phrase)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Latent filler failed", exc_info=True)
+
+        try:
+            return asyncio.create_task(_speak_later())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _cancel_latent_filler(task) -> None:
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _capture_symptoms(self, state: SakhiCallState, text: str) -> None:
+        """Merge symptoms heard in the caller's own words into call state.
+
+        Re-runs triage immediately when a NEW symptom appears and a blood
+        pressure is already on record, because that combination is exactly the
+        MODERATE -> HIGH_RISK transition: raised BP alone is a 48-hour re-check,
+        raised BP plus a danger symptom is a referral. Waiting for the model to
+        call record_symptoms before re-assessing is what let the live call miss
+        it entirely.
+        """
+        heard = detect_symptoms(text)
+        if not heard.any_present:
+            return
+
+        before = state.symptoms
+        merged = before.merged_with(heard)
+        if merged.to_dict() == before.to_dict():
+            return  # nothing new
+
+        state.record_symptoms(heard)
+        pipeline_event(
+            "tools", "warn", "Symptom heard in speech",
+            "Detected from the caller's own words: "
+            + ", ".join(heard.present_names),
+            event="symptom_autodetected",
+            symptoms=list(state.symptoms.present_names),
+        )
+
+        if state.blood_pressure is None:
+            return
+
+        engine = getattr(self, "_triage", None) or TRIAGE
+        assessment = engine.assess(
+            state.blood_pressure, state.symptoms,
+            gestational_weeks=state.gestational_weeks,
+        )
+        previous = state.risk_level
+        state.record_assessment(assessment)
+        if assessment.level is not previous:
+            pipeline_event(
+                "tools", "warn", f"Risk re-assessed: {assessment.level.value}",
+                f"{previous.value} -> {assessment.level.value} after hearing "
+                + ", ".join(heard.present_names),
+                event="risk_reassessed",
+                risk_level=assessment.level.value,
+                requires_escalation=assessment.requires_escalation,
+            )
 
     def _escalation_pending(self) -> bool:
         state = self._state()
@@ -2056,8 +2897,115 @@ class SakhiAgent(Agent):
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
         state = self._state()
 
+        # The ASHA worker is on the line and talking. Set before the
+        # backchannel/fragment guards below, which return early: even a grunt
+        # proves there is a conversation, which is all this flag claims.
+        self._user_has_spoken = True
+
         if self._vad_controller is not None:
             self._vad_controller.on_user_turn()  # one-shot fragment window consumed
+
+        # Backchannel / vocal-tic filter.
+        #
+        # A bare "ಹೌದು" or a cough is not a turn. Answering it costs an LLM
+        # round trip, restarts TTS, and makes Sakhi feel jumpy to someone who
+        # was only signalling that she is still listening. StopResponse ends
+        # the turn without generating; `resume_false_interruption` (set in
+        # build_turn_handling) resumes whatever Sakhi was saying.
+        #
+        # Deliberately BEFORE symptom detection and guardrails: a grunt carries
+        # neither a symptom nor a safety concern, so nothing is lost by
+        # returning early, and the two more expensive passes are skipped.
+        raw_turn_text = new_message.text_content or ""
+
+        # The worker turned away to speak to her patient. Stay silent.
+        # Before the guardrail gate: an instruction to a patient is not a
+        # request to Sakhi, so it should not be classified, logged as a turn,
+        # or answered with a script.
+        if env_flag("VOICE_SIDE_TALK_GATE_ENABLED", True) and is_side_talk(raw_turn_text):
+            pipeline_event(
+                "turn", "info", "Side-talk ignored",
+                f"{raw_turn_text.strip()[:48]!r} is addressed to the patient, not to Sakhi",
+                event="side_talk_ignored",
+            )
+            raise StopResponse()
+
+        # "Say that again" - re-speak the armed question verbatim rather than
+        # letting the model paraphrase a clinical question into a different one.
+        if is_repeat_request(raw_turn_text):
+            armed = None
+            if state is not None and state.intake.pending_id:
+                armed = QUESTIONS_BY_ID.get(state.intake.pending_id)
+            if armed is not None:
+                pipeline_event(
+                    "turn", "ok", "Repeat request",
+                    f"Re-asking {armed.id} verbatim; no LLM round trip",
+                    event="repeat_request", question_id=armed.id,
+                )
+                _safe_say(self.session, armed.text)
+                self._vad_eval(f"[VAD: {armed.vad}]")
+                raise StopResponse()
+            # Nothing armed yet (e.g. during the greeting) - fall through and
+            # let the model handle it rather than inventing a question.
+
+        if is_backchannel(raw_turn_text):
+            pipeline_event(
+                "turn", "info", "Backchannel ignored",
+                f"{raw_turn_text.strip()[:40]!r} treated as agreement, not a turn",
+                event="backchannel_ignored",
+            )
+            raise StopResponse()
+
+        # Fragment recovery: the caller was cut off mid-thought. Extend the
+        # listen window and stay silent instead of answering half a sentence -
+        # on a clinical call the missing half is often the important one
+        # ("her BP is one forty five and ---").
+        #
+        # This is what finally wires DynamicVADController.FRAGMENT_RECOVERY,
+        # which has been unreachable since the English clinic fragment detector
+        # was removed.
+        if env_flag("VOICE_FRAGMENT_RECOVERY_ENABLED", True) and looks_incomplete(raw_turn_text):
+            if self._vad_controller is not None:
+                self._vad_controller.fragment_recovery()
+            pipeline_event(
+                "turn", "info", "Incomplete fragment",
+                f"{raw_turn_text.strip()[-40:]!r} ends on a connective; waiting for the rest",
+                event="fragment_recovery",
+            )
+            raise StopResponse()
+
+        # Deterministic symptom capture, before the LLM gets a say.
+        #
+        # Observed live: the worker reported a severe headache in her opening
+        # sentence, the model then called record_symptoms(false, false, false),
+        # and triage stayed MODERATE when it should have been HIGH_RISK. Symptom
+        # capture must not depend on the model passing the right booleans.
+        #
+        # SymptomSet.merged_with() only ORs, so a later `false` from the model
+        # cannot erase what the mother actually reported.
+        if state is not None:
+            try:
+                self._capture_symptoms(state, new_message.text_content or "")
+            except Exception:
+                logger.warning("Symptom detection failed; turn continues", exc_info=True)
+
+            # Close out the intake question that was armed for this turn.
+            #
+            # Placed AFTER the backchannel and fragment-recovery guards above,
+            # which raise StopResponse: a grunt or a half-sentence must not tick
+            # a clinical question off the checklist. Only a turn substantive
+            # enough to be worth answering counts as an answer.
+            try:
+                closed = state.intake.record_answer(new_message.text_content or "")
+                if closed:
+                    pipeline_event(
+                        "llm", "info", "Intake answer recorded",
+                        f"{closed} answered ({len(state.intake.answered)}/{len(INTAKE_QUESTIONS)})",
+                        event="intake_answered", question_id=closed,
+                        answered=len(state.intake.answered),
+                    )
+            except Exception:
+                logger.warning("Intake progress update failed; turn continues", exc_info=True)
 
         # Safety guardrails run FIRST, on their own flag, never gated by a
         # latency toggle. A medical/emergency/jailbreak/abuse turn is answered
@@ -2066,12 +3014,35 @@ class SakhiAgent(Agent):
         if not env_flag("VOICE_GUARDRAILS_ENABLED", True):
             return
 
+        # Dual-layer gate. sanitize_input() redacts PII FIRST - before the text
+        # is logged or sent to a US-hosted model - then classifies. It covers
+        # what classify_turn alone did not: medication requests in Kannada and
+        # Hindi (an English-only medication guard is decorative on an agent that
+        # speaks only Kannada), dosage phrasing, and prompt injection.
+        language = state.language if state is not None else Language.KANNADA
         try:
-            category = guardrails.classify_turn(new_message.text_content or "")
+            decision = guardrails.GUARDRAILS.sanitize_input(
+                new_message.text_content or "", language=language.value
+            )
         except Exception:
-            logger.warning("Guardrail classifier failed; turn continues normally", exc_info=True)
+            logger.warning("Guardrail gate failed; turn continues normally", exc_info=True)
             return
 
+        # Overwrite the message the LLM will see with the redacted text, so an
+        # identifier the caller spoke never reaches the model or the transcript.
+        if decision.pii_kinds:
+            try:
+                new_message.content = [decision.text]
+            except Exception:
+                logger.warning("Could not replace message with redacted text", exc_info=True)
+            pipeline_event(
+                "llm", "warn", "PII redacted from turn",
+                "Identifiers masked before the LLM and before logging: "
+                + ", ".join(decision.pii_kinds),
+                event="pii_redacted", kinds=list(decision.pii_kinds),
+            )
+
+        category = decision.category
         if category is None:
             return
 
@@ -2086,20 +3057,23 @@ class SakhiAgent(Agent):
                 event="guardrail_triggered", category="abuse", strikes=strikes,
             )
             if strikes >= 2:
-                _safe_say(self.session, guardrails.ABUSE_GOODBYE_SCRIPT)
+                _safe_say(self.session, guardrails.script_for("abuse_goodbye", language.value))
                 schedule_hangup_after_playout(self.session)
             else:
-                _safe_say(self.session, guardrails.ABUSE_WARNING_SCRIPT)
+                _safe_say(self.session, guardrails.script_for("abuse_warning", language.value))
             raise StopResponse()
 
+        # Zero database tools run on this path: StopResponse aborts the turn
+        # before the LLM is invoked, so no tool call can be generated.
+        script = decision.script or guardrails.SCRIPTS.get(category, "")
         pipeline_event(
             "llm", "warn", f"Guardrail: {category}",
             "Turn answered with the approved script; the LLM never saw it",
             event="guardrail_triggered", category=category,
-            response_path="deterministic",
+            response_path="deterministic", language=language.value,
         )
-        _safe_say(self.session, guardrails.SCRIPTS[category])
-        self._vad_eval(guardrails.SCRIPTS[category])
+        _safe_say(self.session, script)
+        self._vad_eval(script)
         raise StopResponse()
 
     async def llm_node(self, chat_ctx, tools, model_settings):
@@ -2112,6 +3086,54 @@ class SakhiAgent(Agent):
         if state is not None:
             try:
                 chat_ctx = chat_ctx.copy()
+
+                # Sliding context window. Without it the transcript grows for
+                # the whole call and every turn re-sends it, so prefill (and
+                # therefore TTFT) climbs steadily the longer an ASHA worker
+                # talks - exactly backwards for a screening call that gets more
+                # urgent as it goes.
+                #
+                # ChatContext.truncate() is used rather than slicing items by
+                # hand because it already drops a leading function_call or
+                # function_call_output. Cutting mid tool-exchange leaves an
+                # orphaned tool result whose originating call is gone, and the
+                # OpenAI-compatible API rejects that outright - the turn dies.
+                #
+                # The budget is in ITEMS, not turns: one "turn" can be a user
+                # message, an assistant message, a function_call and a
+                # function_call_output. 12 items ~= the last 3 turns with tool
+                # use, which is what the workflow needs (the mother's details
+                # live in the state block below, not in the transcript).
+                max_items = int(os.getenv("LLM_CONTEXT_MAX_ITEMS", "12"))
+                max_tokens = int(os.getenv("LLM_CONTEXT_MAX_TOKENS", "700"))
+                before_items = len(chat_ctx.items)
+                before_tokens = _approx_context_tokens(chat_ctx)
+
+                # Item count alone does not bound cost. A live call held 13
+                # items and still sent ~2,400 tokens, because one Kannada STT
+                # transcript item can be enormous. Tighten the item budget until
+                # the token estimate fits, so prefill stays bounded no matter
+                # how long the caller's sentences are.
+                while (
+                    len(chat_ctx.items) > 4
+                    and (
+                        len(chat_ctx.items) > max_items
+                        or _approx_context_tokens(chat_ctx) > max_tokens
+                    )
+                ):
+                    chat_ctx.truncate(max_items=max(4, len(chat_ctx.items) - 2))
+
+                if len(chat_ctx.items) != before_items:
+                    pipeline_event(
+                        "llm", "info", "Context pruned",
+                        f"{before_items} items/~{before_tokens} tok -> "
+                        f"{len(chat_ctx.items)} items/~{_approx_context_tokens(chat_ctx)} tok",
+                        event="context_pruned",
+                        items_before=before_items, items_after=len(chat_ctx.items),
+                        tokens_before=before_tokens,
+                        tokens_after=_approx_context_tokens(chat_ctx),
+                    )
+
                 chat_ctx.add_message(
                     role="system",
                     content=(
@@ -2119,6 +3141,18 @@ class SakhiAgent(Agent):
                         f"anything already recorded below)\n{state.prompt_summary()}"
                     ),
                 )
+                # Arm the question we just told the model to ask, so the ASHA
+                # worker's next turn can be attributed to it and the checklist
+                # advances deterministically instead of the model re-deriving
+                # its position from the transcript every turn.
+                armed = state.intake.arm_next()
+                if armed is not None:
+                    pipeline_event(
+                        "llm", "info", "Intake question armed",
+                        f"{armed.id} ({len(state.intake.answered)}/{len(INTAKE_QUESTIONS)}): {armed.text}",
+                        event="intake_armed", question_id=armed.id,
+                        answered=len(state.intake.answered),
+                    )
                 if self._escalation_pending():
                     # Deliberately blunt and placed last, so it is the most
                     # recent instruction the model sees.
@@ -2134,18 +3168,40 @@ class SakhiAgent(Agent):
             except Exception:
                 pass  # never let state injection break a live turn
 
+        # Latent acoustic filler.
+        #
+        # Measured TTFT here is ~0.4-0.6s, but the tail reaches 2.2s and a tool
+        # round trip stacks on top. Silence in that gap reads as a dropped call
+        # on a rural line, and the ASHA worker starts repeating herself - which
+        # arrives as a fresh turn and makes it worse. The threshold sits above
+        # p50 on purpose, so this fires on the tail only, not every turn.
+        filler_task = self._start_latent_filler()
+
         text_length = 0
         tool_calls_seen = False
-        async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
-            delta = getattr(chunk, "delta", None)
-            content = getattr(delta, "content", None) if delta is not None else None
-            if isinstance(chunk, str):
-                content = chunk
-            if content:
-                text_length += len(content)
-            if delta is not None and getattr(delta, "tool_calls", None):
-                tool_calls_seen = True
-            yield chunk
+        try:
+            async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
+                # First sign of life cancels the filler - if it has not spoken yet
+                # it never will, and the caller hears the real answer instead.
+                self._cancel_latent_filler(filler_task)
+                delta = getattr(chunk, "delta", None)
+                content = getattr(delta, "content", None) if delta is not None else None
+                if isinstance(chunk, str):
+                    content = chunk
+                if content:
+                    text_length += len(content)
+                if delta is not None and getattr(delta, "tool_calls", None):
+                    tool_calls_seen = True
+                yield chunk
+        except Exception as exc:
+            self._cancel_latent_filler(filler_task)
+            pipeline_event(
+                "llm", "error", "LLM fallback chain error",
+                f"Primary fallback adapter error ({type(exc).__name__}: {exc}); engaging emergency turn repair",
+                event="llm_fallback_chain_failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
         # A tool-only completion is a VALID model response (the tool loop
         # continues this same logical turn) - it must never be treated as an
@@ -2169,18 +3225,53 @@ class SakhiAgent(Agent):
         if text_length or tool_calls_seen:
             return
 
-        # A successful-but-empty completion cannot be retried by LiveKit's
-        # provider adapter, so explicitly ask the stable OpenAI model for this
-        # turn. Created only on this rare path; healthy streamed responses never
-        # pay for it.
-        fallback = openai.LLM(
-            model=os.getenv("OPENAI_LLM_MODEL", os.getenv("LLM_MODEL", "gpt-4o-mini")),
-            api_key=required_env("OPENAI_API_KEY"),
-            max_completion_tokens=int(os.getenv("LLM_MAX_COMPLETION_TOKENS", "250")),
-            temperature=float(os.getenv("LLM_TEMPERATURE", "0.3")),
-            top_p=float(os.getenv("LLM_TOP_P", "0.9")),
-            max_retries=0,
-        )
+        # A successful-but-empty completion (or unhandled tier failure) cannot be retried by LiveKit's
+        # provider adapter, so ask an emergency backup model explicitly for this turn.
+        openrouter_keys = openrouter_api_keys()
+        groq_keys = groq_api_keys()
+        openai_key = os.getenv("OPENAI_API_KEY")
+
+        fallback = None
+        fallback_provider = "none"
+
+        if openrouter_keys:
+            fallback = openai.LLM(
+                model=os.getenv("OPENROUTER_BACKUP_MODEL", "meta-llama/llama-3.1-8b-instruct"),
+                api_key=openrouter_keys[0],
+                base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+                max_completion_tokens=int(os.getenv("LLM_MAX_COMPLETION_TOKENS", "200")),
+                temperature=float(os.getenv("LLM_TEMPERATURE", LLM_CONFIG["temperature"])),
+                top_p=float(os.getenv("LLM_TOP_P", LLM_CONFIG["top_p"])),
+                max_retries=0,
+            )
+            fallback_provider = "openrouter"
+        elif groq_keys:
+            fallback = openai.LLM(
+                model=os.getenv("GROQ_REPAIR_MODEL", "openai/gpt-oss-20b"),
+                api_key=groq_keys[0],
+                base_url=os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
+                max_completion_tokens=int(os.getenv("LLM_MAX_COMPLETION_TOKENS", "200")),
+                temperature=float(os.getenv("LLM_TEMPERATURE", LLM_CONFIG["temperature"])),
+                top_p=float(os.getenv("LLM_TOP_P", LLM_CONFIG["top_p"])),
+                reasoning_effort="low",
+                max_retries=0,
+            )
+            fallback_provider = "groq"
+        elif openai_key:
+            fallback = openai.LLM(
+                model=os.getenv("OPENAI_LLM_MODEL", "gpt-4o-mini"),
+                api_key=openai_key,
+                max_completion_tokens=int(os.getenv("LLM_MAX_COMPLETION_TOKENS", "200")),
+                temperature=float(os.getenv("LLM_TEMPERATURE", LLM_CONFIG["temperature"])),
+                top_p=float(os.getenv("LLM_TOP_P", LLM_CONFIG["top_p"])),
+                max_retries=0,
+            )
+            fallback_provider = "openai"
+
+        if fallback is None:
+            yield retry_prompt_for(self._state.language)
+            return
+
         fallback_text_length = 0
         fallback_tool_calls = False
         tool_choice = model_settings.tool_choice if model_settings else NOT_GIVEN
@@ -2202,10 +3293,10 @@ class SakhiAgent(Agent):
                     yield chunk
         except Exception as exc:
             pipeline_event(
-                "llm", "error", "Empty-output fallback failed",
-                "OpenAI fallback failed after an empty primary completion",
-                event="empty_output_fallback_failed",
-                provider="openai", error_type=type(exc).__name__, error=str(exc),
+                "llm", "error", "Emergency repair fallback failed",
+                f"{fallback_provider} repair model failed after an empty primary completion",
+                event="emergency_repair_failed",
+                provider=fallback_provider, error_type=type(exc).__name__, error=str(exc),
             )
         finally:
             await fallback.aclose()
@@ -2213,10 +3304,10 @@ class SakhiAgent(Agent):
         pipeline_event(
             "llm",
             "ok" if fallback_text_length or fallback_tool_calls else "warn",
-            "Empty-output fallback completed",
-            "OpenAI produced a replacement completion" if fallback_text_length else "OpenAI produced no visible replacement text",
-            event="empty_output_fallback_completed",
-            provider="openai",
+            "Emergency repair fallback completed",
+            f"{fallback_provider} repair model produced a replacement completion" if fallback_text_length else f"{fallback_provider} repair model produced no visible replacement text",
+            event="emergency_repair_completed",
+            provider=fallback_provider,
             text_present=bool(fallback_text_length),
             text_length=fallback_text_length,
             tool_calls_present=fallback_tool_calls,
@@ -2254,6 +3345,21 @@ class SakhiAgent(Agent):
                     event="tts_input_empty", characters_count=characters,
                 )
             spoken = "".join(full_text_parts)
+            # Record what Sakhi actually said.
+            #
+            # Only characters_count was logged before, so the transcript held
+            # the ASHA worker's words but never Sakhi's. On a live call that
+            # made it impossible to tell whether a piece of medical advice came
+            # from the agent or from the caller - the exact question a clinical
+            # audit has to answer. Truncated because a reply is 1-2 sentences.
+            if spoken.strip():
+                safe_spoken, _spoken_pii = guardrails.redact_pii(spoken.strip())
+                pipeline_event(
+                    "tts", "ok", "Sakhi said",
+                    safe_spoken[:400],
+                    event="agent_speech", characters_count=len(spoken),
+                    pii_redacted=bool(_spoken_pii),
+                )
             # Adaptive VAD: what Sakhi just said sets how long we wait for the
             # ASHA worker's NEXT turn (open/recall questions get a longer
             # window, closed questions stay fast).
@@ -2321,6 +3427,40 @@ class _ToolRunContext:
 GracyAgent = SakhiAgent
 
 
+def build_repository() -> PatientRepository:
+    """The single place storage is chosen.
+
+    Defaults to SQLite. The JSON mock rewrites the entire file write-behind, so
+    two concurrent calls each serialise their own copy of the whole dataset and
+    the second silently overwrites the first - a lost blood-pressure reading
+    with no error raised anywhere. It also has no crash durability: a reading
+    taken moments before the process dies was never on disk.
+
+    SAKHI_REPOSITORY=json restores the old mock for demos and offline work.
+    """
+    backend = os.getenv("SAKHI_REPOSITORY", "sqlite").strip().lower()
+
+    if backend == "json":
+        pipeline_event(
+            "tools", "warn", "JSON repository selected",
+            "mock_sixtydb.json has no transactions and loses concurrent writes; "
+            "use SAKHI_REPOSITORY=sqlite for anything but a demo",
+            backend="json",
+        )
+        return MockSixtyDBRepository(
+            os.getenv("SIXTYDB_MOCK_PATH", "mock_sixtydb.json"),
+            flush_delay=float(os.getenv("SIXTYDB_FLUSH_DELAY", "0.5")),
+        )
+
+    path = os.getenv("SAKHI_DB_PATH", "data/sakhi.sqlite3")
+    pipeline_event(
+        "tools", "ok", "SQLite repository selected",
+        f"Durable storage at {path}; schema is Postgres-portable",
+        backend="sqlite", path=path,
+    )
+    return SQLitePatientRepository(path)
+
+
 def prewarm_process(proc: JobProcess) -> None:
     try:
         vad_started = time.perf_counter()
@@ -2350,10 +3490,7 @@ def prewarm_process(proc: JobProcess) -> None:
     # read on the event loop (changed.md L6).
     try:
         repo_started = time.perf_counter()
-        repository = MockSixtyDBRepository(
-            os.getenv("SIXTYDB_MOCK_PATH", "mock_sixtydb.json"),
-            flush_delay=float(os.getenv("SIXTYDB_FLUSH_DELAY", "0.5")),
-        )
+        repository = build_repository()
         asyncio.run(repository.load())
         proc.userdata["patient_repository"] = repository
         proc.userdata["triage_engine"] = TriageEngine(
@@ -2536,9 +3673,11 @@ async def entrypoint(ctx: JobContext):
             combined_metadata.get("language"),
             default=Language.parse(os.getenv("SAKHI_DEFAULT_LANGUAGE", "kn")),
         )
-        call_temperature = float(combined_metadata.get("temperature", os.getenv("LLM_TEMPERATURE", "0.1")))
+        call_temperature = float(
+            combined_metadata.get("temperature", os.getenv("LLM_TEMPERATURE", LLM_CONFIG["temperature"]))
+        )
         call_silence_threshold = float(combined_metadata.get("silence_threshold", os.getenv("MIN_ENDPOINTING_DELAY", "0.3")))
-        call_tts_speed = float(combined_metadata.get("tts_speed", os.getenv("SARVAM_PACE", "1.08")))
+        call_tts_speed = float(combined_metadata.get("tts_speed", default_tts_pace()))
         # The three ASSEMBLYAI_* endpointing sliders that used to be read here
         # were passed to build_stt(), which stopped using them when STT moved to
         # Sarvam. Turn timing lives in build_turn_handling() + DynamicVADController.
@@ -2589,6 +3728,11 @@ async def entrypoint(ctx: JobContext):
         # Clinical tools are bound to the shared repository and triage engine.
         # Built per call so the toolset can emit pipeline events, but holding no
         # per-call mutable state itself - that lives in SakhiCallState.
+        # Strips [VAD: FAST|SLOW] before TTS and routes it to the per-call
+        # controller. Created here because tts_text_transforms is fixed at
+        # session construction; its controller is attached after session.start().
+        vad_tag_transform = VadTagTransform()
+
         clinical_tools = ClinicalToolset(
             ctx.proc.userdata["patient_repository"],
             ctx.proc.userdata["triage_engine"],
@@ -2608,7 +3752,19 @@ async def entrypoint(ctx: JobContext):
             turn_handling=build_turn_handling(silence_threshold=call_silence_threshold),
             # Keep the built-in markdown/emoji filters and add the JSON/code guard
             # so tool-call leakage from the LLM is never spoken aloud.
-            tts_text_transforms=["filter_markdown", "filter_emoji", medical_output_guard, filter_code_artifacts, indian_english_phonetic_normalization],
+            # Order matters. The VAD tag is stripped FIRST so no later transform
+            # can see it or speak it, and Kannada number expansion runs LAST so
+            # it operates on the final spoken text rather than on something a
+            # later filter might still rewrite.
+            tts_text_transforms=[
+                vad_tag_transform,
+                "filter_markdown",
+                "filter_emoji",
+                medical_output_guard,
+                filter_code_artifacts,
+                indian_english_phonetic_normalization,
+                kannada_number_normalization,
+            ],
             max_tool_steps=int(os.getenv("MAX_TOOL_STEPS", "3")),
             conn_options=SessionConnectOptions(
                 max_unrecoverable_errors=int(os.getenv("MAX_UNRECOVERABLE_ERRORS", "5"))
@@ -2689,8 +3845,19 @@ async def entrypoint(ctx: JobContext):
 
         @session.on("user_input_transcribed")
         def _on_user_input_transcribed(ev):
-            transcript = getattr(ev, "transcript", "")
+            raw_transcript = getattr(ev, "transcript", "")
             is_final = getattr(ev, "is_final", False)
+            # Redact BEFORE anything is written. An Aadhaar or phone number
+            # spoken by an ASHA worker must not land in logs/pipeline_events.jsonl
+            # or in the post-call report - under DPDP, an identifier that is
+            # never stored cannot leak from storage.
+            transcript, _pii = guardrails.redact_pii(raw_transcript)
+            if _pii:
+                pipeline_event(
+                    "stt", "warn", "PII redacted from transcript",
+                    "Identifiers masked before logging: " + ", ".join(_pii),
+                    event="pii_redacted_transcript", kinds=_pii,
+                )
             state_watch["last_transcript"] = time.perf_counter()
             state_watch["unanswered_pings"] = 0  # the caller is still there
             state_watch["last_user_activity"] = time.perf_counter()
@@ -2820,13 +3987,44 @@ async def entrypoint(ctx: JobContext):
             # Needs a live session (update_options propagates to the running
             # activity), hence attached here rather than at agent construction.
             agent._vad_controller = DynamicVADController(session)
+            # Same controller instance drives both signals: the explicit
+            # [VAD: ...] tag (preferred) and the regex fallback in tts_node.
+            vad_tag_transform.controller = agent._vad_controller
 
         # Avatar seam. Audio-only unless SAKHI_AVATAR names a backend, and a
         # backend that fails to start degrades to audio-only rather than ending
         # the call - see sakhi_avatar.py. Started after session.start() because
         # every backend needs a live session and a joined room.
+        # The avatar MUST be fully attached before the first session.say().
+        #
+        # Starting it concurrently with the greeting was tried and it hangs the
+        # call. The plugin's `replace_audio_tail(...)` swaps the agent's audio
+        # sink, and swapping it while audio is already playing means the
+        # greeting's playout never completes - `await session.say()` never
+        # returns, entrypoint never reaches its supervision loop, and the call
+        # sits there silently forever. Observed directly: "Greeting queued" with
+        # no matching "Greeting accepted".
+        #
+        # So the ~6s Tavus join is paid up front, before anyone speaks. It is
+        # the price of the avatar and it cannot be overlapped away at this
+        # layer. The timeout is the safety valve: a slow or wedged Tavus must
+        # cost a bounded delay and then fall back to audio-only, never a hung
+        # call. Set SAKHI_AVATAR=none to skip the cost entirely.
         avatar_backend = build_avatar_backend(event_sink=pipeline_event)
-        await avatar_backend.start(session, ctx.room)
+        avatar_task = None
+        try:
+            await asyncio.wait_for(
+                avatar_backend.start(session, ctx.room),
+                timeout=float(os.getenv("AVATAR_START_TIMEOUT", "15.0")),
+            )
+        except asyncio.TimeoutError:
+            pipeline_event(
+                "playback", "warn", "Avatar start timed out",
+                "Tavus did not attach in time; continuing audio-only",
+                event="avatar_start_timeout", backend=avatar_backend.key,
+            )
+        except Exception:
+            logger.warning("Avatar start failed; continuing audio-only", exc_info=True)
 
         pipeline_event(
             "dispatch",
@@ -2837,59 +4035,18 @@ async def entrypoint(ctx: JobContext):
         )
 
         greeting_started = time.perf_counter()
-        # The greeting is deliberately slower-paced than the rest of the call
-        # (see _build_greeting_tts) - a caller's first impression matters more
-        # than the few tenths of a second it costs. Every turn after the
-        # greeting uses the faster session tts_provider to keep per-minute
-        # call cost down. Pre-rendered greeting WAV cache only exists for
-        # Sarvam and Gemini (assets/audio/greetings/ is keyed by speaker name).
-        cache_greeting = requested_tts_provider in ["sarvam", "gemini"]
-        default_voice_for_provider = os.getenv("SARVAM_SPEAKER", "ishita") if requested_tts_provider == "sarvam" else (voice_catalog_default(requested_tts_provider) or "")
-        active_voice = (requested_voice or default_voice_for_provider).strip().lower()
-        cached_frames = load_cached_greeting(active_voice) if cache_greeting else None
-
-        if not cached_frames:
-            # No cache hit - synthesize the greeting once with a slow-paced
-            # instance (skipped for providers with no speed knob, e.g. Rumik;
-            # that greeting just uses the normal-speed session tts below).
-            try:
-                greeting_tts = _build_greeting_tts(requested_tts_provider, active_voice, language=call_language)
-                if greeting_tts is not None:
-                    greeting_stream = greeting_tts.synthesize(GREETING_TEXT)
-                    cached_frames = [event.frame async for event in greeting_stream]
-                    await greeting_stream.aclose()
-                    await greeting_tts.aclose()
-            except Exception:
-                logger.warning("Slow-paced greeting synthesis failed; falling back to normal-speed greeting", exc_info=True)
-                cached_frames = None
+        greeting_text = greeting_for(call_language)
+        active_voice = requested_voice or os.getenv("SARVAM_SPEAKER", "manisha")
 
         pipeline_event(
-            "tts", "info", "Greeting queued", GREETING_TEXT,
-            event="greeting_queued", provider=requested_tts_provider, voice=active_voice, cached=bool(cached_frames),
+            "tts", "info", "Greeting queued", greeting_text,
+            event="greeting_queued", provider=requested_tts_provider, voice=active_voice, cached=False,
+            language=call_language.value,
         )
-        if cached_frames:
-            async def _greeting_aiter():
-                for frame in cached_frames:
-                    yield frame
+        await session.say(greeting_text, allow_interruptions=True)
 
-            await session.say(GREETING_TEXT, audio=_greeting_aiter(), allow_interruptions=True)
-        else:
-            await session.say(GREETING_TEXT, allow_interruptions=True)
-
-        if cache_greeting and not load_cached_greeting(active_voice):
-            # Render and store this voice's greeting in the background, at the
-            # same slow greeting pace, so the next call with it starts
-            # speaking instantly.
-            try:
-                cache_tts = _build_greeting_tts(requested_tts_provider, active_voice, language=call_language)
-                if cache_tts:
-                    asyncio.create_task(ensure_greeting_cache(active_voice, cache_tts))
-            except Exception:
-                logger.warning("Could not schedule greeting cache task", exc_info=True)
-        # The greeting is spoken via say()/cached audio and bypasses
-        # tts_node, so evaluate it explicitly - it asks for the caller's
-        # NAME, exactly the high-cognitive-load case the slow window is for.
-        agent._vad_eval(GREETING_TEXT)
+        # Evaluate VAD on initial greeting
+        agent._vad_eval(greeting_text)
         pipeline_event(
             "tts",
             "ok",
@@ -2994,6 +4151,11 @@ async def entrypoint(ctx: JobContext):
             logger.warning("Repository flush on call end failed", exc_info=True)
 
         try:
+            # A join still in flight must be cancelled, or the Tavus
+            # conversation it is about to create leaks a concurrency slot with
+            # nobody on the call.
+            if avatar_task is not None and not avatar_task.done():
+                avatar_task.cancel()
             await avatar_backend.aclose()
         except Exception:
             logger.warning("Avatar close failed", exc_info=True)

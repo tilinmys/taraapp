@@ -561,3 +561,108 @@
 @media (prefers-reduced-motion: reduce) {
   .pulse, .spinner, .riskBanner { animation: none; }
 }
+
+/* ---------- Voice picker ------------------------------------------------- */
+/* Secondary to the language row: smaller than the 64px language pills but
+   still comfortably tappable outdoors, and wrapping so six voices never force
+   a horizontal scroll on a 375px phone. */
+.voiceRow {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+  max-width: 520px;
+}
+
+.voicePill {
+  min-height: 52px;
+  padding: 8px 16px;
+  border-radius: 14px;
+  border: 2px solid var(--sk-line);
+  background: var(--sk-surface);
+  color: var(--sk-ink);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.35;
+  cursor: pointer;
+  font-family: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.voicePill[data-active="true"] {
+  border-color: var(--sk-primary);
+  background: var(--sk-primary-soft);
+  color: var(--sk-primary-dark);
+}
+
+.voicePill:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.voiceNote {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.7;
+  line-height: 1.4;
+}
+
+/* -------------------------------------------------------------------------
+ * Clinical intake progress.
+ *
+ * Shows the ASHA worker where Sakhi is in the screening and what she is
+ * being asked next. Deliberately quieter than the risk banner: it is
+ * orientation, not an alert, and must never compete with a HIGH_RISK
+ * referral for attention.
+ * ---------------------------------------------------------------------- */
+.intakePanel {
+  width: 100%;
+  max-width: 720px;
+  border-radius: var(--sk-radius);
+  padding: 14px 18px;
+  background: var(--sk-surface, #fff);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  animation: riseIn 240ms ease-out;
+}
+
+.intakeHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.intakeLabel {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.62;
+}
+
+.intakeCount {
+  font-size: 0.95rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.intakeTrack {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.09);
+  overflow: hidden;
+}
+
+.intakeFill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--sk-accent, #0d9488);
+  transition: width 320ms ease-out;
+}
+
+.intakeQuestion {
+  margin: 10px 0 0;
+  font-size: 1rem;
+  line-height: 1.45;
+}

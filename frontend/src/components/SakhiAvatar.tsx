@@ -43,10 +43,11 @@ export function SakhiModel({ audioTrack }: { audioTrack?: MediaStreamTrack | nul
   // Find head mesh with morph targets
   useEffect(() => {
     scene.traverse((child) => {
-      if ((child as THREE.SkinnedMesh).isSkinnedMesh && child.morphTargetDictionary) {
+      const mesh = child as THREE.SkinnedMesh;
+      if (mesh.isSkinnedMesh && mesh.morphTargetDictionary) {
         // If we find any skinned mesh with blendshapes, we store it for lip sync
         // You might need to specify the exact mesh name (e.g., 'Head' or 'Wolf3D_Avatar') if the model is complex.
-        headMeshRef.current = child as THREE.SkinnedMesh;
+        headMeshRef.current = mesh;
       }
     });
   }, [scene]);
@@ -79,7 +80,7 @@ export function SakhiModel({ audioTrack }: { audioTrack?: MediaStreamTrack | nul
     // Audio-reactive lip sync
     if (!headMeshRef.current || !analyserRef.current || !dataArrayRef.current) return;
 
-    analyserRef.current.getByteFrequencyData(dataArrayRef.current);
+    analyserRef.current.getByteFrequencyData(dataArrayRef.current as any);
     
     // Average specific frequency bins for Kannada phonetics
     const lowFreq = dataArrayRef.current[1] / 255.0;   // Vowels: Aa, A

@@ -219,7 +219,12 @@ def test_identify_rejects_implausible_clinical_values():
 def test_prompt_summary_tells_the_model_what_not_to_re_ask():
     state = SakhiCallState()
     summary = state.prompt_summary()
-    assert "UNKNOWN" in summary and "NOT TAKEN" in summary and "NOT SCREENED" in summary
+    # The old imperatives ("NOT TAKEN - ask for it") were removed: injected on
+    # every turn ahead of the intake line, they made the model ask for BP on
+    # turn one. Status is reported; only the intake line says what to ask.
+    assert "UNKNOWN" in summary
+    assert "bp=not yet recorded" in summary and "symptoms=not yet screened" in summary
+    assert "ask for it" not in summary, "a per-turn imperative is back; it will pre-empt the flow"
 
     state.identify(name="Priya Patil", gestational_weeks=30)
     state.record_blood_pressure(BloodPressure(145, 95))

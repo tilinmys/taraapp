@@ -1,43 +1,97 @@
 {
-  "patients": [
-    {
-      "patient_id": "M-201",
-      "name": "Suma Gowda",
-      "age": 24,
-      "village": "Kamalnagar",
-      "phone": "9876543210",
-      "gestational_weeks": 28,
-      "risk_status": "ROUTINE",
-      "history": [],
-      "symptoms": {
-        "headache": false,
-        "blurry_vision": false,
-        "swelling": false
-      }
-    },
-    {
-      "patient_id": "M-202",
-      "name": "Priya Patil",
-      "age": 29,
-      "village": "Aurad",
-      "phone": "8765432109",
-      "gestational_weeks": 33,
-      "risk_status": "MODERATE",
-      "history": [
+    "patients": [
         {
-          "date": "2026-08-01",
-          "bp": "145/95",
-          "risk_level": "MODERATE",
-          "notes": "Mild pre-eclampsia indicators; 48h re-check advised."
+            "patient_id": "M-201",
+            "name": "Suma Gowda",
+            "age": 24,
+            "village": "Kamalnagar",
+            "phone": "9-8-7-6-5-4-3-2-1-0",
+            "risk_status": "NORMAL",
+            "history": [],
+            "symptoms": {}
+        },
+        {
+            "patient_id": "M-202",
+            "name": "Priya Patil",
+            "age": 29,
+            "village": "Aurad",
+            "phone": "8-7-6-5-4-3-2-1-0-9",
+            "risk_status": "HIGH_RISK",
+            "history": [
+                {
+                    "date": "2026-08-01",
+                    "bp": "145/95",
+                    "notes": "Mild pre-eclampsia indicators."
+                }
+            ],
+            "symptoms": {}
+        },
+        {
+            "patient_id": "M-203",
+            "name": "\u0cb8\u0cc1\u0cae\u0cbe",
+            "age": 24,
+            "gestational_weeks": 28,
+            "risk_status": "NORMAL",
+            "history": [],
+            "symptoms": {}
+        },
+        {
+            "patient_id": "M-204",
+            "name": "test",
+            "age": 25,
+            "gestational_weeks": 20,
+            "risk_status": "NORMAL",
+            "history": [
+                {
+                    "date": "2026-08-18T02:29:40.719645",
+                    "bp": "120/80"
+                }
+            ],
+            "symptoms": {}
+        },
+        {
+            "patient_id": "M-205",
+            "name": "test",
+            "age": 25,
+            "gestational_weeks": 20,
+            "risk_status": "HIGH_RISK",
+            "history": [
+                {
+                    "date": "2026-08-18T02:29:40.739636",
+                    "bp": "150/100"
+                }
+            ],
+            "symptoms": {}
+        },
+        {
+            "patient_id": "M-206",
+            "name": "test",
+            "age": 25,
+            "gestational_weeks": 20,
+            "risk_status": "NORMAL",
+            "history": [],
+            "symptoms": {
+                "headache": true,
+                "blurry_vision": true,
+                "swelling": false
+            }
         }
-      ],
-      "symptoms": {
-        "headache": false,
-        "blurry_vision": false,
-        "swelling": false
-      }
-    }
-  ],
-  "bp_records": [],
-  "teleconsult_logs": []
+    ],
+    "teleconsult_logs": [],
+    "bp_records": [
+        {
+            "patient_id": "M-204",
+            "date": "2026-08-18T02:29:40.719645",
+            "systolic": 120,
+            "diastolic": 80,
+            "pre_eclampsia_risk": "NORMAL"
+        },
+        {
+            "patient_id": "M-205",
+            "date": "2026-08-18T02:29:40.739636",
+            "systolic": 150,
+            "diastolic": 100,
+            "pre_eclampsia_risk": "HIGH"
+        }
+    ]
 }
