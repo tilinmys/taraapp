@@ -26,10 +26,14 @@ Failover cost becomes:
 
     max(hedge_delay, backup_latency)   instead of   primary_timeout + backup_latency
 
-With hedge_delay=0.8s and OpenRouter at ~1.9s, a total Groq outage costs ~1.9s
+With hedge_delay=0.4s and OpenRouter at ~1.9s, a total Groq outage costs ~1.9s
 instead of ~3.7s, and - the important part - a merely SLOW primary costs
 nothing at all beyond the hedge delay, because the primary is never cancelled:
 if it recovers and speaks first, it still wins.
+
+The hedge now fires BEFORE the latent filler (1.2s), so OpenRouter starts
+racing Groq while Groq is still within its normal TTFT range (~550ms).
+This eliminates the "one moment please" filler on healthy calls.
 
 WHY FIRST TOKEN AND NOT COMPLETION
 ----------------------------------
@@ -65,7 +69,7 @@ from livekit.agents.types import NOT_GIVEN, NotGivenOr
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HEDGE_DELAY = 0.8
+DEFAULT_HEDGE_DELAY = 0.4
 
 
 class HedgedLLMStream(LLMStream):

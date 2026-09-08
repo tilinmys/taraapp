@@ -18,9 +18,11 @@ Required env vars (see .env.example):
     VOBIZ_SIP_USERNAME
     VOBIZ_SIP_PASSWORD
     VOBIZ_PHONE_NUMBER   e.g. +9180XXXXXXX (your Vobiz DID)
-    LIVEKIT_AGENT_NAME   defaults to "mystree-care" (must match agent.py's
-                          WorkerOptions(agent_name=...) or the call rings but
-                          no worker ever answers it)
+    LIVEKIT_AGENT_NAME   defaults to "sakhi-maternal-care" (must match
+                          agent.py's WorkerOptions(agent_name=...) or the
+                          call rings but no worker ever answers it - NOT
+                          "mystree-care", the separate pre-Sakhi worker
+                          running on this same LiveKit Cloud project)
 
 After this script prints the inbound trunk's SIP URI, paste it into the
 Vobiz console (or via Vobiz's PATCH /trunks/{id} API) as that trunk's
@@ -65,7 +67,7 @@ async def main() -> None:
     vobiz_username = _require("VOBIZ_SIP_USERNAME")
     vobiz_password = _require("VOBIZ_SIP_PASSWORD")
     vobiz_number = _require("VOBIZ_PHONE_NUMBER")
-    agent_name = os.getenv("LIVEKIT_AGENT_NAME", "mystree-care")
+    agent_name = os.getenv("LIVEKIT_AGENT_NAME", "sakhi-maternal-care")
 
     lk = api.LiveKitAPI(livekit_url, api_key, api_secret)
     try:

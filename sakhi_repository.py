@@ -135,6 +135,54 @@ def export_stt_biasing_keywords(patients: "list[PatientRecord] | None" = None) -
     return sorted(set(vocabulary))
 
 
+def looks_spelled(text: str) -> bool:
+    """True when the worker is spelling a name out rather than saying it.
+
+    ASR renders a spelled name in several shapes depending on how she paces it:
+    "S, U, M, A" / "S. U. M. A." / "s u m a" / "ಸ, ು, ಮ, ಾ". They all share one
+    property - almost every token is a single character.
+    """
+    tokens = [tok for tok in re.split(r"[\s,.\-]+", (text or "").strip()) if tok]
+    if len(tokens) < 3:
+        return False
+    singles = sum(1 for tok in tokens if len(tok) == 1)
+    return singles >= max(3, int(len(tokens) * 0.7))
+
+
+def assemble_spelled_name(text: str) -> str | None:
+    """Reconstruct a name from spelled-out letters, or None if not spelled.
+
+    RESTORED. This existed for the clinic script and was deleted with the rest
+    of the English fast path, which left the spelling fallback a dead end: the
+    tools asked the ASHA worker to spell the name, she spelled it, and
+    `search_patient` then looked up the literal string "S, U, M, A" and found
+    nothing. She had done exactly what was asked and got the same failure.
+
+    Only the separators are removed - no transliteration, no case forcing -
+    because `match_key()` downstream already handles script and vowel-drop
+    variation, and doing it twice would mangle Kannada letters.
+    """
+    if not looks_spelled(text):
+        return None
+    letters = [tok for tok in re.split(r"[\s,.\-]+", text.strip()) if tok]
+    assembled = "".join(letters)
+    return assembled or None
+
+
+def spell_out(name: str) -> str:
+    """Format a name for reading BACK to the worker, one letter at a time.
+
+    "Priya" -> "P, R, I, Y, A". The commas are load-bearing: the TTS layer is
+    clause-buffered and treats punctuation as a pause, so this is what makes
+    the letters land separately instead of as a slurred word.
+    """
+    # Uppercased so the letters are unambiguous when read back. `upper()` is a
+    # no-op for Kannada and Devanagari, which have no case, so this is safe for
+    # a name in any of the three scripts.
+    letters = [ch.upper() for ch in (name or "").strip() if not ch.isspace()]
+    return ", ".join(letters)
+
+
 def correct_proper_noun(
     heard: str | None,
     vocabulary: "list[str]",
@@ -285,9 +333,23 @@ class PatientRepository(abc.ABC):
 
     @abc.abstractmethod
     async def log_teleconsult(
-        self, patient_id: str, reason: str, assessment: RiskAssessment | None = None
+        self,
+        patient_id: str,
+        reason: str,
+        assessment: RiskAssessment | None = None,
+        *,
+        trigger_sign: str | None = None,
     ) -> str:
-        """Append an immutable audit entry; return the channel/log id."""
+        """Append an immutable audit entry; return the channel/log id.
+
+        `trigger_sign` (added 2026-08-30) records which Tier-1 danger sign
+        actually forced the escalation - "vaginal_bleeding",
+        "severe_abdominal_pain", "severe_bp", or "symptomatic_bp" - so the
+        log-only escalation record (this is a DB write, never a real phone
+        call or SMS - see sakhi_tools.py's connect_smfmi_specialist) lets a
+        reviewer distinguish which emergency actually happened, not just
+        that "some" HIGH_RISK escalation did.
+        """
 
     async def close(self) -> None:
         """Flush anything buffered. Safe to call more than once."""
@@ -523,7 +585,12 @@ class MockSixtyDBRepository(PatientRepository):
             self._mark_dirty()
 
     async def log_teleconsult(
-        self, patient_id: str, reason: str, assessment: RiskAssessment | None = None
+        self,
+        patient_id: str,
+        reason: str,
+        assessment: RiskAssessment | None = None,
+        *,
+        trigger_sign: str | None = None,
     ) -> str:
         log_id = f"CONN-{int(time.time() * 1000)}"
         async with self._lock:
@@ -534,6 +601,7 @@ class MockSixtyDBRepository(PatientRepository):
                     "reason": reason,
                     "risk_level": assessment.level.value if assessment else None,
                     "reasons": list(assessment.reasons) if assessment else [],
+                    "trigger_sign": trigger_sign,
                     "timestamp": _now_iso(),
                     "sip_status": "CONNECTED_MOCK",
                 }

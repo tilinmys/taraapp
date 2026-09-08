@@ -149,6 +149,29 @@ def test_tag_maps_to_the_documented_endpointing_states():
     assert controller.state == "TRANSACTIONAL"
 
 
+@pytest.mark.parametrize("chunks,expected", [
+    (["Thank you, Didi. Now, what is her blood pressure? [VAD: FAST]"], "Thank you, Didi. Now, what is her blood pressure? "),
+    (["Her BP? ", "[VAD: FAST]"], "Her BP? "),
+    (["Describe symptoms ", "[VAD:", " SLOW]"], "Describe symptoms "),
+    (["Ok ", "[", "VAD", ": ", "FAST", "]"], "Ok "),
+    (["Which village? [vad:slow]"], "Which village? "),
+])
+def test_transcription_node_strips_vad_tags_from_room_stream(chunks, expected):
+    """Transcription node must strip [VAD: ...] tags before sending to WebRTC room."""
+    async def _test():
+        async def src():
+            for c in chunks:
+                yield c
+
+        sakhi = agent.SakhiAgent.__new__(agent.SakhiAgent)
+        out = "".join([c async for c in sakhi.transcription_node(src(), None)])
+        return out
+
+    result = _run(_test())
+    assert result == expected
+    assert "VAD" not in result and "[" not in result
+
+
 def test_prompt_does_not_restate_triage_thresholds():
     """The engine owns the decision. Restating '>=140' invites the model to
     second-guess it."""
@@ -171,6 +194,15 @@ def _agent_with_state(toolset, state):
 
 
 def test_escalation_pending_is_false_until_triage_says_high_risk(repo):
+    """2026-09-10: the intermediate non-escalating step used to be a plain
+    hypertensive BP reading (145/95) landing at MODERATE. That reading is
+    now HIGH_RISK unconditionally (an explicit user decision - see
+    sakhi_triage.py's module docstring), so it can no longer serve as the
+    "recorded, but must not escalate" checkpoint. A symptomatic-but-normal-BP
+    reading (OBSERVATION) plays that role instead - it is still a real,
+    reachable non-escalating level, unlike MODERATE which is no longer
+    reachable at all.
+    """
     async def go():
         await repo.load()
         toolset = ClinicalToolset(repo, TRIAGE)
@@ -179,12 +211,12 @@ def test_escalation_pending_is_false_until_triage_says_high_risk(repo):
 
         assert not sakhi._escalation_pending()          # nothing recorded yet
 
-        state.record_blood_pressure(BloodPressure(145, 95))
-        state.record_assessment(TRIAGE.assess(state.blood_pressure, state.symptoms))
-        assert state.risk_level is RiskLevel.MODERATE
-        assert not sakhi._escalation_pending()          # MODERATE must not escalate
-
         state.record_symptoms(SymptomSet(headache=True))
+        state.record_assessment(TRIAGE.assess(state.blood_pressure, state.symptoms))
+        assert state.risk_level is RiskLevel.OBSERVATION
+        assert not sakhi._escalation_pending()          # OBSERVATION must not escalate
+
+        state.record_blood_pressure(BloodPressure(145, 95))
         state.record_assessment(TRIAGE.assess(state.blood_pressure, state.symptoms))
         assert state.risk_level is RiskLevel.HIGH_RISK
         assert sakhi._escalation_pending()              # now it must
@@ -457,7 +489,18 @@ def test_multi_provider_chain_is_grouped_and_hedged(monkeypatch):
 
 
 def test_each_group_gets_its_own_timeout_budget(monkeypatch):
-    """One global timeout cannot fit a 604ms provider and an 1842ms one."""
+    """One global timeout cannot fit a 604ms provider and an 1842ms one.
+
+    SAKHI_LLM_HEDGE set explicitly (2026-09-09): this test asserts on the
+    racing (HedgedLLM, ._primary/._backup) shape specifically - it used to
+    rely on the ambient default (true) rather than setting it itself, which
+    broke silently the moment .env's own default became "false" (OpenAI
+    made a real sequential primary per an explicit instruction the same
+    day). Same ambient-env-coupling class of bug as the STT test fixed
+    earlier this session - isolating the env var actually under test is the
+    fix, not reverting the real .env change this test's failure was
+    flagging as untested coupling."""
+    monkeypatch.setenv("SAKHI_LLM_HEDGE", "true")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-key")
     monkeypatch.setenv("GROQ_API_KEYS", "groq-key-1,groq-key-2")
     monkeypatch.setenv("GROQ_ATTEMPT_TIMEOUT", "1.5")
@@ -471,6 +514,43 @@ def test_each_group_gets_its_own_timeout_budget(monkeypatch):
     assert chain._backup._attempt_timeout > chain._primary._attempt_timeout, (
         "the slower vendor needs the larger budget, or it can never answer"
     )
+
+
+def test_three_providers_all_race_simultaneously(monkeypatch):
+    """2026-09-04 rewrite: previously only groups[0] vs groups[1] were
+    hedged; a third configured group (e.g. OpenRouter when OpenAI, Groq AND
+    OpenRouter are all set) sat OUTSIDE the hedge in a plain serial
+    FallbackAdapter and only got a turn if the hedged pair failed outright.
+    With three providers configured, the result must now be
+    HedgedLLM(HedgedLLM(a, b), c) - all three racing from the start, not two
+    racing plus a third queued behind them - and the default hedge delay
+    must be 0 (start everyone immediately) rather than the old 0.4s
+    late-primary-recovery delay.
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-key")
+    monkeypatch.setenv("GROQ_API_KEYS", "groq-key-1,groq-key-2")
+    monkeypatch.setenv("LLM_PROVIDER_ORDER", "openai,groq,openrouter")
+    monkeypatch.delenv("LLM_HEDGE_DELAY", raising=False)
+    monkeypatch.delenv("SAKHI_LLM_HEDGE", raising=False)
+
+    chain = agent.build_llm(temperature=0.15, language=Language.KANNADA)
+
+    assert isinstance(chain, HedgedLLM), f"expected a raced chain, got {type(chain).__name__}"
+    assert chain._hedge_delay == 0, (
+        "every provider must start immediately by default, not after a delay - "
+        "a nonzero delay means the third provider is still queued behind the first two"
+    )
+    assert isinstance(chain._primary, HedgedLLM), (
+        "the third provider (openrouter) must be nested INTO the race, not "
+        "left as a plain serial fallback behind a two-way hedge"
+    )
+
+    inner = chain._primary
+    openai_leg = getattr(inner._primary, "model", "")
+    assert "gpt-4o-mini" in openai_leg, "openai must be one of the raced legs"
+    assert len(_members(inner._backup)) == 4, "groq's 4-tier group must be another raced leg"
+    assert len(_members(chain._backup)) == 2, "openrouter's 2-tier group must be the third raced leg"
 
 
 def test_hedging_can_be_disabled(monkeypatch):
@@ -514,13 +594,17 @@ def test_single_groq_key_still_builds_all_tiers(monkeypatch):
 # --------------------------------------------------------------------------
 
 def test_catalog_default_needs_no_runtime_remap():
-    """The catalog default was a bulbul:v3 speaker while the pilot runs v2, so
-    every call logged a remap warning and fell back anyway."""
+    """2026-09-08: bulbul:v2 is deprecated (confirmed live - the API now
+    400s it), so the pilot's default flipped to bulbul:v3 and the catalog
+    default flipped with it (manisha -> shreya, a v2-only name has no
+    meaning to v3). Guards the same thing the original v2-era version of
+    this test did: the SHIPPED default pairing must never itself trigger
+    resolve_sarvam_voice()'s remap-and-warn path."""
     import voice_catalog
     from sarvam_wrappers import SARVAM_DEFAULT_MODEL, resolve_sarvam_voice
 
     default = voice_catalog.default_voice("sarvam")
-    assert default == "manisha"
+    assert default == "shreya"
     model, speaker = resolve_sarvam_voice(SARVAM_DEFAULT_MODEL, default)
     assert speaker == default, "catalog default is still being remapped at runtime"
 
@@ -529,7 +613,7 @@ def test_catalog_default_needs_no_runtime_remap():
 # Turn handling / latency configuration
 # --------------------------------------------------------------------------
 
-def test_barge_in_is_actually_enabled():
+def test_barge_in_is_actually_enabled(fake_job_context):
     """Committed values were min_duration=5.0s / min_words=15, which disable
     barge-in rather than filtering backchannels."""
     interruption = agent.build_turn_handling(silence_threshold=0.3)["interruption"]
@@ -541,7 +625,7 @@ def test_barge_in_is_actually_enabled():
     )
 
 
-def test_endpointing_lands_in_the_target_band():
+def test_endpointing_lands_in_the_target_band(fake_job_context):
     """Target architecture specifies 250-350ms trailing silence."""
     endpointing = agent.build_turn_handling(silence_threshold=0.3)["endpointing"]
     assert 0.2 <= endpointing["min_delay"] <= 0.4
@@ -569,8 +653,31 @@ def test_english_greeting_and_goodbye():
 def test_english_stt_and_tts(monkeypatch):
     monkeypatch.setenv("SARVAM_API_KEY", "test-sarvam-key")
     monkeypatch.setenv("STT_PRIMARY", "sarvam")
+    # Pinned explicitly, same reasoning as STT_PRIMARY above it: this test
+    # must not depend on whichever provider the ambient .env happens to have
+    # configured (TTS_PROVIDER has been vakyam, smallest_ai, and others
+    # across this file's history) - it asserts the language reaches
+    # WHICHEVER synthesiser is built, not which one gets built.
+    monkeypatch.setenv("TTS_PROVIDER", "sarvam")
     monkeypatch.setenv("VOICE_TTS_FALLBACK_ENABLED", "0")
+    # build_stt() now wraps a real stt.FallbackAdapter by default (Deepgram
+    # <-> Sarvam, 2026-08-30 - STT used to have no fallback concept at all).
+    # Disabled here so this test can inspect the bare primary's language
+    # code directly, same reasoning as the TTS flag above it.
+    monkeypatch.setenv("VOICE_STT_FALLBACK_ENABLED", "0")
     stt_inst = agent.build_stt(Language.ENGLISH)
     assert getattr(stt_inst, "_language_code", None) == "en-IN"
     tts_inst = agent.build_tts(language=Language.ENGLISH)
-    assert getattr(tts_inst, "_target_language_code", None) == "en-IN"
+    # Provider-agnostic on purpose - every TTS wrapper this codebase can
+    # build names the field differently: Sarvam `_target_language_code`,
+    # Gnani `_language`, Smallest AI (the plugin, not a hand-rolled wrapper)
+    # nests it in `_opts.language`. Asserting only one shape meant this test
+    # was really checking which vendor was configured, not that the language
+    # actually reached the synthesiser.
+    smallest_opts_language = getattr(getattr(tts_inst, "_opts", None), "language", None)
+    tts_language = (
+        getattr(tts_inst, "_target_language_code", None)
+        or getattr(tts_inst, "_language", None)
+        or smallest_opts_language
+    )
+    assert tts_language == "en-IN"

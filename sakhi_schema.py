@@ -95,6 +95,10 @@ def schema_statements(dialect: Dialect) -> list[str]:
             headache          {dialect.boolean} NOT NULL DEFAULT 0,
             blurry_vision     {dialect.boolean} NOT NULL DEFAULT 0,
             swelling          {dialect.boolean} NOT NULL DEFAULT 0,
+            vaginal_bleeding       {dialect.boolean} NOT NULL DEFAULT 0,
+            severe_abdominal_pain  {dialect.boolean} NOT NULL DEFAULT 0,
+            convulsions            {dialect.boolean} NOT NULL DEFAULT 0,
+            reduced_fetal_movement {dialect.boolean} NOT NULL DEFAULT 0,
             created_at        {dialect.text} NOT NULL,
             updated_at        {dialect.text} NOT NULL
         )
@@ -119,31 +123,42 @@ def schema_statements(dialect: Dialect) -> list[str]:
             headache      {dialect.boolean} NOT NULL DEFAULT 0,
             blurry_vision {dialect.boolean} NOT NULL DEFAULT 0,
             swelling      {dialect.boolean} NOT NULL DEFAULT 0,
+            vaginal_bleeding       {dialect.boolean} NOT NULL DEFAULT 0,
+            severe_abdominal_pain  {dialect.boolean} NOT NULL DEFAULT 0,
+            convulsions            {dialect.boolean} NOT NULL DEFAULT 0,
+            reduced_fetal_movement {dialect.boolean} NOT NULL DEFAULT 0,
             recorded_at   {dialect.text} NOT NULL
         )
         """,
         f"""
         CREATE TABLE IF NOT EXISTS teleconsults (
-            id          {dialect.identity_pk},
-            patient_id  {dialect.text} NOT NULL REFERENCES mothers(patient_id),
-            channel_id  {dialect.text} NOT NULL,
-            reason      {dialect.text},
-            risk_level  {dialect.text},
-            created_at  {dialect.text} NOT NULL
+            id            {dialect.identity_pk},
+            patient_id    {dialect.text} NOT NULL REFERENCES mothers(patient_id),
+            channel_id    {dialect.text} NOT NULL,
+            reason        {dialect.text},
+            risk_level    {dialect.text},
+            trigger_sign  {dialect.text},
+            created_at    {dialect.text} NOT NULL
         )
         """,
         f"""
         CREATE TABLE IF NOT EXISTS call_reports (
-            id              {dialect.identity_pk},
-            session_id      {dialect.text},
-            patient_id      {dialect.text},
-            language        {dialect.text},
-            risk_level      {dialect.text},
-            intake_answered INTEGER NOT NULL DEFAULT 0,
-            intake_total    INTEGER NOT NULL DEFAULT 0,
-            escalated       {dialect.boolean} NOT NULL DEFAULT 0,
-            duration_ms     INTEGER,
-            created_at      {dialect.text} NOT NULL
+            id                {dialect.identity_pk},
+            session_id        {dialect.text},
+            patient_id        {dialect.text},
+            language          {dialect.text},
+            risk_level        {dialect.text},
+            intake_answered   INTEGER NOT NULL DEFAULT 0,
+            intake_total      INTEGER NOT NULL DEFAULT 0,
+            escalated         {dialect.boolean} NOT NULL DEFAULT 0,
+            duration_ms       INTEGER,
+            manual_risk_flag  {dialect.boolean} NOT NULL DEFAULT 0,
+            flagged_to_doctor {dialect.boolean} NOT NULL DEFAULT 0,
+            flagged_by        {dialect.text},
+            flagged_at        {dialect.text},
+            recording_status  {dialect.text} NOT NULL DEFAULT 'none',
+            recording_key     {dialect.text},
+            created_at        {dialect.text} NOT NULL
         )
         """,
         # Lookup paths used on every call. Without these, `find_patients` is a
@@ -153,6 +168,69 @@ def schema_statements(dialect: Dialect) -> list[str]:
         "CREATE INDEX IF NOT EXISTS idx_bp_patient ON bp_records(patient_id)",
         "CREATE INDEX IF NOT EXISTS idx_symptoms_patient ON symptom_records(patient_id)",
         "CREATE INDEX IF NOT EXISTS idx_teleconsults_patient ON teleconsults(patient_id)",
+    ]
+
+
+def call_reports_migration_statements(dialect: Dialect) -> list[str]:
+    """ADD COLUMN statements for a `call_reports` table created before the
+    manual-flag columns existed.
+
+    `schema_statements()`'s CREATE TABLE IF NOT EXISTS is a no-op against a
+    database file that already has the table - it never widens an existing
+    one. There is no schema-version table anywhere in this codebase, so the
+    caller applies these guarded by a try/except that swallows only "duplicate
+    column" (sakhi_sql_repository.py), making this idempotent without a real
+    migration framework. Fine at this table count; revisit before it grows
+    much further.
+    """
+    return [
+        f"ALTER TABLE call_reports ADD COLUMN manual_risk_flag {dialect.boolean} NOT NULL DEFAULT 0",
+        f"ALTER TABLE call_reports ADD COLUMN flagged_to_doctor {dialect.boolean} NOT NULL DEFAULT 0",
+        f"ALTER TABLE call_reports ADD COLUMN flagged_by {dialect.text}",
+        f"ALTER TABLE call_reports ADD COLUMN flagged_at {dialect.text}",
+    ]
+
+
+def recording_columns_migration_statements(dialect: Dialect) -> list[str]:
+    """ADD COLUMN for a `call_reports` table created before recording status
+    tracking existed (2026-09-02, LiveKit room-composite egress to S3). Same
+    poor-man's-migration reasoning as `call_reports_migration_statements`
+    above - without this, a database created before this change silently
+    drops recording_status/recording_key on every save_call_report() call."""
+    return [
+        f"ALTER TABLE call_reports ADD COLUMN recording_status {dialect.text} NOT NULL DEFAULT 'none'",
+        f"ALTER TABLE call_reports ADD COLUMN recording_key {dialect.text}",
+    ]
+
+
+def danger_sign_columns_migration_statements(dialect: Dialect) -> list[str]:
+    """ADD COLUMN for `mothers`/`symptom_records` tables created before the
+    two new Tier-1 danger-sign fields existed (2026-08-30). Without this, a
+    database created before this change silently drops vaginal_bleeding and
+    severe_abdominal_pain on every record_symptoms() write - the two most
+    clinically urgent symptoms in the whole system - because SQLite has no
+    such columns to write into. Same poor-man's-migration reasoning as
+    `call_reports_migration_statements` above."""
+    return [
+        f"ALTER TABLE mothers ADD COLUMN vaginal_bleeding {dialect.boolean} NOT NULL DEFAULT 0",
+        f"ALTER TABLE mothers ADD COLUMN severe_abdominal_pain {dialect.boolean} NOT NULL DEFAULT 0",
+        f"ALTER TABLE symptom_records ADD COLUMN vaginal_bleeding {dialect.boolean} NOT NULL DEFAULT 0",
+        f"ALTER TABLE symptom_records ADD COLUMN severe_abdominal_pain {dialect.boolean} NOT NULL DEFAULT 0",
+        # 2026-09-02 ANC red-flag additions - same idempotent
+        # attempt-and-swallow-duplicate pattern as everything above.
+        f"ALTER TABLE mothers ADD COLUMN convulsions {dialect.boolean} NOT NULL DEFAULT 0",
+        f"ALTER TABLE mothers ADD COLUMN reduced_fetal_movement {dialect.boolean} NOT NULL DEFAULT 0",
+        f"ALTER TABLE symptom_records ADD COLUMN convulsions {dialect.boolean} NOT NULL DEFAULT 0",
+        f"ALTER TABLE symptom_records ADD COLUMN reduced_fetal_movement {dialect.boolean} NOT NULL DEFAULT 0",
+    ]
+
+
+def teleconsults_migration_statements(dialect: Dialect) -> list[str]:
+    """ADD COLUMN for a `teleconsults` table created before `trigger_sign`
+    existed (2026-08-30, Tier-1 danger-sign hardening). Same poor-man's-
+    migration reasoning as `call_reports_migration_statements` above."""
+    return [
+        f"ALTER TABLE teleconsults ADD COLUMN trigger_sign {dialect.text}",
     ]
 
 
@@ -170,6 +248,34 @@ SQLITE_PRAGMAS = (
     "PRAGMA synchronous = NORMAL",
     "PRAGMA busy_timeout = 5000",
 )
+
+# CONCURRENCY MODEL - stated explicitly because the 2026-09-02 ANC brief asked
+# for "row-level locks", and SQLite does not have them.
+#
+# SQLite locks at the DATABASE level, not the row level. There is no
+# SELECT ... FOR UPDATE and no per-row latch to acquire. What this deployment
+# actually relies on, and why it is sufficient for concurrent ANC calls:
+#
+#   1. WAL (above) - readers never block on a writer, so a patient lookup on
+#      one live call is never queued behind another call's BP insert. This is
+#      the property the "without lockouts" requirement is really about.
+#   2. busy_timeout 5000 - a writer that finds the write lock held retries for
+#      5s instead of raising SQLITE_BUSY immediately. Concurrent writers
+#      serialise; they do not fail.
+#   3. One transaction per clinical write (sakhi_sql_repository) - the BP row
+#      and the mother's risk_status move together or not at all, so a
+#      concurrent reader never sees a reading with a stale risk level.
+#   4. A process-level threading.Lock around the shared connection, because
+#      sqlite3 connections are not safe to share across threads uncontrolled.
+#
+# Symptom accumulation is additionally written as an idempotent OR-merge
+# (CASE WHEN col = 1 OR ? = 1) rather than a read-modify-write, so two
+# concurrent writers cannot lose one another's symptom - that is the one
+# place where row-level locking would otherwise have been the answer.
+#
+# If per-row concurrency ever genuinely becomes the bottleneck, that is the
+# signal to complete the Postgres migration this module was built for, not to
+# emulate row locks on top of SQLite.
 
 
 POSTGRES_MIGRATION_NOTES = """

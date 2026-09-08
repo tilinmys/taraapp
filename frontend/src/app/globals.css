@@ -1,19 +1,49 @@
+@import "tailwindcss";
+
+/*
+ * Clinical identity palette (Sakhi redesign, 2026-09-04 - replaces the
+ * 2026-08-30 rural earth-tone palette below). Same TOKEN NAMES, new VALUES -
+ * `bg-linen`, `text-forest`, `border-terracotta` etc. are Tailwind v4
+ * utilities generated from this `@theme` block and used throughout
+ * SakhiLiveSession.tsx and its child components (SakhiAvatarStage,
+ * AshaVoiceReactor, LiveIntakeDrawer) - remapping the values here reskins
+ * every one of those call sites without touching each file individually,
+ * the same reason the original palette centralised here in the first place.
+ *
+ * Mapping: linen/cream -> white & soft-gray canvas, forest/forest-light ->
+ * deep navy (authority/typography), terracotta/turmeric -> saffron orange
+ * (voice/vitality accent), sage/sand -> neutral navy-tinted gray (borders,
+ * muted surfaces) - previously earth-tone accents with no semantic (status/
+ * success/danger) meaning tied to them, confirmed by reading their actual
+ * call sites before remapping, so no risk-badge or alert coloring changes.
+ *
+ * This file previously carried unthemed "create-next-app" boilerplate (a
+ * dark almost-black background with a purple radial glow) that nothing in
+ * the app actually rendered on top of intentionally - page.module.css's
+ * `.shell` and the new session components below always paint their own
+ * background over the full viewport. Re-pointing --background/--foreground
+ * at the real palette instead of deleting them keeps anything reading those
+ * two names (there is nothing today, but they are the two most likely names
+ * a future page would reach for) from silently getting the old dark theme.
+ */
+@theme {
+  --color-linen: #f8fafc;
+  --color-forest: #0a192f;
+  --color-forest-light: #0f172a;
+  --color-terracotta: #ff5500;
+  --color-turmeric: #ff6600;
+  --color-sage: #94a3b8;
+  --color-sand: #e2e8f0;
+  --color-cream: #ffffff;
+}
+
 :root {
-  --background: #060608;
-  --foreground: #f5f5f7;
-  --primary: #a855f7;
-  --primary-hover: #c084fc;
-  --primary-glow: radial-gradient(circle, rgba(168, 85, 247, 0.15) 0%, rgba(6, 6, 8, 0) 70%);
-  --accent: #14b8a6;
-  --accent-hover: #2dd4bf;
-  --card-bg: rgba(15, 15, 22, 0.65);
-  --card-border: rgba(255, 255, 255, 0.07);
+  --background: var(--color-linen);
+  --foreground: var(--color-forest);
 }
 
 * {
   box-sizing: border-box;
-  padding: 0;
-  margin: 0;
 }
 
 html,
@@ -24,25 +54,4 @@ body {
   background-color: var(--background);
   font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
-}
-
-body {
-  /* The dashboard is taller than most viewports (doctor schedule table +
-     live feed + logs console) - the page must scroll normally. This used to
-     be height:100vh + overflow:hidden + flex-centered for a single small
-     lobby card; with real dashboard content that clipped everything below
-     the fold with no way to reach it at all. */
-  position: relative;
-}
-
-body::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: var(--primary-glow);
-  z-index: 0;
-  pointer-events: none;
 }

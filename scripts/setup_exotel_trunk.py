@@ -19,9 +19,11 @@ Required env vars (see .env.example):
     LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET   (already set for the worker)
     EXOTEL_API_KEY, EXOTEL_API_TOKEN, EXOTEL_ACCOUNT_SID, EXOTEL_SUBDOMAIN
     EXOTEL_PHONE_NUMBER   your Exotel DID, e.g. +9180XXXXXXXX
-    LIVEKIT_AGENT_NAME    defaults to "mystree-care" (must match agent.py's
-                           WorkerOptions(agent_name=...) or the call rings
-                           but no worker ever answers it)
+    LIVEKIT_AGENT_NAME    defaults to "sakhi-maternal-care" (must match
+                           agent.py's WorkerOptions(agent_name=...) or the
+                           call rings but no worker ever answers it - NOT
+                           "mystree-care", the separate pre-Sakhi worker
+                           running on this same LiveKit Cloud project)
 
 Exotel SIP trunking must be enabled on your account first (email
 hello@exotel.com + KYC) before any of these API calls will succeed - this
@@ -89,7 +91,7 @@ async def main() -> None:
     exotel_sid = _require("EXOTEL_ACCOUNT_SID")
     exotel_subdomain = _require("EXOTEL_SUBDOMAIN")
     exotel_number = _require("EXOTEL_PHONE_NUMBER")
-    agent_name = os.getenv("LIVEKIT_AGENT_NAME", "mystree-care")
+    agent_name = os.getenv("LIVEKIT_AGENT_NAME", "sakhi-maternal-care")
 
     auth = (exotel_api_key, exotel_api_token)
     base = f"/v2/accounts/{exotel_sid}"

@@ -159,3 +159,35 @@ async def kannada_number_normalization(text):
 
     if held:
         yield expand_kannada_numbers(held)
+
+
+async def _passthrough_number_normalization(text):
+    """No-op stand-in for kannada_number_normalization on non-Kannada calls.
+
+    BUG FOUND 2026-09-09, live: kannada_number_normalization was wired into
+    tts_text_transforms UNCONDITIONALLY (agent.py), regardless of the call's
+    actual language. expand_kannada_numbers() only ever produces KANNADA
+    number words - confirmed live, "रक्तचाप 150 है" (a raw digit leaking
+    into Hindi text, e.g. the model forgetting rule #5's "speak numbers as
+    words") came out "रक्तचाप ನೂರ ಐವತ್ತು है" - Kannada words spliced into
+    the middle of a Hindi sentence. That is the exact "the voice audibly
+    switches mid-sentence" failure class this codebase already treats as
+    serious for TTS PROVIDER mixing; this is the same failure for spoken
+    TEXT CONTENT. Callers select this passthrough for non-Kannada languages
+    instead of the real transform - see agent.py's tts_text_transforms
+    wiring for the language check.
+    """
+    async for chunk in text:
+        if chunk:
+            yield chunk
+
+
+def number_normalization_for(language) -> "callable":
+    """Language-gated choice between the real Kannada transform and the
+    passthrough above. `language` may be a sakhi_domain.Language or a bare
+    string/code - only an exact Kannada match gets the real transform, so
+    an unrecognised value fails SAFE (passthrough), never by guessing."""
+    lang_value = getattr(language, "value", language)
+    if str(lang_value).strip().lower() in {"kannada", "kn", "kn-in"}:
+        return kannada_number_normalization
+    return _passthrough_number_normalization

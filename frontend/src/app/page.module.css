@@ -18,26 +18,40 @@
  *    supervisor/debug affordance and must never compete with the call.
  */
 
+/*
+ * Clinical identity palette (2026-09-04): Pure White canvas / Deep Navy ink /
+ * Saffron Orange accent, replacing the earlier warm-cream/teal set below.
+ * --sk-bg is a soft near-white (#f7f8fa), not literal #fff — rule 4 above
+ * (cheap Android panels wash out in direct sunlight) is a real field
+ * constraint from a genuinely different problem than the brief's aesthetic
+ * ask, so it's kept: cards (--sk-surface) sit on it at true white for the
+ * "pure white" look while the page canvas itself stays glare-safe.
+ * --sk-danger/--sk-warn/--sk-ok are UNCHANGED on purpose — rule 3 above ties
+ * them to safety semantics (never brand colour), so they stay red/amber/
+ * green regardless of the brand accent swap.
+ */
 :root {
-  --sk-bg: #fdfaf6;
+  --sk-bg: #f7f8fa;
   --sk-surface: #ffffff;
-  --sk-ink: #1f2937;
-  --sk-ink-soft: #52606d;
+  --sk-ink: #0a192f;
+  --sk-ink-soft: #475569;
 
-  --sk-primary: #0f766e;
-  --sk-primary-dark: #115e59;
-  --sk-primary-soft: #ccfbf1;
+  --sk-primary: #ff5500;
+  --sk-primary-dark: #e04b00;
+  --sk-primary-soft: #fff2eb;
 
-  --sk-danger: #b91c1c;
+  /* 2026-09-04: shades refined (still red/amber/green - a brand-colour
+     swap, not a semantic one, per rule 3 at the top of this file) */
+  --sk-danger: #d32f2f;
   --sk-danger-soft: #fee2e2;
-  --sk-warn: #b45309;
+  --sk-warn: #f57c00;
   --sk-warn-soft: #fef3c7;
-  --sk-ok: #15803d;
+  --sk-ok: #2e7d32;
   --sk-ok-soft: #dcfce7;
 
-  --sk-line: #e7e2db;
+  --sk-line: #e2e8f0;
   --sk-radius: 20px;
-  --sk-shadow: 0 2px 8px rgba(31, 41, 55, 0.06), 0 12px 32px rgba(31, 41, 55, 0.06);
+  --sk-shadow: 0 2px 8px rgba(10, 25, 47, 0.06), 0 12px 32px rgba(10, 25, 47, 0.06);
 }
 
 /* Kannada/Devanagari first in the stack so Indic glyphs never fall back to a
@@ -151,6 +165,46 @@
   font-size: 11px;
 }
 
+/* pipeline_event()'s full `details` payload - see agent.py. Every field the
+   worker actually attached (which provider, how long, what value got
+   recorded), not just the human summary line above it. */
+.logDetails {
+  margin-top: 2px;
+  padding-left: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  font-size: 10px;
+  opacity: 0.85;
+}
+
+.logDetailPair {
+  white-space: nowrap;
+  word-break: break-word;
+}
+
+.logDetailKey {
+  color: #6b7684;
+}
+
+/* The `error`/`traceback` fields specifically - "where the breakage is".
+   Full width, wrapping, own scroll if a traceback runs long, so a real
+   stack trace is never truncated the way the summary line above it is. */
+.logFailure {
+  margin: 4px 0 0 14px;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--sk-danger);
+  border-radius: 4px;
+  color: #7f1d1d;
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
 /* Collapsed rail: just a vertical label, so the logs never steal attention. */
 .railClosed {
   writing-mode: vertical-rl;
@@ -174,11 +228,23 @@
   gap: 18px;
 }
 
+/* Live-call rendering (SakhiLiveSession.tsx, 2026-08-30) owns its own exact
+ * 100dvh box and internal padding - unlike .stage above, no padding/gap/
+ * centering here, or the live session's own h-full would be measured
+ * against a shrunk box and its 4 fixed-percentage sections would no longer
+ * add up to one full, non-scrolling screen. */
+.stageLive {
+  display: flex;
+  height: 100dvh;
+  overflow: hidden;
+}
+
 .header {
   width: 100%;
   max-width: 720px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
@@ -195,8 +261,16 @@
 }
 
 .brandText {
-  flex: 1;
-  min-width: 0;
+  /* min-width was 0 (the usual "let a flex item shrink below its content"
+     escape hatch) - fine while .header held only two other rigid-content
+     siblings, but once the low-power toggle and the connection pill were
+     added (2026-08-30) it let the flexbox solver crush this down to ~28px
+     on a narrow phone instead of wrapping those siblings onto their own
+     line (.header already has flex-wrap: wrap for exactly that), turning
+     "Sakhi · AI Clinical Co-Pilot" into one word per line. A real min-width
+     forces the wrap to happen on the OTHER items instead. */
+  flex: 1 1 200px;
+  min-width: 200px;
 }
 
 .brandName {
@@ -239,69 +313,20 @@
   box-shadow: 0 0 0 4px var(--sk-ok-soft);
 }
 
-/* ---------- Risk banner --------------------------------------------------- */
-
-.riskBanner {
-  width: 100%;
-  max-width: 720px;
-  border-radius: var(--sk-radius);
-  padding: 18px 20px;
-  display: flex;
-  gap: 14px;
-  align-items: flex-start;
-  border: 2px solid;
-  animation: riseIn 240ms ease-out;
-}
-
-.riskBanner[data-level="HIGH_RISK"] {
-  background: var(--sk-danger-soft);
-  border-color: var(--sk-danger);
-  color: #7f1d1d;
-}
-.riskBanner[data-level="MODERATE"],
-.riskBanner[data-level="OBSERVATION"] {
-  background: var(--sk-warn-soft);
-  border-color: var(--sk-warn);
-  color: #7c4a03;
-}
-.riskBanner[data-level="ROUTINE"] {
-  background: var(--sk-ok-soft);
-  border-color: var(--sk-ok);
-  color: #14532d;
-}
-
-.riskIcon {
-  font-size: 30px;
-  line-height: 1;
-  flex: none;
-}
-
-.riskTitle {
-  font-size: 20px;
-  font-weight: 800;
-  line-height: 1.45;
-  margin: 0 0 2px;
-}
-
-.riskBody {
-  font-size: 14px;
-  line-height: 1.6;
-  margin: 0;
-  opacity: 0.9;
-}
-
-@keyframes riseIn {
-  from { opacity: 0; transform: translateY(-8px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
 /* ---------- Avatar ------------------------------------------------------- */
 
 .avatarCard {
   width: 100%;
   max-width: 720px;
-  aspect-ratio: 4 / 3;
-  background: linear-gradient(160deg, #e8f5f3 0%, #fdf6ec 100%);
+  /* The four clips (idle/namaskara/talk1/talk2) are 640x640 — a square
+     source. This used to be 4/3: with object-fit: cover, a wider-than-tall
+     box crops a square video top+bottom, centered by default. Her face sits
+     in the upper part of the frame with headroom above it, so that crop cut
+     straight through the forehead/hair - "the woman's full face is not
+     there in the screen". Matching the container to the source's actual 1:1
+     ratio makes object-fit: cover a pure scale, no crop at all. */
+  aspect-ratio: 1 / 1;
+  background: linear-gradient(160deg, #f7f8fa 0%, #ffffff 100%);
   border-radius: 28px;
   border: 1px solid var(--sk-line);
   box-shadow: var(--sk-shadow);
@@ -311,6 +336,21 @@
   place-items: center;
 }
 
+/* Applied only to SakhiVideoAvatar's own card (via an extra className,
+   never on the idle-placeholder/connecting-spinner instances of
+   .avatarCard, which keep the pale mint-to-cream look). Sampled from the
+   corners of the actual video clips (a muted sage/olive backdrop,
+   ~rgb(125,122,98) to rgb(154,151,125)), not an arbitrary brand colour.
+   Defense-in-depth for the crossfade white-flash fix: the real fix is
+   waiting for a confirmed-painted frame before revealing a clip (see
+   SakhiVideoAvatar's crossfadeTo comment), but on a browser without
+   requestVideoFrameCallback (the double-rAF fallback path) any residual gap
+   now shows this near-match tone instead of the old near-white gradient - a
+   soft flicker instead of a stark white flash. */
+.avatarCardVideo {
+  background: linear-gradient(160deg, #8a876e 0%, #9c987e 100%);
+}
+
 .avatarCard video {
   width: 100%;
   height: 100%;
@@ -318,42 +358,33 @@
   display: block;
 }
 
-.idleArt {
-  text-align: center;
-  padding: 24px;
+/* Two stacked layers for SakhiVideoAvatar's crossfade. object-fit/size
+   inherited from `.avatarCard video` above; this only adds the absolute
+   stacking and the opacity transition. Opacity-only so the browser can
+   composite the crossfade on the GPU without a layout or paint pass on
+   anything else in the card. */
+.avatarVideoLayer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: opacity 220ms ease-in-out;
+  /* Explicit, not relying on the browser's own initial value: both layers
+     start visible until SakhiVideoAvatar's mount effect imperatively hides
+     slot B. Opacity is never set via a React style prop after that - see
+     the long comment in SakhiVideoAvatar.tsx for why a React-controlled
+     style prop here would actively fight the crossfade logic. */
+  opacity: 1;
 }
 
-.idleFace {
-  width: 128px;
-  height: 128px;
-  border-radius: 50%;
-  background: var(--sk-surface);
-  border: 3px solid var(--sk-primary-soft);
-  display: grid;
-  place-items: center;
-  font-size: 62px;
-  margin: 0 auto 16px;
-  box-shadow: var(--sk-shadow);
-}
-
-.idleLine {
-  font-size: 19px;
-  font-weight: 700;
-  line-height: 1.6;
-  margin: 0 0 4px;
-}
-
-.idleSub {
-  font-size: 14px;
-  color: var(--sk-ink-soft);
-  line-height: 1.6;
-  margin: 0;
+@media (prefers-reduced-motion: reduce) {
+  .avatarVideoLayer {
+    transition: none;
+  }
 }
 
 /* Connecting shimmer — reassurance that something is happening on a slow link */
-.connectingWrap {
-  text-align: center;
-}
 .spinner {
   width: 46px;
   height: 46px;
@@ -364,167 +395,6 @@
   animation: spin 900ms linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-
-/* ---------- Status ------------------------------------------------------- */
-
-.statusPill {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 26px;
-  border-radius: 999px;
-  font-size: 21px;
-  font-weight: 800;
-  line-height: 1.5;
-  border: 2px solid;
-  min-height: 64px;
-}
-
-.statusPill[data-state="listening"] {
-  background: var(--sk-ok-soft);
-  border-color: var(--sk-ok);
-  color: #14532d;
-}
-.statusPill[data-state="speaking"] {
-  background: var(--sk-primary-soft);
-  border-color: var(--sk-primary);
-  color: var(--sk-primary-dark);
-}
-.statusPill[data-state="thinking"] {
-  background: var(--sk-warn-soft);
-  border-color: var(--sk-warn);
-  color: #7c4a03;
-}
-.statusPill[data-state="idle"] {
-  background: var(--sk-surface);
-  border-color: var(--sk-line);
-  color: var(--sk-ink-soft);
-}
-
-.statusIcon { font-size: 26px; line-height: 1; }
-
-/* Pulsing ring while listening — a silent, wordless "I can hear you" */
-.pulse {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: pulse 1.4s ease-in-out infinite;
-}
-@keyframes pulse {
-  0%, 100% { opacity: 0.35; transform: scale(0.85); }
-  50%      { opacity: 1;    transform: scale(1.15); }
-}
-
-/* ---------- Controls ----------------------------------------------------- */
-
-.controls {
-  width: 100%;
-  max-width: 720px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 14px;
-}
-
-.bigButton {
-  width: 100%;
-  max-width: 520px;
-  min-height: 78px;
-  border-radius: 22px;
-  border: none;
-  font-size: 24px;
-  font-weight: 800;
-  line-height: 1.45;
-  letter-spacing: 0.01em;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  padding: 16px 24px;
-  transition: transform 120ms ease, filter 120ms ease;
-  box-shadow: var(--sk-shadow);
-  font-family: inherit;
-}
-
-.bigButton:active { transform: translateY(2px); }
-.bigButton:disabled { opacity: 0.55; cursor: progress; }
-
-.start {
-  background: var(--sk-primary);
-  color: #fff;
-}
-.start:hover:not(:disabled) { filter: brightness(1.07); }
-
-.end {
-  background: var(--sk-danger);
-  color: #fff;
-}
-.end:hover:not(:disabled) { filter: brightness(1.07); }
-
-.buttonHint {
-  font-size: 14px;
-  color: var(--sk-ink-soft);
-  line-height: 1.6;
-  text-align: center;
-  margin: 0;
-  max-width: 460px;
-}
-
-/* Language chooser: two big pills, not a dropdown. A <select> is a hostile
-   control on a low-end touch device and hides the options until tapped. */
-.langRow {
-  display: flex;
-  gap: 12px;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-
-.langPill {
-  min-height: 64px;
-  min-width: 150px;
-  padding: 12px 26px;
-  border-radius: 18px;
-  border: 2px solid var(--sk-line);
-  background: var(--sk-surface);
-  color: var(--sk-ink);
-  font-size: 20px;
-  font-weight: 700;
-  line-height: 1.5;
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.langPill[data-active="true"] {
-  border-color: var(--sk-primary);
-  background: var(--sk-primary-soft);
-  color: var(--sk-primary-dark);
-}
-
-.langPill:disabled { opacity: 0.5; cursor: not-allowed; }
-
-.sectionLabel {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--sk-ink-soft);
-  text-align: center;
-  margin: 0;
-  line-height: 1.6;
-}
-
-.errorBox {
-  width: 100%;
-  max-width: 520px;
-  background: var(--sk-danger-soft);
-  border: 2px solid var(--sk-danger);
-  color: #7f1d1d;
-  border-radius: 16px;
-  padding: 14px 18px;
-  font-size: 15px;
-  line-height: 1.6;
-  text-align: center;
-}
 
 /* ---------- Responsive ---------------------------------------------------- */
 
@@ -553,116 +423,32 @@
 
   .stage { order: 1; padding: 16px 14px 24px; }
   .brandName { font-size: 23px; }
-  .bigButton { font-size: 21px; min-height: 72px; }
-  .avatarCard { aspect-ratio: 1 / 1; }
-  .statusPill { font-size: 19px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pulse, .spinner, .riskBanner { animation: none; }
+  .spinner { animation: none; }
 }
 
-/* ---------- Voice picker ------------------------------------------------- */
-/* Secondary to the language row: smaller than the 64px language pills but
-   still comfortably tappable outdoors, and wrapping so six voices never force
-   a horizontal scroll on a 375px phone. */
-.voiceRow {
-  display: flex;
-  gap: 8px;
-  justify-content: center;
-  flex-wrap: wrap;
-  max-width: 520px;
-}
-
-.voicePill {
-  min-height: 52px;
-  padding: 8px 16px;
-  border-radius: 14px;
-  border: 2px solid var(--sk-line);
-  background: var(--sk-surface);
-  color: var(--sk-ink);
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1.35;
-  cursor: pointer;
-  font-family: inherit;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-
-.voicePill[data-active="true"] {
-  border-color: var(--sk-primary);
-  background: var(--sk-primary-soft);
-  color: var(--sk-primary-dark);
-}
-
-.voicePill:disabled { opacity: 0.5; cursor: not-allowed; }
-
-.voiceNote {
-  font-size: 11px;
-  font-weight: 600;
-  opacity: 0.7;
-  line-height: 1.4;
-}
-
-/* -------------------------------------------------------------------------
- * Clinical intake progress.
+/* ----------------------------------------------------------------------
+ * Low-power mode toggle.
  *
- * Shows the ASHA worker where Sakhi is in the screening and what she is
- * being asked next. Deliberately quieter than the risk banner: it is
- * orientation, not an alert, and must never compete with a HIGH_RISK
- * referral for attention.
+ * A heuristic (narrow viewport / mobile UA) picks a default, but the
+ * override is what actually matters: a tablet on wifi doesn't need
+ * power-saving, and an old Android phone on 3G does regardless of screen
+ * size - see AvatarStage's usage in page.tsx.
  * ---------------------------------------------------------------------- */
-.intakePanel {
-  width: 100%;
-  max-width: 720px;
-  border-radius: var(--sk-radius);
-  padding: 14px 18px;
-  background: var(--sk-surface, #fff);
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  animation: riseIn 240ms ease-out;
-}
-
-.intakeHead {
+.lowPowerToggle {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.intakeLabel {
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  opacity: 0.62;
-}
-
-.intakeCount {
-  font-size: 0.95rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.intakeTrack {
-  height: 8px;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  padding: 6px 10px;
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.09);
-  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: var(--sk-surface, #fff);
+  cursor: pointer;
 }
 
-.intakeFill {
-  height: 100%;
-  border-radius: 999px;
-  background: var(--sk-accent, #0d9488);
-  transition: width 320ms ease-out;
-}
-
-.intakeQuestion {
-  margin: 10px 0 0;
-  font-size: 1rem;
-  line-height: 1.45;
+.lowPowerToggle input {
+  accent-color: var(--sk-accent, var(--sk-primary));
 }

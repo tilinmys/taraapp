@@ -142,9 +142,15 @@ def test_symptoms_reject_non_bool():
         (BloodPressure(145, 95), SymptomSet(headache=True), RiskLevel.HIGH_RISK),
         (BloodPressure(145, 95), SymptomSet(blurry_vision=True), RiskLevel.HIGH_RISK),
         (BloodPressure(145, 95), SymptomSet(swelling=True), RiskLevel.HIGH_RISK),
-        # High BP alone -> 48h re-check
-        (BloodPressure(145, 95), SymptomSet(), RiskLevel.MODERATE),
-        (BloodPressure(140, 85), SymptomSet(), RiskLevel.MODERATE),
+        # High BP alone -> HIGH_RISK too (2026-09-10, explicit user decision:
+        # matches the "Antenatal Quick Check" source PDF's own RED FLAGS
+        # list literally - BP>=140/90 is its own automatic urgent-referral
+        # trigger there, with no symptomatic qualifier. Was RiskLevel.MODERATE
+        # (a 48h re-check) before this change - see sakhi_triage.py's module
+        # docstring for the full reasoning and the alternative that was
+        # offered and not chosen.
+        (BloodPressure(145, 95), SymptomSet(), RiskLevel.HIGH_RISK),
+        (BloodPressure(140, 85), SymptomSet(), RiskLevel.HIGH_RISK),
         # Normal BP + symptoms -> observation
         (BloodPressure(120, 80), SymptomSet(headache=True), RiskLevel.OBSERVATION),
         # Normal BP, no symptoms -> routine
@@ -158,14 +164,25 @@ def test_triage_matrix_matches_the_bidar_protocol(bp, symptoms, expected):
 
 def test_severe_range_bp_escalates_on_the_reading_alone():
     """>=160/110 is a referral under standard obstetric practice even with no
-    symptoms reported - an addition on top of the spec matrix."""
+    symptoms reported - an addition on top of the spec matrix. Since
+    2026-09-10 this is subsumed by the hypertensive-alone rule (any BP
+    >=140/90 is HIGH_RISK), but is kept as its own assertion since a severe
+    reading being HIGH_RISK is true independent of that later change."""
     assert TRIAGE.assess(BloodPressure(165, 100), SymptomSet()).level is RiskLevel.HIGH_RISK
     assert TRIAGE.assess(BloodPressure(150, 115), SymptomSet()).level is RiskLevel.HIGH_RISK
 
 
-def test_severe_rule_can_be_disabled_for_a_deployment():
+def test_severe_rule_flag_no_longer_changes_the_outcome():
+    """`escalate_on_severe_bp_alone=False` used to drop a severe-alone
+    reading to MODERATE. Since 2026-09-10, plain hypertensive-alone (which a
+    severe reading always also is) is HIGH_RISK unconditionally, so this
+    flag no longer has an observable effect - see the constructor's own
+    comment in sakhi_triage.py, which discloses this rather than leaving the
+    flag silently misleading. Renamed from
+    test_severe_rule_can_be_disabled_for_a_deployment, which asserted the
+    now-superseded MODERATE outcome."""
     engine = TriageEngine(escalate_on_severe_bp_alone=False)
-    assert engine.assess(BloodPressure(165, 100), SymptomSet()).level is RiskLevel.MODERATE
+    assert engine.assess(BloodPressure(165, 100), SymptomSet()).level is RiskLevel.HIGH_RISK
 
 
 def test_missing_bp_is_not_treated_as_normal():
@@ -188,9 +205,17 @@ def test_early_gestation_high_bp_is_flagged_as_possibly_chronic():
     assert any("chronic hypertension" in r for r in result.reasons)
 
 
-def test_moderate_does_not_escalate():
-    """Only HIGH_RISK auto-connects a specialist; MODERATE is a re-check."""
-    assert not TRIAGE.assess(BloodPressure(145, 95), SymptomSet()).requires_escalation
+def test_observation_does_not_escalate():
+    """Only HIGH_RISK auto-connects a specialist.
+
+    Renamed from test_moderate_does_not_escalate (2026-09-10): the case it
+    used (BloodPressure(145, 95), no symptoms) is now HIGH_RISK per the
+    hypertensive-alone calibration change - see sakhi_triage.py's module
+    docstring. RiskLevel.MODERATE is no longer reachable at all, so this now
+    uses a normal-BP-plus-symptom case (OBSERVATION) to guard the same
+    underlying rule: only HIGH_RISK requires escalation.
+    """
+    assert not TRIAGE.assess(BloodPressure(120, 80), SymptomSet(headache=True)).requires_escalation
 
 
 # --------------------------------------------------------------------------

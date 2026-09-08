@@ -288,9 +288,16 @@ def test_fragment_recovery_reaches_the_long_window():
     assert controller.state == "FRAGMENT_RECOVERY"
 
 
-# --- 1b. Spelling fallback after the first miss -----------------------------
+# --- 1b. Identity fallback after the first miss -----------------------------
+#
+# Used to ask her to spell it letter-by-letter over voice here - replaced by
+# arming the frontend text box instead (tests/test_identity_frontend_fallback.py
+# has the full coverage for that path: tools_for() withdrawal, state fields).
+# Re-asking the same way, spoken or spelled, burns another LLM/STT round-trip
+# to fix a problem STT just caused; this test now covers what survived of the
+# original principle - a first miss must switch strategy, not repeat it.
 
-def test_spelling_fallback_fires_on_the_first_failed_lookup(repo):
+def test_first_failed_lookup_switches_strategy_not_repeats_it(repo):
     """Name collection is the dominant production bottleneck: re-asking the
     same way gets the same mangled transcript and traps the worker in a loop."""
     async def go():
@@ -302,9 +309,9 @@ def test_spelling_fallback_fires_on_the_first_failed_lookup(repo):
         result = json.loads(await tools.search_patient(ctx, name="Xyzabc Qwerty"))
         assert result["found"] is False
         assert result["attempt"] == 1
-        assert "DO NOT ask for the name the same way" in result["instruction"]
-        assert "ಅಕ್ಷರ" in result["instruction"], "no spelling example given"
+        assert "type the mother's name and age" in result["instruction"]
         assert state.lookup_attempts == 1
+        assert state.awaiting_identity_box is True
     _run(go())
 
 

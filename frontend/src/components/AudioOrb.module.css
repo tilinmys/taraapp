@@ -1,0 +1,88 @@
+.stage {
+  width: 100%;
+  max-width: 360px;
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border-radius: 24px;
+  background: radial-gradient(circle at 50% 40%, #fdf4ff 0%, #f3e8ff 55%, #ede9fe 100%);
+}
+
+.orb {
+  width: 62%;
+  height: 62%;
+}
+
+.ringOuter,
+.ringMid,
+.core {
+  transform-origin: 100px 100px;
+  transition: opacity 0.4s ease, transform 0.6s ease;
+}
+
+.ringOuter {
+  fill: none;
+  stroke: #a78bfa;
+  stroke-width: 3;
+  opacity: 0.35;
+}
+
+.ringMid {
+  fill: none;
+  stroke: #c4b5fd;
+  stroke-width: 3;
+  opacity: 0.5;
+}
+
+.core {
+  fill: #7c3aed;
+  opacity: 0.85;
+}
+
+.caption {
+  margin: 0;
+  font-size: 13px;
+  color: #6d28d9;
+  letter-spacing: 0.02em;
+}
+
+/* --- state reactions, full-motion only --------------------------------- */
+
+.stage[data-motion="full"][data-state="listening"] .ringOuter { animation: pulseRing 2.2s ease-in-out infinite; }
+.stage[data-motion="full"][data-state="listening"] .core { animation: pulseCore 2.2s ease-in-out infinite; }
+
+.stage[data-motion="full"][data-state="thinking"] .ringMid { animation: spin 3s linear infinite; }
+.stage[data-motion="full"][data-state="thinking"] .core { opacity: 0.6; }
+
+.stage[data-motion="full"][data-state="speaking"] .ringOuter { animation: pulseRing 0.7s ease-in-out infinite; }
+.stage[data-motion="full"][data-state="speaking"] .ringMid { animation: pulseRing 0.7s ease-in-out infinite 0.12s; }
+.stage[data-motion="full"][data-state="speaking"] .core { animation: pulseCore 0.7s ease-in-out infinite; }
+
+.stage[data-state="idle"] .ringOuter,
+.stage[data-state="idle"] .ringMid { opacity: 0.25; }
+.stage[data-state="idle"] .core { opacity: 0.6; }
+
+/* --- reduced motion: static state via colour/opacity only -------------- */
+
+.stage[data-motion="reduced"][data-state="listening"] .core { opacity: 1; }
+.stage[data-motion="reduced"][data-state="speaking"] .core { opacity: 1; fill: #5b21b6; }
+.stage[data-motion="reduced"][data-state="thinking"] .ringMid { opacity: 0.9; }
+
+@keyframes pulseRing {
+  0%, 100% { transform: scale(1); opacity: 0.35; }
+  50% { transform: scale(1.08); opacity: 0.65; }
+}
+
+@keyframes pulseCore {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50% { transform: scale(1.1); opacity: 1; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

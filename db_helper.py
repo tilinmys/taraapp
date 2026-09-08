@@ -5,10 +5,18 @@ import re
 import sqlite3
 import difflib
 from datetime import date, datetime, timedelta
+from typing import Any
+
+try:
+    import asyncpg
+except ImportError:
+    asyncpg = None
 
 logger = logging.getLogger("db_helper")
 
+_ASYNC_PG_POOL: "asyncpg.Pool | None" = None
 DB_PATH = os.getenv("SQLITE_DB_PATH", "data/mystree_demo.sqlite3")
+
 
 # The real MyStree Indiranagar clinical team (provided by the clinic).
 # `concerns` keywords route a caller's stated concern to the right specialist.
@@ -412,6 +420,46 @@ def get_appointments_by_patient_id(patient_id: int):
     return [dict(r) for r in rows]
 
 
+async def init_async_db_pool(dsn: str, min_size: int = 2, max_size: int = 10) -> "asyncpg.Pool":
+    """Initialize PostgreSQL connection pool for async DB operations."""
+    global _ASYNC_PG_POOL
+    if asyncpg is None:
+        raise RuntimeError("asyncpg is not installed")
+    if _ASYNC_PG_POOL is None:
+        _ASYNC_PG_POOL = await asyncpg.create_pool(dsn, min_size=min_size, max_size=max_size)
+        logger.info("Initialized asyncpg pool in db_helper")
+    return _ASYNC_PG_POOL
+
+
+async def get_patient_context_by_phone_async(phone: str) -> dict | None:
+    """Asynchronous non-blocking fetch of caller context for greeting preloading."""
+    global _ASYNC_PG_POOL
+    normalized = normalize_phone(phone)
+    if _ASYNC_PG_POOL is not None:
+        async with _ASYNC_PG_POOL.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM patients WHERE phone = $1", normalized)
+            if not row:
+                return None
+            p = dict(row)
+            appts = await conn.fetch(
+                "SELECT * FROM appointments WHERE patient_id = $1 AND status = 'Scheduled' "
+                "ORDER BY appointment_date, appointment_time",
+                p["patient_id"],
+            )
+            hist = await conn.fetch(
+                "SELECT * FROM appointments WHERE patient_id = $1 AND status != 'Scheduled' "
+                "ORDER BY appointment_date DESC LIMIT 3",
+                p["patient_id"],
+            )
+            return {
+                "patient": p,
+                "appointments": [dict(r) for r in appts],
+                "history": [dict(r) for r in hist],
+            }
+    # Fallback to thread-safe synchronous call if pool is not active
+    return await asyncio.to_thread(get_patient_context_by_phone, phone)
+
+
 def get_patient_context_by_phone(phone: str):
     """Fetch caller context for zero-latency greeting/prompt preload."""
     patient = get_patient_by_phone(phone)
@@ -422,6 +470,7 @@ def get_patient_context_by_phone(phone: str):
         "appointments": get_appointments_by_patient_id(patient["patient_id"]),
         "history": get_visit_history_by_patient_id(patient["patient_id"], limit=3),
     }
+
 
 
 def save_call_report(report: dict) -> int:

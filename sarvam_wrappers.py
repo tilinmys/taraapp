@@ -91,6 +91,35 @@ def _sarvam_tts_config_payload(tts_instance: "SarvamTTS") -> dict:
     return {"type": "config", "data": data}
 
 
+def _sarvam_tts_rest_payload(tts_instance: "SarvamTTS", text: str) -> dict:
+    """The actual REST /text-to-speech body SarvamTTSChunkedStream sends -
+    extracted out of _run() (2026-09-08) so `enable_preprocessing` wiring
+    could be unit-tested without mocking an HTTP call. Distinct from
+    _sarvam_tts_config_payload above, which shapes a WEBSOCKET config
+    message for the realtime endpoint this provider does not actually use
+    (see SarvamTTS.__init__'s own note on why streaming=False)."""
+    lang = tts_instance._target_language_code.lower()
+    if lang == "kannada":
+        sarvam_lang = "kn-IN"
+    elif lang == "hindi":
+        sarvam_lang = "hi-IN"
+    elif lang == "english":
+        sarvam_lang = "en-IN"
+    else:
+        sarvam_lang = tts_instance._target_language_code
+
+    payload = {
+        "inputs": [text],
+        "target_language_code": sarvam_lang,
+        "speaker": tts_instance._speaker,
+        "model": tts_instance._model,
+        "pace": tts_instance._pace,
+    }
+    if tts_instance._enable_preprocessing:
+        payload["enable_preprocessing"] = True
+    return payload
+
+
 def _sarvam_tts_text_payload(text: str, *, max_chars: int) -> dict | None:
     normalized = _normalize_tts_text(text, max_chars=max_chars)
     if not normalized:
@@ -166,6 +195,7 @@ class SarvamSTT(stt.STT):
         model: str = "saarika:v2.5",
         language_code: str = "en-IN",
         base_url: str = "https://api.sarvam.ai",
+        mode: str = "transcribe",
     ):
         super().__init__(
             capabilities=stt.STTCapabilities(
@@ -177,6 +207,14 @@ class SarvamSTT(stt.STT):
         self._model = model
         self._language_code = language_code
         self._base_url = base_url
+        # 2026-09-08: "transcribe" is the only mode value confirmed against
+        # the real API's own config schema in this codebase's history. A
+        # "codemix" value was accepted (no rejection) in a live probe against
+        # saaras:v3 - Sarvam's saaras family is itself built for code-mixed
+        # Indic speech, so the model choice may matter more than this field -
+        # but that acceptance is not the same as a documented, confirmed
+        # effect, so it is wired as configurable rather than defaulted to.
+        self._mode = mode
 
     _VALID_LANGS = {
         "en-IN", "hi-IN", "bn-IN", "gu-IN", "kn-IN", "ml-IN",
@@ -206,7 +244,10 @@ class SarvamSTT(stt.STT):
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
     ) -> "SarvamSpeechStream":
         lang = self._sanitize_language(language)
-        return SarvamSpeechStream(self, self._api_key, self._model, lang, self._base_url, conn_options)
+        return SarvamSpeechStream(
+            self, self._api_key, self._model, lang, self._base_url, conn_options,
+            mode=self._mode,
+        )
 
     async def _recognize_impl(
         self,
@@ -231,12 +272,15 @@ class SarvamSpeechStream(stt.SpeechStream):
         language_code: str,
         base_url: str,
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
+        *,
+        mode: str = "transcribe",
     ):
         super().__init__(stt=stt_instance, conn_options=conn_options)
         self._api_key = api_key
         self._model = model
         self._language_code = language_code
         self._base_url = base_url
+        self._mode = mode
 
     async def _run(self) -> None:
         uri = _ws_url(
@@ -256,7 +300,7 @@ class SarvamSpeechStream(stt.SpeechStream):
                     "type": "config",
                     "data": {
                         "model": self._model,
-                        "mode": "transcribe",
+                        "mode": self._mode,
                         "language_code": self._language_code,
                     },
                 }
@@ -382,12 +426,26 @@ SARVAM_V2_SPEAKERS = {
 #   bulbul:v2 anushka   short clause  700ms   full sentence  1026ms
 #   bulbul:v3 pooja     short clause 1012ms   full sentence  2655ms
 #
-# v3 is 2.3-3.4x slower and, on a full sentence, alone eats more than the whole
-# audio-only latency budget. v2 is the default for the pilot. `bulbul:v1` is NOT
-# an option - the API rejects it: "model: Input should be 'bulbul:v2',
-# 'bulbul:v3-beta' or 'bulbul:v3'".
-SARVAM_DEFAULT_MODEL = "bulbul:v2"
-SARVAM_DEFAULT_SPEAKER = "manisha"
+# bulbul:v2 -> bulbul:v3 (2026-09-08): v2 is no longer a default choice, it
+# is GONE - confirmed live, the API now returns a 400 "Model 'bulbul:v2' has
+# been deprecated. Please use 'bulbul:v3' instead." The v3-is-2.3-3.4x-slower
+# comment this constant used to justify v2 as the pilot default is now moot;
+# there is no v2 to fall back to. `bulbul:v1` was never an option either -
+# the API has always rejected it ("model: Input should be 'bulbul:v2',
+# 'bulbul:v3-beta' or 'bulbul:v3'").
+SARVAM_DEFAULT_MODEL = "bulbul:v3"
+# manisha -> shreya (2026-09-08): manisha is a bulbul:v2 speaker: resolve_
+# sarvam_voice() below would have silently remapped it to 'ishita' for v3
+# anyway (a bulbul:v2 name has no meaning post-deprecation). shreya is a
+# confirmed-live bulbul:v3 speaker (real 200 + audio bytes back, 2026-09-08).
+SARVAM_DEFAULT_SPEAKER = "shreya"
+# v2's OWN fallback, kept separate from SARVAM_DEFAULT_SPEAKER above: v2 is
+# deprecated but resolve_sarvam_voice() below still has to pair an invalid
+# v2-speaker request with SOMETHING, and that something must actually be a
+# v2 voice - reusing the (now bulbul:v3) SARVAM_DEFAULT_SPEAKER there was a
+# real bug caught by this file's own test (shreya has no meaning to v2's
+# API and would have 400'd).
+SARVAM_V2_DEFAULT_SPEAKER = "manisha"
 
 # Both models return 22050 Hz WAV from the REST endpoint (verified by reading the
 # RIFF header). The previous `24000 if "v3" in model` guess declared a rate the
@@ -412,9 +470,9 @@ def resolve_sarvam_voice(model: str, speaker: str | None) -> tuple[str, str]:
         if requested:
             logger.warning(
                 "Speaker %r is not a bulbul:v2 voice; using %r. Valid: %s",
-                requested, SARVAM_DEFAULT_SPEAKER, ", ".join(sorted(SARVAM_V2_SPEAKERS)),
+                requested, SARVAM_V2_DEFAULT_SPEAKER, ", ".join(sorted(SARVAM_V2_SPEAKERS)),
             )
-        return model, SARVAM_DEFAULT_SPEAKER
+        return model, SARVAM_V2_DEFAULT_SPEAKER
 
     # v3 / v3-beta
     if requested in _SARVAM_V3_SPEAKERS:
@@ -436,6 +494,7 @@ class SarvamTTS(tts.TTS):
         min_buffer_size: int = 35,
         max_chunk_length: int = 160,
         output_audio_codec: str = "wav",
+        enable_preprocessing: bool = False,
     ):
         model, speaker = resolve_sarvam_voice(model, speaker)
         super().__init__(
@@ -467,6 +526,16 @@ class SarvamTTS(tts.TTS):
         self._min_buffer_size = min_buffer_size
         self._max_chunk_length = max_chunk_length
         self._output_audio_codec = output_audio_codec
+        # enable_preprocessing (2026-09-08): a real, documented Sarvam TTS
+        # request field (text normalization - expanding abbreviations/
+        # numbers before synthesis, distinct from this codebase's own
+        # sakhi_kannada.py digit-to-words transform, which runs before the
+        # request is even built). Confirmed the API accepts it (real 200 +
+        # audio back) but this has NOT been A/B'd against this pipeline's
+        # own pre-normalized input the way the voice/model choices above
+        # were - default False to avoid double-processing text this
+        # pipeline may have already normalized, opt in explicitly.
+        self._enable_preprocessing = enable_preprocessing
 
     @property
     def ws_open_timeout(self) -> float:
@@ -553,14 +622,7 @@ async def _run_sarvam_tts_ws(
                 stripped = buffer.strip()
                 if not stripped or not _SPEAKABLE_RE.search(stripped):
                     return False
-                if force:
-                    return True
-                words = re.findall(r"[A-Za-z0-9\u0900-\u097F]+", stripped)
-                return (
-                    len(stripped) >= 120
-                    or len(words) >= 8
-                    or bool(re.search(r"[.!?।]\s*$", stripped))
-                )
+                return True
 
             async def send_buffer(force: bool = False) -> bool:
                 nonlocal buffer, pending_since_flush, last_payload_shape
@@ -774,23 +836,7 @@ class SarvamTTSChunkedStream(tts.ChunkedStream):
                 stream=False,
             )
 
-            lang = self._sarvam_tts._target_language_code.lower()
-            if lang == "kannada":
-                sarvam_lang = "kn-IN"
-            elif lang == "hindi":
-                sarvam_lang = "hi-IN"
-            elif lang == "english":
-                sarvam_lang = "en-IN"
-            else:
-                sarvam_lang = self._sarvam_tts._target_language_code
-
-            payload = {
-                "inputs": [self._input_text],
-                "target_language_code": sarvam_lang,
-                "speaker": self._sarvam_tts._speaker,
-                "model": self._sarvam_tts._model,
-                "pace": self._sarvam_tts._pace,
-            }
+            payload = _sarvam_tts_rest_payload(self._sarvam_tts, self._input_text)
             headers = {
                 "api-subscription-key": self._sarvam_tts._api_key,
                 "Content-Type": "application/json"

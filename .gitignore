@@ -19,6 +19,14 @@ env/
 .env.*.local
 frontend/.env.local
 
+# AWS deploy generated state - NEVER commit. Confirmed live 2026-09-10:
+# deploy/aws/.deploy-state/egress-access-key.json holds a REAL, active IAM
+# access key + secret (created by provision_infra.sh/push_secrets.sh), with
+# an EC2 instance id and account-id-bearing IAM policy JSON alongside it -
+# generated deployment output, not source, and one of these files is a live
+# credential that must never reach git history.
+deploy/aws/.deploy-state/
+
 # Database
 data/
 *.sqlite3

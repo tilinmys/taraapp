@@ -30,7 +30,12 @@ WORKER_DOWN_RE = re.compile(
 LOG_TS_RE = re.compile(r"(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 WORKER_READY_MAX_AGE_SECONDS = int(os.getenv("WORKER_READY_MAX_AGE_SECONDS", "86400"))
 WORKER_HEALTH_TAIL_LINES = int(os.getenv("WORKER_HEALTH_TAIL_LINES", "100000"))
-DEFAULT_AGENT_NAME = "mystree-care"
+# Default matches .env.local's LIVEKIT_AGENT_NAME - only reached if that var
+# is unset. NOT "mystree-care": a separate worker under that name runs on
+# this same LiveKit Cloud project, and a silent fallback would dispatch
+# calls to it instead of the Sakhi worker (2026-09-02) - see .env's
+# LIVEKIT_AGENT_NAME comment.
+DEFAULT_AGENT_NAME = "sakhi-maternal-care"
 
 
 def load_env() -> None:
@@ -195,7 +200,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # Unique room per call: reusing a fixed room name lets a second call join a
         # stale room whose agent already greeted or shut down, producing a silent call.
-        default_room = f"mystree-room-{int(time.time() * 1000):x}-{os.urandom(3).hex()}"
+        default_room = f"sakhi-room-{int(time.time() * 1000):x}-{os.urandom(3).hex()}"
         room = params.get("room", [default_room])[0]
         participant = f"clinic-user-{int(time.time())}"
 

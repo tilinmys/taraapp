@@ -129,6 +129,23 @@ def test_symptoms_accumulate_and_never_clear(repo):
     _run(go())
 
 
+def test_danger_sign_symptoms_persist_through_sql(repo):
+    """2026-08-30 regression: record_symptoms()'s INSERT/UPDATE only listed
+    headache/blurry_vision/swelling until this fix, so vaginal_bleeding and
+    severe_abdominal_pain - the two most clinically urgent symptoms in the
+    whole system - were silently dropped on every SQLite write and never
+    came back out of get_patient()."""
+    async def go():
+        m = await repo.create_patient(name="Suma Gowda")
+        await repo.record_symptoms(
+            m.patient_id, SymptomSet(vaginal_bleeding=True, severe_abdominal_pain=True)
+        )
+        fetched = await repo.get_patient(m.patient_id)
+        assert fetched.symptoms.vaginal_bleeding
+        assert fetched.symptoms.severe_abdominal_pain
+    _run(go())
+
+
 def test_a_spoken_name_with_sql_in_it_is_data_not_sql(repo):
     async def go():
         await repo.create_patient(name="Suma Gowda")
@@ -170,4 +187,68 @@ def test_phone_lookup_normalises(repo):
     async def go():
         await repo.create_patient(name="Suma Gowda", phone="98765-43210")
         assert await repo.find_patients(phone="9876543210")
+    _run(go())
+
+
+# --- call_reports: the path agent.py's real teardown now writes to ---------
+
+def test_save_call_report_round_trips_clinical_fields(repo):
+    async def go():
+        report_id = await repo.save_call_report({
+            "session_id": "room-123", "patient_id": "M-201", "language": "kn",
+            "risk_level": "HIGH_RISK", "intake_answered": 5, "intake_total": 26,
+            "escalated": True, "duration_ms": 42000.5,
+        })
+        assert report_id > 0
+        rows = await repo.list_call_reports()
+        assert rows[0]["session_id"] == "room-123"
+        assert rows[0]["risk_level"] == "HIGH_RISK"
+        assert rows[0]["escalated"] == 1
+        assert rows[0]["manual_risk_flag"] == 0, "should default unflagged"
+        assert rows[0]["flagged_to_doctor"] == 0
+    _run(go())
+
+
+def test_list_call_reports_orders_newest_first_and_respects_limit(repo):
+    async def go():
+        for i in range(5):
+            await repo.save_call_report({"session_id": f"room-{i}", "risk_level": "ROUTINE"})
+        rows = await repo.list_call_reports(limit=2)
+        assert len(rows) == 2
+        assert rows[0]["session_id"] == "room-4", "newest should be first"
+    _run(go())
+
+
+def test_set_report_flag_updates_the_whitelisted_field(repo):
+    async def go():
+        report_id = await repo.save_call_report({"session_id": "room-1"})
+        ok = await repo.set_report_flag(
+            report_id, field="manual_risk_flag", value=True, flagged_by="Dr. Rao"
+        )
+        assert ok
+        rows = await repo.list_call_reports()
+        assert rows[0]["manual_risk_flag"] == 1
+        assert rows[0]["flagged_by"] == "Dr. Rao"
+        assert rows[0]["flagged_at"], "flagged_at should be stamped"
+    _run(go())
+
+
+def test_set_report_flag_rejects_a_non_whitelisted_field(repo):
+    """A raw column name from an HTTP body must never reach SQL text
+    unvalidated - this is the guard against injection-by-column-name."""
+    async def go():
+        report_id = await repo.save_call_report({"session_id": "room-1"})
+        with pytest.raises(ValueError):
+            await repo.set_report_flag(
+                report_id, field="patient_id", value=True, flagged_by="x"
+            )
+    _run(go())
+
+
+def test_set_report_flag_on_missing_report_returns_false(repo):
+    async def go():
+        ok = await repo.set_report_flag(
+            99999, field="flagged_to_doctor", value=True, flagged_by="x"
+        )
+        assert ok is False
     _run(go())

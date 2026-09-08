@@ -148,25 +148,63 @@ GEMINI_VOICES = {
     "Leda": {"name": "Leda", "gender": "female", "style": "youthful, clear"},
 }
 
+# --- Murf.ai (evaluated, NOT PROMOTED - see murf_wrappers.py) ------------
+# Interleaved-benchmark REST latency (2026-08-21, real Sakhi greeting text):
+#   sarvam kn-IN manisha  573ms  |  gnani kn-IN Kaveri  984ms
+#   murf   kn-IN (cross-lingual, no native voice)      2282ms
+#   sarvam hi-IN manisha  629ms  |  murf hi-IN shweta (native)  2002ms
+# 2-4x slower than production on the only path that could be verified working
+# (Murf's low-latency websocket rejected every request in the India region;
+# see murf_wrappers.py for the exact error and what was tried). Also has NO
+# voice with kn-IN as its native locale - every kn-IN-capable entry is a
+# cross-lingual transfer from a different language's voice model, a real
+# quality risk on the project's primary language independent of latency.
+# Kept here, not in PROVIDERS, as a record of the evaluation - Hindi (which
+# does have native voices: hi-IN-shweta, hi-IN-ayushi) is a legitimate
+# candidate if a future need is Hindi-only.
+MURF_VOICES = {
+    "hi-IN-shweta": {"name": "Shweta", "gender": "female", "locale": "hi-IN",
+                      "style": "calm, conversational, native Hindi"},
+    "hi-IN-ayushi": {"name": "Ayushi", "gender": "female", "locale": "hi-IN",
+                      "style": "conversational, native Hindi"},
+    "bn-IN-anwesha": {"name": "Anwesha", "gender": "female", "locale": "bn-IN",
+                       "style": "conversational - Bengali-native, kn-IN is cross-lingual transfer"},
+}
+MURF_DEFAULT_MODEL = "GEN2"
+MURF_SAMPLE_RATE = 24000
+
 # --- Gnani.ai Timbre (timbre-v2.5) ---------------------------------------
-# Second Kannada provider. Benchmarked against Sarvam on identical Kannada text,
-# interleaved to control for network drift (2026-08-17):
+# Second Kannada provider. Original benchmark against Sarvam on identical
+# Kannada text (2026-08-17, interleaved to control for network drift):
 #
 #   Sarvam bulbul:v2 / manisha   p50 636ms   spread 253ms
 #   Gnani  timbre-v2.5 / Janaki  p50 655ms   spread 415ms
 #
-# Effectively tied on median; Sarvam has the tighter tail so it stays default.
-# Gnani speaks slower for the same sentence (6.2s vs 4.6s), which may suit a
-# rural ASHA worker better - a field judgement, hence both are selectable.
+# Effectively tied on median at the time; Sarvam had the tighter tail so it
+# stayed default.
+#
+# SUPERSEDED 2026-09-04: Gnani became the sole STT+TTS provider (no
+# fallback, per explicit instruction), which meant picking Gnani's OWN
+# fastest voice mattered on its own terms, not just relative to Sarvam. Six
+# real female voices benchmarked live against api.vachana.ai/api/v1/
+# tts/inference (3 runs each, median time-to-first-byte, real Kannada
+# clinical sentence): Kaveri 1026.7ms, Lavanya 1048.3ms, Radhika 1059.4ms,
+# Vidya 1078.1ms, Gauri 1071.6ms, Madhuri 1094.4ms - Kaveri fastest, and the
+# only one of the six also in the official livekit-plugins-gnani package's
+# own curated GnaniTTSVoices type (the voice Gnani's own plugin maintainers
+# vouch for, not merely one the raw API accepts). Janaki was not part of
+# that six-way comparison and its "fastest measured" label was accurate for
+# the older, narrower 2026-08-17 test only - removed here so it does not
+# read as still current.
 #
 # Female voices only: Sakhi is a female persona addressed as akkara.
 GNANI_VOICES = {
-    "Janaki":  {"name": "Janaki",  "gender": "female", "style": "warm, steady - fastest measured"},
+    "Kaveri":  {"name": "Kaveri",  "gender": "female", "style": "even pace - fastest measured, default"},
+    "Janaki":  {"name": "Janaki",  "gender": "female", "style": "warm, steady"},
     "Nayana":  {"name": "Nayana",  "gender": "female", "style": "soft, gentle"},
     "Lavanya": {"name": "Lavanya", "gender": "female", "style": "clear, measured"},
     "Vidya":   {"name": "Vidya",   "gender": "female", "style": "calm, professional"},
     "Lalita":  {"name": "Lalita",  "gender": "female", "style": "bright, friendly"},
-    "Kaveri":  {"name": "Kaveri",  "gender": "female", "style": "even pace"},
 }
 
 PROVIDERS = ("sarvam", "gnani")
@@ -184,10 +222,12 @@ PROVIDER_UNAVAILABLE_REASON: dict[str, str] = {}
 
 
 def default_voice(provider: str) -> str | None:
-    # "manisha", not "pooja": pooja is a bulbul:v3 speaker and the pilot runs
-    # bulbul:v2, so every call was logging a "Voice remapped" warning and
-    # falling back anyway. Naming the real default removes the remap entirely.
-    defaults = {"sarvam": "manisha", "gnani": "Janaki"}
+    # "shreya", not "manisha" (2026-09-08): bulbul:v2 is deprecated - the
+    # pilot's SARVAM_DEFAULT_MODEL is now bulbul:v3, and manisha is a v2-only
+    # speaker, so it was logging the exact "Voice remapped" warning this
+    # entry's naming was originally meant to avoid. shreya is a confirmed-
+    # live bulbul:v3 speaker (real 200 + audio bytes back, 2026-09-08).
+    defaults = {"sarvam": "shreya", "gnani": "Kaveri"}
     return defaults.get(provider)
 
 

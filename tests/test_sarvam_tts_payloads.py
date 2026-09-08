@@ -6,6 +6,7 @@ from sarvam_wrappers import (
     _payload_shape,
     _sarvam_tts_config_payload,
     _sarvam_tts_flush_payload,
+    _sarvam_tts_rest_payload,
     _sarvam_tts_text_payload,
 )
 
@@ -33,6 +34,21 @@ class SarvamTTSPayloadTests(unittest.TestCase):
         self.assertEqual(payload["data"]["speaker"], "rohan")
         self.assertEqual(payload["data"]["target_language_code"], "en-IN")
         self.assertNotIn("min_buffer_size", payload["data"])
+
+    def test_rest_payload_omits_preprocessing_by_default(self):
+        """2026-09-08: SarvamTTS defaults enable_preprocessing=False so this
+        pipeline's own pre-normalized text (sakhi_kannada.py's digit-to-
+        words transform) is never double-processed unless opted in."""
+        payload = _sarvam_tts_rest_payload(self.make_tts(), "hello")
+        self.assertNotIn("enable_preprocessing", payload)
+        self.assertEqual(payload["inputs"], ["hello"])
+        self.assertEqual(payload["model"], "bulbul:v3")
+
+    def test_rest_payload_includes_preprocessing_when_enabled(self):
+        payload = _sarvam_tts_rest_payload(
+            self.make_tts(enable_preprocessing=True), "hello"
+        )
+        self.assertEqual(payload["enable_preprocessing"], True)
 
     def test_plain_text_payload_shape(self):
         payload = _sarvam_tts_text_payload("I need to book an appointment.", max_chars=160)

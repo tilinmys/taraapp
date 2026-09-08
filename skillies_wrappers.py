@@ -52,10 +52,17 @@ class SkilliesTTS(tts.TTS):
             sample_rate=sample_rate,
             num_channels=NUM_CHANNELS,
         )
+        # A live key was previously hardcoded here as a silent fallback when
+        # SKILLIES_API_KEY was unset - a committed secret in plaintext, and
+        # inconsistent with every other provider in this codebase (Smallest,
+        # Rumik, Gemini all raise instead of silently using a baked-in key).
+        # Removed; fails loudly like the others.
         key = api_key if is_given(api_key) else os.getenv("SKILLIES_API_KEY", "")
         if not key:
-            key = "sk_47ca38b1a15c0f68fd9af507057a9cc8665b6601cd419c9c"
-            
+            raise ValueError(
+                "Skillies.ai API key is required, either as argument or SKILLIES_API_KEY env var"
+            )
+
         self._opts = _TTSOptions(
             voice_id=voice_id,
             sample_rate=sample_rate,

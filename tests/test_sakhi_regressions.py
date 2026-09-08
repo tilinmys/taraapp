@@ -85,14 +85,23 @@ def test_denied_symptoms_are_not_recorded(utterance):
     assert not detect_symptoms(utterance).any_present
 
 
-def test_symptom_heard_in_speech_flips_moderate_to_high_risk():
-    """The exact clinical miss from the live call."""
+def test_tier1_symptom_heard_in_speech_flips_routine_to_high_risk():
+    """The exact clinical miss from the live call, updated 2026-09-10: the
+    original reproduction used a hypertensive BP reading (145/95, then
+    MODERATE) plus a spoken headache to show that a symptom mentioned in raw
+    speech - not caught by the model's own tool call - still reaches
+    triage. That specific combination no longer demonstrates a "flip":
+    hypertensive-alone is now HIGH_RISK on its own (an explicit user
+    decision - see sakhi_triage.py's module docstring), so there is nothing
+    left to flip TO. The same regression - detect_symptoms() catching what
+    the model's tool call missed - is reproduced here with a Tier-1 sign
+    instead, which needs no BP reading at all to reach HIGH_RISK.
+    """
     state = SakhiCallState()
-    state.record_blood_pressure(BloodPressure(145, 95))
     state.record_assessment(TRIAGE.assess(state.blood_pressure, state.symptoms))
-    assert state.risk_level is RiskLevel.MODERATE
+    assert state.risk_level is RiskLevel.ROUTINE
 
-    state.record_symptoms(detect_symptoms("ತೀವ್ರವಾದ ತಲೆನೋವು ಇದೆ"))
+    state.record_symptoms(detect_symptoms("ರಕ್ತಸ್ರಾವ ಆಗ್ತಿದೆ"))
     state.record_assessment(TRIAGE.assess(state.blood_pressure, state.symptoms))
     assert state.risk_level is RiskLevel.HIGH_RISK
 
@@ -113,16 +122,23 @@ def test_model_reporting_no_symptoms_cannot_erase_a_heard_one():
 # --------------------------------------------------------------------------
 
 def test_escalation_is_refused_when_triage_does_not_require_it(repo):
+    """2026-09-10: BP(145, 95) used to land at MODERATE, the non-escalating
+    reading this test needed. It is now HIGH_RISK on its own (an explicit
+    user decision - see sakhi_triage.py's module docstring) and WOULD
+    require escalation, so it can no longer stand in for "triage does not
+    require it". A symptomatic-but-normal-BP reading (OBSERVATION) is used
+    instead - still a real, reachable non-escalating level.
+    """
     async def go():
         await repo.load()
         tools = ClinicalToolset(repo, TRIAGE)
         state = SakhiCallState(patient_id="M-201")
         ctx = types.SimpleNamespace(userdata=state)
 
-        await tools.record_bp(ctx, 145, 95)
-        assert state.risk_level is RiskLevel.MODERATE
+        await tools.record_symptoms(ctx, headache=True)
+        assert state.risk_level is RiskLevel.OBSERVATION
 
-        result = json.loads(await tools.connect_smfmi_specialist(ctx, "moderate risk"))
+        result = json.loads(await tools.connect_smfmi_specialist(ctx, "observation risk"))
         assert result["connected"] is False
         assert not state.escalated
         assert repo._data["teleconsult_logs"] == [], "bogus escalation was audited"

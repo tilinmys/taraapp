@@ -1,0 +1,143 @@
+/* Self-contained token block, not shared with page.module.css - this route
+   doesn't import the home page's module, so it redefines the same palette
+   rather than depending on another route's CSS module being loaded first. */
+:root {
+  --sk-bg: #fdfaf6;
+  --sk-surface: #ffffff;
+  --sk-ink: #1f2937;
+  --sk-ink-soft: #52606d;
+
+  --sk-primary: #0f766e;
+  --sk-primary-soft: #ccfbf1;
+
+  --sk-danger: #b91c1c;
+  --sk-danger-soft: #fee2e2;
+  --sk-warn: #b45309;
+  --sk-warn-soft: #fef3c7;
+  --sk-ok: #15803d;
+  --sk-ok-soft: #dcfce7;
+
+  --sk-line: #e7e2db;
+  --sk-radius: 16px;
+}
+
+.page {
+  min-height: 100dvh;
+  background: var(--sk-bg);
+  color: var(--sk-ink);
+  padding: 32px 24px 64px;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.header {
+  max-width: 1100px;
+  margin: 0 auto 24px;
+}
+
+.title {
+  font-size: 24px;
+  font-weight: 700;
+  margin: 0 0 4px;
+}
+
+.subtitle {
+  color: var(--sk-ink-soft);
+  margin: 0;
+  font-size: 14px;
+}
+
+.tableWrap {
+  max-width: 1100px;
+  margin: 0 auto;
+  background: var(--sk-surface);
+  border: 1px solid var(--sk-line);
+  border-radius: var(--sk-radius);
+  overflow-x: auto;
+}
+
+/* CSS Modules here requires every selector to include a local class - a bare
+   element selector like `table` or `th, td` is rejected at build time
+   ("Pure selectors must contain at least one local class or id"). Every
+   element selector below is scoped under .table for that reason. */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.table th,
+.table td {
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--sk-line);
+  white-space: nowrap;
+}
+
+.table th {
+  color: var(--sk-ink-soft);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.table tr:last-child td {
+  border-bottom: none;
+}
+
+.riskPill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.riskPill[data-level="HIGH_RISK"] { background: var(--sk-danger-soft); color: var(--sk-danger); }
+.riskPill[data-level="MODERATE"],
+.riskPill[data-level="OBSERVATION"] { background: var(--sk-warn-soft); color: var(--sk-warn); }
+.riskPill[data-level="ROUTINE"] { background: var(--sk-ok-soft); color: var(--sk-ok); }
+
+.flagBtn {
+  border: 1px solid var(--sk-line);
+  background: var(--sk-surface);
+  color: var(--sk-ink);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  margin-right: 6px;
+}
+
+.flagBtn:hover {
+  background: #f7f4ef;
+}
+
+.flagBtn[data-active="true"] {
+  background: var(--sk-danger-soft);
+  border-color: var(--sk-danger);
+  color: var(--sk-danger);
+}
+
+.flagBtn[data-active="true"][data-kind="doctor"] {
+  background: var(--sk-primary-soft);
+  border-color: var(--sk-primary);
+  color: var(--sk-primary);
+}
+
+.empty {
+  padding: 40px;
+  text-align: center;
+  color: var(--sk-ink-soft);
+}
+
+.error {
+  max-width: 1100px;
+  margin: 0 auto 16px;
+  padding: 12px 16px;
+  background: var(--sk-danger-soft);
+  border: 1px solid var(--sk-danger);
+  color: var(--sk-danger);
+  border-radius: 12px;
+  font-size: 14px;
+}

@@ -41,9 +41,14 @@ check("starts TRANSACTIONAL", c.state == "TRANSACTIONAL")
 
 c.evaluate_agent_text("May I please have your name?")
 check("name question -> HIGH_COGNITIVE_LOAD", c.state == "HIGH_COGNITIVE_LOAD")
+# Compare against the controller's OWN configured slow value, not a literal.
+# Hardcoding 1.0 asserted the deployment's env rather than the code, and broke
+# the moment VAD_ENDPOINT_SLOW_S was retuned after live-call feedback - the
+# same mistake the fast-delay check below already documents.
 check(
     "slow delay applied via public API",
-    session.update_options.call_args.kwargs["endpointing_opts"]["min_delay"] == 1.0,
+    session.update_options.call_args.kwargs["endpointing_opts"]["min_delay"]
+    == c._delays["HIGH_COGNITIVE_LOAD"],
 )
 
 c.evaluate_agent_text("Is ten thirty tomorrow okay for you?")

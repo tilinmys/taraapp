@@ -30,17 +30,23 @@ from typing import Any, Callable
 
 from livekit.agents import RunContext, llm
 
+from sakhi_intake import ANC_STAGES, stage_name
 from sakhi_domain import (
+    DANGER_SIGN_ADVISORY,
     BloodPressure,
     BloodPressureError,
     RiskLevel,
     SakhiCallState,
     SymptomSet,
+    clean_person_name,
+    danger_sign_lock_reason,
 )
 from sakhi_repository import (
     BIDAR_VILLAGES,
     PatientRepository,
+    assemble_spelled_name,
     correct_proper_noun,
+    spell_out,
 )
 from sakhi_triage import TriageEngine
 
@@ -58,6 +64,27 @@ EventSink = Callable[..., None]
 
 def _noop_event(*args: Any, **kwargs: Any) -> None:
     return None
+
+
+# One-tap keypad correction (Module C, 2026-08-30): the fields Live Form
+# Sync can show and a tapped keypad may overwrite. Checked BEFORE any
+# mutator dispatch in apply_field_correction() below - never trust a raw
+# field name from an RPC payload, same defensive reasoning as
+# sakhi_sql_repository.py's FLAGGABLE_FIELDS whitelist for the
+# reports-flag endpoint.
+CORRECTABLE_FIELDS = frozenset({
+    "systolic", "diastolic", "gestational_weeks",
+    "headache", "blurry_vision", "swelling",
+    "vaginal_bleeding", "severe_abdominal_pain",
+    "convulsions", "reduced_fetal_movement",
+    # Added 2026-09-10 with the Antenatal Quick Check rewrite's new
+    # SymptomSet fields (sakhi_domain.py) - apply_field_correction()'s
+    # generic "a symptom boolean" branch below already handles any field
+    # present in SymptomSet.to_dict() with no further code change, so these
+    # just need to be on the whitelist to be correctable.
+    "contractions", "upper_abdominal_pain", "fever", "urinary_symptoms",
+    "breathlessness", "palpitations", "severe_vomiting",
+})
 
 
 class ClinicalToolset:
@@ -103,6 +130,21 @@ class ClinicalToolset:
         )
         state.record_assessment(assessment)
 
+        # Tier-1 lock: this is the tool-driven re-triage path (record_bp,
+        # record_symptoms), the most common way HIGH_RISK is actually
+        # reached (e.g. a severe BP reading called in directly) - it needs
+        # the same lock check as agent.py's deterministic re-triage on raw
+        # speech, or a call that goes HIGH_RISK purely through a tool call
+        # would never lock. See sakhi_domain.py's danger_sign_lock_reason().
+        if assessment.level is RiskLevel.HIGH_RISK and not state.intake_locked:
+            state.lock_intake_on_danger_sign(danger_sign_lock_reason(state))
+            self._event(
+                "tools", "warn", "Intake locked - Tier-1 danger sign",
+                f"reason={state.intake_lock_reason}; questionnaire stops here for this call",
+                event="intake_locked_danger_sign",
+                reason=state.intake_lock_reason,
+            )
+
         # Track whether the write actually happened. The tool must not report
         # success the database did not deliver - see _result().
         persisted = False
@@ -127,34 +169,148 @@ class ClinicalToolset:
         )
         return assessment, persisted
 
+    async def apply_field_correction(self, state: SakhiCallState, field: str, value: Any):
+        """One-tap keypad correction (Module C, 2026-08-30): a value shown by
+        Live Form Sync, corrected directly from a numeric keypad rather than
+        through another voice round-trip. agent.py's `submit_correction` RPC
+        handler is a thin wrapper around this - kept here, not in agent.py,
+        so it is unit-testable without a LiveKit room and so it can reuse
+        `_retriage()` instead of duplicating its lock/persist logic a third
+        time (record_bp and record_symptoms are the other two call sites).
+
+        Raises ValueError - not RpcError - on any rejected field/value: this
+        module has no LiveKit dependency, and the RPC handler translates a
+        ValueError into the wire-level error instead.
+        """
+        if field not in CORRECTABLE_FIELDS:
+            raise ValueError(f"not a correctable field: {field!r}")
+
+        if field in ("systolic", "diastolic"):
+            current = state.blood_pressure
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                raise ValueError("value must be a number")
+            systolic = parsed if field == "systolic" else (current.systolic if current else None)
+            diastolic = parsed if field == "diastolic" else (current.diastolic if current else None)
+            if systolic is None or diastolic is None:
+                raise ValueError("cannot correct one BP number before both have been recorded once")
+            try:
+                state.record_blood_pressure(BloodPressure(systolic, diastolic))
+            except BloodPressureError as exc:
+                raise ValueError(str(exc)) from exc
+        elif field == "gestational_weeks":
+            try:
+                weeks = int(value)
+            except (TypeError, ValueError):
+                raise ValueError("value must be a number")
+            before = state.gestational_weeks
+            state.identify(gestational_weeks=weeks)
+            if state.gestational_weeks == before:
+                raise ValueError("value out of the accepted range")
+        else:
+            # A symptom boolean.
+            current_symptoms = state.symptoms.to_dict()
+            current_symptoms[field] = bool(value)
+            state.record_symptoms(SymptomSet(**current_symptoms))
+
+        assessment, _ = await self._retriage(state)
+        self._event(
+            "tools", "ok", "Field corrected via one-tap keypad",
+            f"{field} -> {value}",
+            event="field_corrected_via_rpc", field=field,
+            risk_level=assessment.level.value,
+        )
+        # Live Form Sync's chips must reflect a correction too, not just the
+        # three record_* tools - a keypad-typed BP correction on device A
+        # (e.g. a supervisor's tablet reviewing the same call) would
+        # otherwise never reach a second viewer polling the same log stream.
+        self._emit_live_form_sync(state)
+        return assessment
+
     @staticmethod
-    def _speak_instruction(assessment) -> str:
+    def _speak_instruction(state: SakhiCallState, assessment) -> str:
         """What the model should say, derived from the decided risk level.
 
         Phrased as guidance to the ASHA worker. Sakhi is a decision-support
         co-pilot, never a practitioner issuing a diagnosis (target spec §5.2).
+
+        HIGH_RISK is spoken immediately regardless of what else has been
+        asked - delaying a genuine emergency (e.g. a severe BP reading) to
+        wait for the rest of the questionnaire is not safe, and this tier's
+        timing is deliberately unchanged.
+
+        MODERATE/OBSERVATION are lower-stakes, non-emergency findings, and the
+        mother is often sitting right next to the ASHA worker while this call
+        happens - so these two tiers wait until BOTH the blood pressure AND
+        the symptom screen have actually been recorded (state.blood_pressure,
+        state.symptoms_screened) before saying anything about the reading or
+        the risk level at all. Checking the raw state fields directly here,
+        not IntakeProgress.answered, matters: that dict only gets refreshed
+        once per turn inside prompt_summary() (sakhi_domain.py), so it can be
+        one turn stale relative to what record_bp/record_symptoms just did.
         """
         if assessment.level is RiskLevel.HIGH_RISK:
+            # Include the matched first-aid advisory directly in THIS turn's
+            # instruction, not just relying on prompt_summary()'s locked-
+            # intake block next turn: when HIGH_RISK is reached via a tool
+            # call (record_bp/record_symptoms, the most common path), the
+            # lock is set mid-generation, after this turn's prompt_summary()
+            # was already built - so without this, the advisory would not
+            # reach the model until the turn after the emergency was found.
+            advisory = DANGER_SIGN_ADVISORY.get(state.intake_lock_reason or "", "")
             return (
                 "SAY: calmly tell the ASHA worker this reading needs urgent attention, "
                 "reassure her that the mother will be looked after, and that you are "
                 "connecting a specialist right now. Speak slowly and stay calm. "
+                f"Include this first-aid advisory: \"{advisory}\" "
                 "THEN call connect_smfmi_specialist immediately."
             )
+
+        vitals_complete = bool(state.blood_pressure) and state.symptoms_screened
+        if assessment.level in (RiskLevel.MODERATE, RiskLevel.OBSERVATION) and not vitals_complete:
+            return (
+                "Continue the intake normally. Do NOT mention the blood pressure "
+                "reading or any risk level yet - ask the next question instead."
+            )
+
         if assessment.level is RiskLevel.MODERATE:
             return (
-                "SAY: the reading is above the safe range but there are no danger "
-                "symptoms yet. Ask her to re-check the blood pressure within 48 hours "
-                "and to call back at once if headache, vision changes, or swelling appear."
+                "SAY, calmly: the reading is a little high, nothing to worry the "
+                "mother about right now. Ask her to re-check the blood pressure "
+                "within 48 hours and to call back if headache, vision changes, or "
+                "swelling appear."
             )
         if assessment.level is RiskLevel.OBSERVATION:
             return (
-                "SAY: the blood pressure is normal, but note the symptoms she reported "
-                "and ask her to watch them. Re-check at the next visit."
+                "SAY, calmly: the blood pressure is normal, but note the symptoms "
+                "she reported and ask her to keep an eye on them. Re-check at the "
+                "next visit."
             )
         return (
             "SAY: reassure her that the reading and the screening are both normal, "
             "then confirm the next ANC visit date."
+        )
+
+    def _emit_live_form_sync(self, state: SakhiCallState) -> None:
+        """Push the current verified slot values for the frontend's Live
+        Form Sync chips (2026-08-30, Module C).
+
+        Same one-way pipeline_event/poll channel every other dashboard
+        signal already uses (identity_fallback_needed, intake_answered,
+        etc.) - the frontend's poll loop gets one more `label ==` branch to
+        turn this into tap-to-correct chips, no new transport. This is
+        display-only; the actual correction round-trip is the
+        submit_correction RPC handler in agent.py, not this event.
+        """
+        self._event(
+            "tools", "info", "Live form sync",
+            "verified slot values updated",
+            event="live_form_sync",
+            systolic=state.blood_pressure.systolic if state.blood_pressure else None,
+            diastolic=state.blood_pressure.diastolic if state.blood_pressure else None,
+            symptoms=state.symptoms.to_dict(),
+            gestational_weeks=state.gestational_weeks,
         )
 
     def _result(self, state: SakhiCallState, assessment, *, persisted: bool = True, **extra: Any) -> str:
@@ -174,14 +330,14 @@ class ClinicalToolset:
             "recommended_action": assessment.recommended_action,
             "escalation_required": assessment.requires_escalation,
             "persisted": persisted,
-            "instruction": self._speak_instruction(assessment),
+            "instruction": self._speak_instruction(state, assessment),
         }
         if not persisted:
             payload["instruction"] = (
                 "DO NOT tell her the reading has been saved - it has not. "
                 "Say you still need the mother's name to file it, ask for her "
                 "name, and call search_patient or register_mother. "
-                + self._speak_instruction(assessment)
+                + self._speak_instruction(state, assessment)
             )
         payload.update(extra)
         return json.dumps(payload, ensure_ascii=False)
@@ -197,6 +353,31 @@ class ClinicalToolset:
     ) -> str:
         """Find a registered mother by name or phone. Call this first."""
         state = self._state(ctx)
+
+        # The worker was asked to spell the name; honour what she spelled.
+        #
+        # ASR delivers a spelled name as "S, U, M, A" / "S. U. M. A." / "s u m
+        # a". Searching that literal string finds nothing, so before this the
+        # spelling fallback was a dead end: Sakhi asked her to spell, she
+        # spelled, and the lookup failed again on the string she had just been
+        # asked to produce.
+        spelled = assemble_spelled_name(name) if name else None
+        if spelled:
+            self._event(
+                "tools", "info", "Spelled name assembled",
+                f"{name!r} -> {spelled!r}",
+                event="spelled_name_assembled", assembled=spelled,
+            )
+            name = spelled
+
+        # Security Authorization Check: Verify caller identity and block cross-tenant/patient probing
+        active_caller = getattr(state, "caller_phone", None) or getattr(ctx, "caller_phone", None)
+        if phone and active_caller:
+            from sakhi_repository import normalize_phone
+            if normalize_phone(phone) != normalize_phone(active_caller):
+                logger.warning("Security Alert: Unauthorized cross-patient access. Caller=%s, Target=%s", active_caller, phone)
+                raise PermissionError("403 Forbidden: Caller is not authorized to query records outside active session.")
+
         try:
             matches = await self._repo.find_patients(name=name, phone=phone)
         except Exception:
@@ -258,17 +439,31 @@ class ClinicalToolset:
                 }, ensure_ascii=False)
 
             if state.lookup_attempts >= 1 and name:
+                # Show the frontend text box instead of a second voice round-
+                # trip. Asking her to spell it letter-by-letter over voice
+                # used to be the fallback here - it burns another LLM/STT
+                # turn to fix a problem STT just caused, and often mishears
+                # the spelling too. Typing on screen is instant and exact.
+                #
+                # awaiting_identity_box is what actually stops the re-asking:
+                # tools_for() withdraws search_patient while it's set, so the
+                # model has no tool left to retry identity through voice even
+                # if it wanted to - the "say it once" instruction below is
+                # belt-and-braces, not the real enforcement mechanism.
+                state.awaiting_identity_box = True
+                self._event(
+                    "tools", "info", "Identity fallback: show text box",
+                    f"Voice lookup for \"{name}\" failed; arming frontend name/age entry",
+                    event="identity_fallback_needed",
+                )
                 return json.dumps({
                     "found": False,
                     "attempt": state.lookup_attempts,
                     "instruction": (
-                        "DO NOT ask for the name the same way again - it will be "
-                        "misheard the same way. Ask her to spell it letter by "
-                        "letter, separated by commas, and give this example: "
-                        "\"ದಯವಿಟ್ಟು ಹೆಸರನ್ನು ಅಕ್ಷರ-ಅಕ್ಷರವಾಗಿ ಹೇಳಿ... "
-                        "ಉದಾಹರಣೆಗೆ: S, U, M, A\". "
-                        "If she confirms the mother is new, ask for age, village "
-                        "and weeks pregnant, then call register_mother."
+                        "SAY (once): apologise briefly that the name did not come "
+                        "through clearly, and ask her to type the mother's name and "
+                        "age on the screen in front of her instead. THEN say nothing "
+                        "further about the name - do not ask again."
                     ),
                 }, ensure_ascii=False)
 
@@ -296,7 +491,12 @@ class ClinicalToolset:
         self._event("tools", "ok", "Patient found",
                     f"{best.name} ({best.patient_id}) risk={best.risk_status.value}",
                     event="patient_search", found=True,
-                    patient_id=best.patient_id, risk_level=best.risk_status.value)
+                    patient_id=best.patient_id, risk_level=best.risk_status.value,
+                    # name/age as structured fields (2026-08-30, SakhiHeader's
+                    # mother-name display) - not just embedded in `message`,
+                    # so the frontend never has to regex-scrape free text for
+                    # a value this codebase already computed.
+                    name=best.name, age=best.age)
 
         return json.dumps({
             "found": True,
@@ -356,7 +556,8 @@ class ClinicalToolset:
         )
         self._event("tools", "ok", "Mother registered",
                     f"{record.name} ({record.patient_id})",
-                    event="patient_registered", patient_id=record.patient_id)
+                    event="patient_registered", patient_id=record.patient_id,
+                    name=record.name, age=record.age)
 
         return json.dumps({
             "registered": True,
@@ -385,10 +586,19 @@ class ClinicalToolset:
         state.record_blood_pressure(bp)
         assessment, persisted = await self._retriage(state)
 
+        # Per-turn write receipt for the pre-speech guard (agent.py's
+        # tts_node). Set ONLY from `persisted`, which _retriage() sets only
+        # inside the actual repository write's success path - never from
+        # "we got this far" or "a patient exists". If the write did not
+        # happen, Sakhi must not be allowed to say it did.
+        if persisted:
+            state.bp_record_succeeded = True
+
         self._event("tools", "warn" if assessment.requires_escalation else "ok",
                     f"BP {bp} recorded", assessment.recommended_action,
                     event="bp_recorded", systolic=bp.systolic, diastolic=bp.diastolic,
                     risk_level=assessment.level.value)
+        self._emit_live_form_sync(state)
 
         return self._result(
             state, assessment,
@@ -412,19 +622,65 @@ class ClinicalToolset:
         headache: bool = False,
         blurry_vision: bool = False,
         swelling: bool = False,
+        vaginal_bleeding: bool = False,
+        severe_abdominal_pain: bool = False,
+        convulsions: bool = False,
+        reduced_fetal_movement: bool = False,
+        contractions: bool = False,
+        upper_abdominal_pain: bool = False,
+        fever: bool = False,
+        urinary_symptoms: bool = False,
+        breathlessness: bool = False,
+        palpitations: bool = False,
+        severe_vomiting: bool = False,
     ) -> str:
-        """Record the three danger symptoms and re-assess risk. True only for symptoms she reports."""
+        """Record danger symptoms and re-assess risk. True only for symptoms she reports.
+
+        vaginal_bleeding and severe_abdominal_pain are Tier-1 danger signs
+        (2026-08-30) - either one alone reaches HIGH_RISK regardless of blood
+        pressure. fever and breathlessness (2026-09-10) are ALSO Tier-1-alone,
+        per an explicit user decision matching the source PDF's RED FLAGS list
+        literally - see sakhi_triage.py. This tool call is not the only way
+        these get recorded: the deterministic detector
+        (sakhi_domain.detect_symptoms) also scans the ASHA worker's own words
+        for these signs as a safety net, the same way it already did for the
+        original three - the two paths OR together via merged_with(), never
+        overwrite each other.
+
+        A single grouped ASK question can cover several of these fields at
+        once (e.g. "any fever, urinary symptoms, breathlessness, palpitations,
+        or severe vomiting?") - pass every true finding she actually mentions
+        in ONE call rather than asking a separate follow-up per field.
+        """
         state = self._state(ctx)
         symptoms = SymptomSet(
             headache=bool(headache),
             blurry_vision=bool(blurry_vision),
             swelling=bool(swelling),
+            vaginal_bleeding=bool(vaginal_bleeding),
+            severe_abdominal_pain=bool(severe_abdominal_pain),
+            convulsions=bool(convulsions),
+            reduced_fetal_movement=bool(reduced_fetal_movement),
+            contractions=bool(contractions),
+            upper_abdominal_pain=bool(upper_abdominal_pain),
+            fever=bool(fever),
+            urinary_symptoms=bool(urinary_symptoms),
+            breathlessness=bool(breathlessness),
+            palpitations=bool(palpitations),
+            severe_vomiting=bool(severe_vomiting),
         )
         state.record_symptoms(symptoms)
 
         if state.patient_id:
             try:
                 await self._repo.record_symptoms(state.patient_id, symptoms)
+                # Per-turn write receipt for the pre-speech guard. Set HERE,
+                # inside the write's own success path - deliberately not from
+                # the `persisted` value returned below, which is OR'd with
+                # bool(patient_id) for the model's benefit and would therefore
+                # report success for a write that raised. See
+                # SakhiCallState.bp_record_succeeded's comment.
+                state.symptoms_record_succeeded = True
             except Exception:
                 logger.warning("Symptom persistence failed; call continues", exc_info=True)
 
@@ -433,6 +689,7 @@ class ClinicalToolset:
                     "Symptoms screened",
                     ", ".join(state.symptoms.present_names) or "none reported",
                     event="symptoms_recorded", risk_level=assessment.level.value)
+        self._emit_live_form_sync(state)
 
         return self._result(
             state, assessment,
@@ -440,6 +697,45 @@ class ClinicalToolset:
             recorded=True,
             symptoms_reported=list(state.symptoms.present_names) or ["none"],
         )
+
+    @llm.function_tool
+    async def record_gestational_age(self, ctx: RunContext, weeks: int) -> str:
+        """Record how many weeks pregnant she is, if mentioned mid-call rather than at registration.
+
+        Added 2026-08-30: gestational_weeks was previously only set inside
+        register_mother/search_patient at registration time - a later
+        mention ("she's 7 months along") had no tool to land in. Out-of-order
+        clinical facts must never be droppable, same reasoning as
+        record_bp/record_symptoms staying available in every phase - see
+        tools_for()'s always-available set below.
+        """
+        state = self._state(ctx)
+        before = state.gestational_weeks
+        state.identify(gestational_weeks=weeks)  # validates 1-45, silently drops out of range
+        if state.gestational_weeks == before:
+            self._event(
+                "tools", "warn", "Implausible gestational age rejected",
+                f"{weeks} weeks is out of the accepted 1-45 range",
+                event="gestational_age_rejected", weeks=weeks,
+            )
+            return json.dumps({
+                "recorded": False,
+                "instruction": "SAY: politely say you did not catch that clearly and ask "
+                               "how many months or weeks pregnant she is, again.",
+            }, ensure_ascii=False)
+
+        self._event(
+            "tools", "ok", "Gestational age recorded",
+            f"{state.gestational_weeks} weeks",
+            event="gestational_age_recorded", weeks=state.gestational_weeks,
+        )
+        self._emit_live_form_sync(state)
+        return json.dumps({
+            "recorded": True,
+            "gestational_weeks": state.gestational_weeks,
+            "instruction": "SAY: acknowledge it briefly, then continue with whatever "
+                           "question is next.",
+        }, ensure_ascii=False)
 
     @llm.function_tool
     async def connect_smfmi_specialist(self, ctx: RunContext, reason: str) -> str:
@@ -491,7 +787,8 @@ class ClinicalToolset:
         patient_id = state.patient_id or "UNREGISTERED"
         try:
             channel_id = await self._repo.log_teleconsult(
-                patient_id, reason, state.assessment
+                patient_id, reason, state.assessment,
+                trigger_sign=state.intake_lock_reason,
             )
         except Exception:
             logger.warning("Teleconsult logging failed", exc_info=True)
@@ -517,16 +814,227 @@ class ClinicalToolset:
 
     # --- registration --------------------------------------------------
 
-    def as_list(self) -> list:
-        """Bound tools, in the order the workflow uses them.
+    # --- ANC protocol tools (2026-09-02) --------------------------------
 
-        Returned as bound methods so LiveKit resolves `self` automatically while
-        keeping the generated schema free of it.
+    @llm.function_tool
+    async def record_anc_checkpoint(
+        self, ctx: RunContext, stage: int, parameter: str, value: str,
+    ) -> str:
+        """Record one answered ANC checkpoint (weight, IFA tablets, scan, Td, delivery place, 108 awareness).
+
+        Use this for the protocol answers that are NOT already covered by a
+        dedicated tool. Blood pressure still goes through record_bp, danger
+        signs through record_symptoms, gestation through
+        record_gestational_age - those carry clinical decision logic this one
+        deliberately does not duplicate.
+        """
+        state = self._state(ctx)
+        param = str(parameter or "").strip().lower().replace(" ", "_")
+        if not param:
+            return json.dumps({
+                "recorded": False,
+                "instruction": "SAY: ask the current stage question again, simply.",
+            }, ensure_ascii=False)
+
+        try:
+            stage_num = int(stage)
+        except (TypeError, ValueError):
+            stage_num = state.intake.current_stage()
+        stage_num = min(max(stage_num, 1), len(ANC_STAGES))
+
+        state.record_anc_checkpoint(stage_num, param, str(value)[:120])
+        self._event(
+            "tools", "ok", "ANC checkpoint recorded",
+            f"{stage_name(stage_num)} | {param}={str(value)[:60]}",
+            event="anc_checkpoint", stage=stage_num, parameter=param,
+        )
+        self._emit_live_form_sync(state)
+        return json.dumps({
+            "recorded": True,
+            "stage": stage_num,
+            "parameter": param,
+            "instruction": "SAY: acknowledge in under six words, then ask the NEXT QUESTION "
+                           "from the state block. Do not summarise what you recorded.",
+        }, ensure_ascii=False)
+
+    @llm.function_tool
+    async def record_patient_intake(self, ctx: RunContext, name: str, age: int) -> str:
+        """Stage 1 only: record the mother's name and age. No card or ID number is ever required.
+
+        Deliberately writes ONLY demographics. It does not look up, join
+        against, or require a Thayi card / RCH register row - an ASHA worker
+        in a doorway does not have that number, and gating an ANC screening
+        on it is how the call gets abandoned before the BP is taken.
+        """
+        state = self._state(ctx)
+        cleaned = clean_person_name(name)
+        if not cleaned:
+            self._event(
+                "tools", "warn", "Unusable intake name",
+                f"{name!r} did not look like a name", event="intake_name_rejected",
+            )
+            return json.dumps({
+                "recorded": False,
+                "instruction": "SAY: say you did not catch the name and ask for it once more, plainly.",
+            }, ensure_ascii=False)
+
+        before_age = state.age
+        state.identify(name=cleaned, age=age)
+        age_ok = state.age is not None and state.age != before_age or state.age == age
+
+        record = None
+        if self._repo is not None and not state.patient_id:
+            try:
+                record = await self._repo.create_patient(name=cleaned, age=state.age)
+                state.identify(patient_id=record.patient_id)
+            except Exception:
+                # A failed write must not stop the screening - the clinical
+                # value of this call is the BP and the red flags, not the row.
+                logger.warning("Stage-1 intake persistence failed", exc_info=True)
+
+        self._event(
+            "tools", "ok", "Patient intake recorded",
+            f"{cleaned}, {state.age}", event="patient_intake",
+            patient_id=state.patient_id, name=cleaned, age=state.age,
+        )
+        self._emit_live_form_sync(state)
+        return json.dumps({
+            "recorded": True,
+            "name": cleaned,
+            "age": state.age,
+            "age_accepted": bool(age_ok),
+            "instruction": "SAY: greet her by name in under ten words, then move to Stage 2 "
+                           "and ask which month of pregnancy she is in.",
+        }, ensure_ascii=False)
+
+    @llm.function_tool
+    async def check_pregnancy_risk_factors(self, ctx: RunContext) -> str:
+        """Re-run the deterministic obstetric risk check over everything recorded so far.
+
+        Returns whether an emergency referral is required. The decision is
+        made in code (sakhi_triage.TriageEngine), never by you - you only
+        speak the result.
+        """
+        state = self._state(ctx)
+        assessment, _ = await self._retriage(state)
+        emergency = assessment.level is RiskLevel.HIGH_RISK
+        advisory = DANGER_SIGN_ADVISORY.get(state.intake_lock_reason or "", "") if emergency else ""
+        return json.dumps({
+            "emergency": emergency,
+            "risk_level": assessment.level.value,
+            "trigger": state.intake_lock_reason if emergency else None,
+            "reasons": list(assessment.reasons),
+            "instruction": (
+                "SAY: calmly tell her this needs immediate hospital transfer, deliver "
+                f"this advisory in full: \"{advisory}\" THEN call "
+                "connect_smfmi_specialist immediately."
+                if emergency else
+                "SAY: nothing about risk. Continue with the NEXT QUESTION from the state block."
+            ),
+        }, ensure_ascii=False)
+
+    def as_list(self) -> list:
+        """Every tool. Use `tools_for(state)` on a live call instead.
+
+        Kept for tests and for the initial Agent construction, where no call
+        state exists yet.
         """
         return [
             self.search_patient,
             self.register_mother,
             self.record_bp,
             self.record_symptoms,
+            self.record_gestational_age,
+            self.record_anc_checkpoint,
+            self.record_patient_intake,
+            self.check_pregnancy_risk_factors,
             self.connect_smfmi_specialist,
         ]
+
+    def tools_for(self, state) -> list:
+        """The tool surface for the CURRENT phase of this call.
+
+        A prompt rule like "only register after search_patient found nothing"
+        is a suggestion the model follows probabilistically. A tool the model
+        cannot see is a rule it cannot break. Two failures observed by calling
+        the tools directly, both of which this makes structurally impossible:
+
+          - `register_mother` called twice created M-201 AND M-202 for the same
+            mother. Nothing deduplicated, so a re-registration mid-call
+            silently forked the record and the second half of the screening
+            was filed against a patient with no history.
+          - `connect_smfmi_specialist` with no patient identified returned
+            `connected: True` while the teleconsult audit INSERT died on a
+            foreign-key violation. A specialist reported as paged, with no
+            record that it happened - the worst possible combination on a
+            referral.
+
+        DELIBERATELY NOT a strict linear state machine. An ASHA worker reports
+        facts out of order ("her BP is one sixty over one ten" before any name
+        is known), and the prompt's "dynamic absorption" requirement depends on
+        Sakhi being able to record that immediately. So `record_bp` and
+        `record_symptoms` stay available in every phase - they already degrade
+        safely, returning `persisted: False` with an instruction not to claim
+        the reading was saved. Only the two tools whose misuse is irreversible
+        are gated.
+        """
+        # Always available: out-of-order clinical facts must never be droppable.
+        #
+        # record_anc_checkpoint, record_patient_intake, and
+        # check_pregnancy_risk_factors were added here 2026-09-10, closing a
+        # real, previously-undiscovered gap: they existed in
+        # ClinicalToolset.as_list() and were reachable at initial Agent
+        # construction, but this method - the list actually used for the
+        # PER-TURN re-scope that fires on essentially every turn (see
+        # agent.py's llm_node) - never included them. From the second turn
+        # onward the model had no live tool call left to reach them at all,
+        # so every question meant to be recorded via record_anc_checkpoint
+        # (weight, IFA, scans, Td, and now pallor/FHR/lab-review/chronic
+        # disease/medications, added in the same rewrite this fixes) was
+        # silently unrecordable through most of a call. No test exercised
+        # this because existing tests call these tools directly on the
+        # toolset object, bypassing tools_for() entirely - see
+        # tests/test_scoped_tools.py.
+        tools = [
+            self.record_bp, self.record_symptoms, self.record_gestational_age,
+            self.record_anc_checkpoint, self.record_patient_intake,
+            self.check_pregnancy_risk_factors,
+        ]
+
+        if not getattr(state, "patient_id", None):
+            # Identity not settled: look her up, or create her.
+            tools = [self.search_patient, self.register_mother, *tools]
+        else:
+            # Identified. `register_mother` is withdrawn here - that is the
+            # duplicate-record bug above, removed as a possibility rather than
+            # as an instruction. `search_patient` stays: the worker may correct
+            # the name and need a re-lookup.
+            tools = [self.search_patient, *tools]
+
+        # While the frontend name/age box is up, withdraw search_patient so
+        # the model has nothing left to call to retry identity through voice
+        # - the structural half of "stop nudging via the LLM about the name".
+        # Re-offered automatically once the box resolves (awaiting_identity_
+        # box clears), matching normal post-identification behaviour.
+        #
+        # Filtered by __name__, not `is` - each `self.search_patient`
+        # attribute access returns a fresh livekit FunctionTool wrapper
+        # object (verified: `ts.search_patient is ts.search_patient` is
+        # False), so an identity check would silently never match anything.
+        if getattr(state, "awaiting_identity_box", False):
+            tools = [t for t in tools if t.__name__ != "search_patient"]
+
+        # Paging a specialist is an outward-facing, irreversible action. It
+        # appears only once TriageEngine has actually classified this mother
+        # HIGH_RISK - the model never gets to decide that it qualifies.
+        assessment = getattr(state, "assessment", None)
+        level = getattr(assessment, "level", None)
+        if (
+            getattr(state, "patient_id", None)
+            and level is not None
+            and getattr(level, "value", str(level)) == "HIGH_RISK"
+            and not getattr(state, "escalated", False)
+        ):
+            tools.append(self.connect_smfmi_specialist)
+
+        return tools

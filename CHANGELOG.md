@@ -5,6 +5,57 @@ Companion docs: [CALL_FLOW.md](CALL_FLOW.md) (conversation wireframe), [LATENCY_
 
 ---
 
+## -11. 2026-08-21 — Murf.ai TTS evaluated, not promoted
+
+User supplied a live Murf.ai key and asked for a fair latency/quality
+evaluation against production (Sarvam/Gnani), for Kannada and Hindi
+specifically ("perfect in rural area").
+
+- **New**: [murf_wrappers.py](murf_wrappers.py) - `MurfTTS(tts.TTS)`, REST
+  path only (`POST /v1/speech/generate`, `encodeAsBase64: true`). Verified
+  live end to end (55KB of real audio decoded and pushed through
+  `AudioEmitter`) - caught and fixed a real bug in the process: the response's
+  `audioLengthInSeconds` (a float) was wrongly passed as `request_id` (must be
+  str), which failed LiveKit's `TTSMetrics` pydantic validation on stream
+  close. Only surfaced by actually running the wrapper end to end, not by
+  reading it.
+- **Finding (blocking, quality)**: queried `GET /v1/speech/voices` live (162
+  voices). **No voice has kn-IN as its native locale** - every kn-IN-capable
+  entry is a different language's voice model cross-lingually steered into
+  Kannada (benchmarked candidate `bn-IN-anwesha` is Bengali-native). Kannada
+  is this project's primary language; this is the exact failure mode Sarvam
+  and Gnani were chosen to avoid, independent of latency.
+- **Finding (blocking, latency)**: interleaved REST benchmark (4 rounds, real
+  Sakhi greeting text, controlling for network drift):
+
+  | provider | voice | native? | ttfb median | max |
+  |---|---|---|---|---|
+  | sarvam kn-IN | manisha | yes | 573ms | 744ms |
+  | gnani kn-IN | Kaveri | yes | 984ms | 1708ms |
+  | murf kn-IN | bn-IN-anwesha | **no** | 2282ms | 2725ms |
+  | sarvam hi-IN | manisha | yes | 629ms | 770ms |
+  | murf hi-IN | hi-IN-shweta | yes | 2002ms | 2463ms |
+
+  Murf's only verified-working path is 2-4x slower than current production
+  in both languages.
+- **Unresolved**: Murf's documented "ultra-low latency" websocket
+  (`wss://in.api.murf.ai/v1/speech/stream-input`, India region) rejected
+  every attempt with `1008 Gen2 Model is not available in in.api.murf.ai. Use
+  Falcon model here...`. Tried both plausible field names (`model` and
+  `modelVersion: FALCON`) inside `voice_config`; both rejected identically.
+  Not implemented - needs Murf support to clarify, not more guessing at an
+  undocumented protocol. The REST numbers above are real but are not Murf's
+  best case.
+- **Verdict**: not wired in. `TTS_PROVIDER` stays `gnani` (same-language
+  Sarvam/Gnani chain, unchanged). Recorded in
+  [voice_catalog.py](voice_catalog.py) (`MURF_VOICES`, not in `PROVIDERS`) as
+  Hindi-only candidate if that need ever arises on its own.
+- **Fixed in passing**: [skillies_wrappers.py](skillies_wrappers.py) had a
+  live API key hardcoded as a silent fallback whenever `SKILLIES_API_KEY` was
+  unset - a committed secret in plaintext, inconsistent with every other
+  provider wrapper in this file set (all of which raise instead). Removed;
+  now fails loudly like the others.
+
 ## -10. 2026-07-16 — Adaptive VAD: context-aware end-of-utterance timing
 
 New `DynamicVADController` (agent.py), one instance per call: endpointing

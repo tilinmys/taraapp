@@ -33,7 +33,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import voice_catalog  # noqa: E402
 from vercel_common import fetch_logs, fetch_worker_status  # noqa: E402
 
-DEFAULT_AGENT_NAME = "mystree-care"
+# Default matches LIVEKIT_AGENT_NAME in the deployed env - only reached if
+# that var is unset. NOT "mystree-care": a separate worker under that name
+# runs on this same LiveKit Cloud project, and a silent fallback would
+# dispatch calls to it instead of the Sakhi worker (2026-09-02) - see
+# .env's LIVEKIT_AGENT_NAME comment in the main repo.
+DEFAULT_AGENT_NAME = "sakhi-maternal-care"
 
 
 # --- token issuance + dispatch -------------------------------------------
@@ -120,7 +125,7 @@ class handler(BaseHTTPRequestHandler):
 
         # Unique room per call: reusing a fixed room name lets a second call join a
         # stale room whose agent already greeted or shut down, producing a silent call.
-        default_room = f"mystree-room-{int(time.time() * 1000):x}-{os.urandom(3).hex()}"
+        default_room = f"sakhi-room-{int(time.time() * 1000):x}-{os.urandom(3).hex()}"
         room = params.get("room", [default_room])[0]
         participant = f"clinic-user-{int(time.time())}"
 
@@ -163,6 +168,7 @@ class handler(BaseHTTPRequestHandler):
                 return
             dispatch_id = create_agent_dispatch(room, metadata)
             token = livekit_token(room, participant, metadata)
+            worker_url = os.getenv("RAILWAY_WORKER_URL", "").strip().rstrip("/")
             self._send_json(
                 {
                     "token": token,
@@ -172,6 +178,7 @@ class handler(BaseHTTPRequestHandler):
                     "voice": voice or "default",
                     "dispatch_id": dispatch_id,
                     "worker": status,
+                    "worker_url": worker_url,
                 }
             )
         except Exception as exc:

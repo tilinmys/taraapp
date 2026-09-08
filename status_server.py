@@ -23,6 +23,7 @@ import os
 import re
 import threading
 import time
+import queue
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,6 +31,10 @@ from urllib.parse import parse_qs, urlparse
 
 import db_helper
 import voice_catalog
+
+# SSE client registry for real-time log streaming
+_sse_clients: list[queue.Queue] = []
+_sse_lock = threading.Lock()
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 PIPELINE_LOG_PATH = Path(os.getenv("PIPELINE_LOG_PATH", "logs/pipeline_events.jsonl"))
@@ -133,10 +138,45 @@ def provider_summary() -> dict:
                 _seen.add(_part.strip())
     groq_key_count = len(_seen)
 
-    # Mirrors build_stt(): Sarvam unless STT_PRIMARY explicitly says deepgram.
-    stt_primary_deepgram = (
-        os.getenv("STT_PRIMARY", "sarvam").strip().lower() == "deepgram"
-        and bool(os.getenv("DEEPGRAM_API_KEY"))
+    # Mirrors build_stt()'s real dispatch order exactly (agent.py) - this had
+    # drifted stale twice already: it never grew a "smallest" branch when
+    # SmallestAI STT was wired, and it never grew a "gnani" branch either
+    # (2026-09-04) - both times meaning this dashboard kept reporting
+    # "deepgram" as primary (the `elif _deepgram_key` fallthrough, which
+    # fires whenever a Deepgram key merely EXISTS, regardless of what
+    # STT_PRIMARY actually names) while the real worker was listening
+    # through a different provider entirely. Fixed by mirroring
+    # build_stt()'s if/elif chain directly instead of hand-picking two of
+    # its four branches.
+    _stt_primary_requested = os.getenv("STT_PRIMARY", "deepgram").strip().lower()
+    _deepgram_key = bool(os.getenv("DEEPGRAM_API_KEY"))
+    _sarvam_key = bool(os.getenv("SARVAM_API_KEY"))
+    _smallest_key = bool(os.getenv("SMALLEST_API_KEY"))
+    _gnani_key = bool(os.getenv("GNANI_API_KEY"))
+    if _stt_primary_requested == "gnani" and _gnani_key:
+        stt_primary_name = "gnani"
+    elif _stt_primary_requested == "smallest" and _smallest_key:
+        stt_primary_name = "smallest"
+    elif _stt_primary_requested == "sarvam" and _sarvam_key:
+        stt_primary_name = "sarvam"
+    elif _deepgram_key:
+        stt_primary_name = "deepgram"
+    else:
+        stt_primary_name = "sarvam"
+    stt_fallback_enabled = _env_flag("VOICE_STT_FALLBACK_ENABLED", True)
+    _STT_MODELS = {
+        "deepgram": os.getenv("DEEPGRAM_STT_MODEL", "nova-3"),
+        "sarvam": "saarika",
+        "smallest": os.getenv("SMALLEST_STT_MODEL", "pulse"),
+        "gnani": "stt/v3",
+    }
+    # Only Deepgram<->Sarvam ever had a real fallback pair in build_stt();
+    # Gnani and SmallestAI return bare (no backup branch exists for them
+    # there either), so the dashboard must not invent one.
+    _stt_fallback_name = (
+        "sarvam" if stt_primary_name == "deepgram"
+        else "deepgram" if stt_primary_name == "sarvam"
+        else None
     )
 
     # Mirrors build_llm(): Groq group leads, OpenRouter is the cross-vendor
@@ -156,18 +196,42 @@ def provider_summary() -> dict:
 
     hedged = bool(groq_key_count and openrouter_key and _env_flag("SAKHI_LLM_HEDGE", True))
 
-    # Mirrors build_tts(): same-language chain only. The backup is the OTHER
-    # Indic provider, never an English voice - a cross-language failover
-    # changed the voice mid-sentence (see changed.md 14.1).
-    tts_provider = os.getenv("TTS_PROVIDER", "sarvam").strip().lower()
+    # Mirrors build_tts()'s real dispatch (agent.py). Was missing a
+    # "smallest_ai" branch entirely (fell through to the vakyam `else` and
+    # mislabeled it) and always populated "fallback"/"fallback_chain" with a
+    # real-looking provider regardless of VOICE_TTS_FALLBACK_ENABLED - this
+    # deployment runs with that flag false (single provider, no fallback,
+    # 2026-09-02 pilot direction), so the dashboard was showing a fallback
+    # chain that was never actually wired into any live call. Fixed to
+    # report "none" when the flag is off, matching how the STT half of this
+    # same function already handled its own fallback flag correctly.
+    tts_provider = os.getenv("TTS_PROVIDER", "vakyam").strip().lower()
     sarvam_voice = os.getenv("SARVAM_SPEAKER", "manisha")
-    gnani_voice = os.getenv("GNANI_VOICE", "Janaki")
+    gnani_voice = os.getenv("GNANI_VOICE", "Kaveri")
+    vakyam_voice = os.getenv("VAKYAM_VOICE", "Ananya")
+    smallest_tts_voice = os.getenv("SMALLEST_TTS_VOICE", "maithili")
+    tts_fallback_enabled = _env_flag("VOICE_TTS_FALLBACK_ENABLED", True)
+    tts_fallback_chain = None
     if tts_provider == "gnani":
         tts_primary = {"provider": "gnani", "model": "timbre-v2.5", "voice": gnani_voice}
         tts_fallback = {"provider": "sarvam", "model": "bulbul:v2", "voice": sarvam_voice}
-    else:
+    elif tts_provider == "sarvam":
         tts_primary = {"provider": "sarvam", "model": "bulbul:v2", "voice": sarvam_voice}
         tts_fallback = {"provider": "gnani", "model": "timbre-v2.5", "voice": gnani_voice}
+    elif tts_provider == "smallest_ai":
+        tts_primary = {"provider": "smallest_ai", "model": "lightning_v3.1_pro", "voice": smallest_tts_voice}
+        tts_fallback = {"provider": "none", "model": "-"}  # build_tts() defines no same-language backup for it
+    else:
+        tts_primary = {"provider": "vakyam", "model": "raaga-v1", "voice": vakyam_voice}
+        tts_fallback = {"provider": "gnani", "model": "timbre-v2.5", "voice": gnani_voice}
+        if tts_fallback_enabled:
+            tts_fallback_chain = [
+                tts_fallback,
+                {"provider": "sarvam", "model": "bulbul:v2", "voice": sarvam_voice},
+            ]
+    if not tts_fallback_enabled:
+        tts_fallback = {"provider": "none", "model": "-"}
+        tts_fallback_chain = None
 
     return {
         "llm": {
@@ -181,16 +245,17 @@ def provider_summary() -> dict:
         "tts": {
             "primary": tts_primary,
             "fallback": tts_fallback,
+            "fallback_chain": tts_fallback_chain,  # None unless Vakyam is primary (3-tier chain)
             "same_language_chain": True,
             "pace": float(os.getenv("SARVAM_PACE", "1.0")),
         },
         "stt": {
-            "primary": (
-                {"provider": "deepgram", "model": os.getenv("DEEPGRAM_STT_MODEL", "nova-3")}
-                if stt_primary_deepgram
-                else {"provider": "sarvam", "model": "saarika"}
+            "primary": {"provider": stt_primary_name, "model": _STT_MODELS[stt_primary_name]},
+            "fallback": (
+                {"provider": _stt_fallback_name, "model": _STT_MODELS[_stt_fallback_name]}
+                if stt_fallback_enabled and _stt_fallback_name
+                else {"provider": "none", "model": "-"}
             ),
-            "fallback": {"provider": "none", "model": "-"},
         },
         "turn_detection": {
             "mode": os.getenv("VOICE_TURN_DETECTION_MODE", "vad"),
@@ -261,6 +326,226 @@ def config_payload() -> dict:
     return {"providers": provider_summary(), "tts_catalog": voice_catalog.as_json_catalog()}
 
 
+# Mirrors SQLitePatientRepository.FLAGGABLE_FIELDS (sakhi_sql_repository.py).
+# Duplicated rather than imported: this server is a plain sync stdlib thread,
+# separate from the agent's asyncio loop (see module docstring), so it reads/
+# writes SQLite directly here rather than bridging into the async repository -
+# same pattern maternal_db_status() already uses for reads.
+REPORT_FLAGGABLE_FIELDS = ("manual_risk_flag", "flagged_to_doctor")
+
+
+def _recording_s3_client():
+    """Lazy boto3 client, or None if boto3/creds aren't available.
+
+    A local-mock dev run has neither installed nor configured - this must
+    degrade to "no recording info" rather than crash the whole /reports
+    endpoint just because the recording feature isn't set up here."""
+    bucket = os.getenv("RECORDING_S3_BUCKET", "")
+    if not bucket:
+        return None, None
+    try:
+        import boto3
+
+        return boto3.client("s3", region_name=os.getenv("RECORDING_S3_REGION", "ap-south-1")), bucket
+    except Exception:
+        return None, None
+
+
+def _enrich_recording_status(rows: list[dict]) -> list[dict]:
+    """Confirms in S3, not just claimed by the DB: a row can say
+    recording_status='stopped' the instant egress was told to stop, but the
+    file only actually lands in S3 asynchronously afterward (seconds to a
+    couple minutes, no webhook receiver here to know exactly when). This is
+    the "check whether the recording is actually happening" signal - a real
+    HeadObject against the bucket, not just trusting what agent.py wrote at
+    call-teardown time. Rows already 'available' skip the re-check (nothing
+    changes once it's landed); rows 'none' never had a recording to check.
+    """
+    client, bucket = _recording_s3_client()
+    if client is None:
+        for row in rows:
+            row["recording_url"] = None
+        return rows
+    for row in rows:
+        status = row.get("recording_status") or "none"
+        key = row.get("recording_key")
+        if status == "none" or not key:
+            row["recording_url"] = None
+            continue
+        if status != "available":
+            try:
+                client.head_object(Bucket=bucket, Key=key)
+                status = "available"
+                row["recording_status"] = "available"
+                # Write-through so the next /reports load skips the S3 round
+                # trip for this row entirely - see update_recording_status().
+                _mark_recording_available(row.get("session_id"))
+            except Exception:
+                pass  # not there yet (or a transient S3 error) - still 'stopped', dashboard shows "processing"
+        if status == "available":
+            try:
+                row["recording_url"] = client.generate_presigned_url(
+                    "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=3600
+                )
+            except Exception:
+                row["recording_url"] = None
+        else:
+            row["recording_url"] = None
+    return rows
+
+
+def _mark_recording_available(session_id: str | None) -> None:
+    if not session_id:
+        return
+    path = Path(os.getenv("SAKHI_DB_PATH", "data/sakhi.sqlite3"))
+    if not path.exists():
+        return
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(str(path), timeout=5)
+        conn.execute(
+            "UPDATE call_reports SET recording_status = 'available' WHERE session_id = ?",
+            (session_id,),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # best-effort cache write; the next load just re-checks S3
+
+
+def list_reports(limit: int = 50) -> dict:
+    """Recent call_reports rows, most recent first - feeds the reports page."""
+    path = Path(os.getenv("SAKHI_DB_PATH", "data/sakhi.sqlite3"))
+    if not path.exists():
+        return {"reports": []}
+    import sqlite3
+
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT * FROM call_reports ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    finally:
+        conn.close()
+    return {"reports": _enrich_recording_status([dict(row) for row in rows])}
+
+
+# MCP (Mother and Child Protection) card / RCH register field mapping
+# (2026-08-30, Module C). DRAFT - this maps the fields Sakhi already collects
+# onto plausible MCP-card/RCH-register field names; it has NOT been checked
+# against the actual physical government form layout. Verify against a real
+# card before this is used as anything but an on-screen visit summary.
+#
+# call_reports (one row per call) has no clinical values of its own beyond
+# risk_level/escalated/intake progress - the actual readings live keyed by
+# patient_id in mothers/bp_records/symptom_records/teleconsults. This joins
+# them at read time rather than widening call_reports, since those tables
+# already hold the patient's running clinical picture and a call_reports row
+# on its own was never meant to duplicate it.
+def mcp_card_for_report(*, report_id: int | None = None, session_id: str | None = None) -> dict | None:
+    """Build one MCP/RCH-shaped visit summary. Looked up by either the
+    call_reports row id (what the /reports dashboard has) or session_id
+    (the LiveKit room name, which is what the caller's own frontend page
+    already knows right after end_call, with no extra round trip needed to
+    learn a SQL row id it was never given)."""
+    if report_id is None and not session_id:
+        return None
+    path = Path(os.getenv("SAKHI_DB_PATH", "data/sakhi.sqlite3"))
+    if not path.exists():
+        return None
+    import sqlite3
+
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+    conn.row_factory = sqlite3.Row
+    try:
+        if report_id is not None:
+            report = conn.execute(
+                "SELECT * FROM call_reports WHERE id = ?", (report_id,)
+            ).fetchone()
+        else:
+            report = conn.execute(
+                "SELECT * FROM call_reports WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        if report is None:
+            return None
+        report = dict(report)
+
+        mother = None
+        bp = None
+        teleconsult = None
+        if report.get("patient_id"):
+            row = conn.execute(
+                "SELECT * FROM mothers WHERE patient_id = ?", (report["patient_id"],)
+            ).fetchone()
+            mother = dict(row) if row else None
+            row = conn.execute(
+                "SELECT * FROM bp_records WHERE patient_id = ? ORDER BY id DESC LIMIT 1",
+                (report["patient_id"],),
+            ).fetchone()
+            bp = dict(row) if row else None
+            row = conn.execute(
+                "SELECT * FROM teleconsults WHERE patient_id = ? ORDER BY id DESC LIMIT 1",
+                (report["patient_id"],),
+            ).fetchone()
+            teleconsult = dict(row) if row else None
+    finally:
+        conn.close()
+
+    mother = mother or {}
+    danger_signs = [
+        label for flag, label in (
+            (mother.get("headache"), "Severe headache"),
+            (mother.get("blurry_vision"), "Blurred vision"),
+            (mother.get("swelling"), "Swelling (hands/face/legs)"),
+            (mother.get("vaginal_bleeding"), "Vaginal bleeding"),
+            (mother.get("severe_abdominal_pain"), "Severe abdominal pain / leaking fluid"),
+        ) if flag
+    ]
+    return {
+        "draft_needs_form_verification": True,
+        "mother_name": mother.get("name"),
+        "age": mother.get("age"),
+        "village": mother.get("village"),
+        "phone": mother.get("phone"),
+        "gestational_weeks": mother.get("gestational_weeks"),
+        "blood_pressure": f"{bp['systolic']}/{bp['diastolic']}" if bp else None,
+        "danger_signs": danger_signs,
+        "risk_category": report.get("risk_level"),
+        "referral_status": "Referred to specialist" if report.get("escalated") else "Not referred",
+        "referral_trigger": teleconsult.get("trigger_sign") if (teleconsult and report.get("escalated")) else None,
+        "questions_answered": f"{report.get('intake_answered', 0)}/{report.get('intake_total', 0)}",
+        "visit_date": report.get("created_at"),
+        "language": report.get("language"),
+    }
+
+
+def set_report_flag(report_id: int, field: str, value: bool, flagged_by: str | None) -> tuple[bool, str | None]:
+    """Returns (ok, error). error is None on success, else a short reason string."""
+    if field not in REPORT_FLAGGABLE_FIELDS:
+        return False, f"not a flaggable field: {field!r}"
+    path = Path(os.getenv("SAKHI_DB_PATH", "data/sakhi.sqlite3"))
+    if not path.exists():
+        return False, "database not created yet"
+    import sqlite3
+    from datetime import timezone
+
+    conn = sqlite3.connect(str(path), timeout=5)
+    try:
+        cur = conn.execute(
+            f"UPDATE call_reports SET {field} = ?, flagged_by = ?, flagged_at = ? WHERE id = ?",
+            (int(bool(value)), flagged_by, datetime.now(timezone.utc).isoformat(timespec="seconds"), report_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return False, "report not found"
+        return True, None
+    finally:
+        conn.close()
+
+
 def _read_logs(since: int) -> dict:
     lines = []
     if PIPELINE_LOG_PATH.exists():
@@ -288,6 +573,38 @@ def _read_logs(since: int) -> dict:
     return {"next": min(len(lines), next_cursor), "events": events}
 
 
+def _broadcast_sse(event: dict) -> None:
+    """Broadcast a pipeline event to all connected SSE clients."""
+    global _sse_clients
+    data = f"data: {json.dumps(event)}\n\n"
+    with _sse_lock:
+        dead = []
+        for q in _sse_clients:
+            try:
+                q.put_nowait(data)
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _sse_clients.remove(q)
+
+
+def _register_sse_client() -> queue.Queue:
+    """Register a new SSE client and return its queue."""
+    global _sse_clients
+    q: queue.Queue = queue.Queue(maxsize=100)
+    with _sse_lock:
+        _sse_clients.append(q)
+    return q
+
+
+def _unregister_sse_client(q: queue.Queue) -> None:
+    """Unregister an SSE client."""
+    global _sse_clients
+    with _sse_lock:
+        if q in _sse_clients:
+            _sse_clients.remove(q)
+
+
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:  # noqa: A002 - stdlib signature
         pass  # keep the worker's own log output free of HTTP access-log noise
@@ -296,6 +613,9 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self._send_json({"status": "MyStree Voice Agent Worker is running"})
+            return
+        if parsed.path in {"/events", "/api/events"}:
+            self._handle_sse()
             return
         if parsed.path in {"/health", "/api/worker-status"}:
             self._send_json(worker_status())
@@ -329,6 +649,32 @@ class _Handler(BaseHTTPRequestHandler):
         if parsed.path in {"/db", "/api/db"}:
             self._send_json(maternal_db_status())
             return
+        if parsed.path in {"/reports", "/api/reports"}:
+            params = parse_qs(parsed.query)
+            try:
+                limit = max(1, min(500, int(params.get("limit", ["50"])[0])))
+            except ValueError:
+                limit = 50
+            self._send_json(list_reports(limit))
+            return
+
+        if parsed.path in {"/reports/mcp-card", "/api/reports/mcp-card"}:
+            params = parse_qs(parsed.query)
+            raw_id = params.get("id", [None])[0]
+            session_id = params.get("session_id", [None])[0]
+            report_id = None
+            if raw_id is not None:
+                try:
+                    report_id = int(raw_id)
+                except ValueError:
+                    self._send_json({"error": "id must be an integer"}, status=400)
+                    return
+            card = mcp_card_for_report(report_id=report_id, session_id=session_id)
+            if card is None:
+                self._send_json({"error": "report not found"}, status=404)
+                return
+            self._send_json(card)
+            return
 
         if parsed.path in {"/logs", "/api/logs"}:
             params = parse_qs(parsed.query)
@@ -343,6 +689,7 @@ class _Handler(BaseHTTPRequestHandler):
                 since = 0
             self._send_json(_read_logs(since))
             return
+
         self.send_error(404)
 
     def do_POST(self) -> None:
@@ -376,7 +723,66 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True}, status=201)
             return
 
+        if parsed.path in {"/reports/flag", "/api/reports/flag"}:
+            try:
+                report_id = int(body.get("report_id"))
+            except (TypeError, ValueError):
+                self._send_json({"error": "report_id is required and must be an integer"}, status=400)
+                return
+            field = str(body.get("field", ""))
+            value = bool(body.get("value"))
+            flagged_by = body.get("flagged_by")
+            flagged_by = str(flagged_by) if flagged_by else None
+            ok, reason = set_report_flag(report_id, field, value, flagged_by)
+            if not ok:
+                status = 404 if reason == "report not found" else 400
+                self._send_json({"error": reason}, status=status)
+                return
+
         self.send_error(404)
+
+    def _handle_sse(self) -> None:
+        """Handle Server-Sent Events connection for real-time log streaming."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        # The frontend opens this directly from the BROWSER (page.tsx's
+        # EventSource, port 3100) against the worker's own port (8080) - a
+        # different origin, so without this header the browser blocks the
+        # connection before a single event arrives, no matter how correct
+        # the URL is. Every other route here (`/logs`, `/config`, ...) is
+        # reached through Next.js's server-side proxy routes instead, which
+        # do their own fetch() from Node and are never subject to CORS -
+        # this is the one endpoint actually meant for a direct cross-origin
+        # browser connection, so it is the one that needs the header. Wide
+        # open (not origin-locked) because this stream carries the exact
+        # same pipeline-event data the unauthenticated /logs polling
+        # endpoint already serves to anyone who can reach this port - no
+        # narrower here would be security theatre over that fact, not an
+        # actual restriction.
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        q = _register_sse_client()
+        try:
+            # Send initial connection event
+            self.wfile.write(b"data: {\"type\": \"connected\"}\n\n")
+            self.wfile.flush()
+
+            while True:
+                try:
+                    data = q.get(timeout=30)  # 30s heartbeat
+                    self.wfile.write(data.encode("utf-8"))
+                    self.wfile.flush()
+                except queue.Empty:
+                    # Send heartbeat comment to keep connection alive
+                    self.wfile.write(b": heartbeat\n\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+        finally:
+            _unregister_sse_client(q)
 
     def _send_json(self, payload: dict, status: int = 200) -> None:
         data = json.dumps(payload).encode("utf-8")

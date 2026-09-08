@@ -378,6 +378,53 @@ _TRANSLITERATED_DRUGS_RE = re.compile(
 )
 
 
+# English/roman medication nouns. Deliberately NOT sufficient on their own.
+#
+# Intake question 23 asks "What medications or vitamins is she currently
+# taking?", so the ASHA worker's ANSWER will contain exactly these words. A
+# bare noun match would block the reply to Sakhi's own question and stall the
+# screening - the guard has to tell a REQUEST FOR ADVICE apart from a REPORT
+# OF FACT.
+_MED_NOUN_RE = re.compile(
+    r"\b(?:medicines?|medication|meds|tablets?|pills?|capsules?|syrup|"
+    r"injections?|drugs?|dose|dosage|prescription)\b",
+    re.IGNORECASE,
+)
+
+# Asking for guidance: imperative, permission-seeking or advisory.
+_MED_REQUEST_RE = re.compile(
+    r"\b(?:prescribe|recommend|suggest|advise|advice)\b"
+    r"|\b(?:should|shall|can|may|could)\s+(?:i|we|she|he|they)\b"
+    r"|\b(?:give|start|stop|increase|decrease|change|take)\s+(?:her|him|them|any|some|a|the)?\s*"
+    r"(?:medicines?|medication|meds|tablets?|pills?|capsules?|syrup|injections?|drugs?|dose|dosage)\b"
+    r"|\bwhat\s+(?:medicines?|medication|tablets?|pills?|drugs?|dose|dosage)\b"
+    r"|\bwhich\s+(?:medicines?|medication|tablets?|pills?|drugs?)\b"
+    r"|\bhow\s+(?:much|many)\b",
+    re.IGNORECASE,
+)
+
+# Reporting what she is already on - a legitimate answer to intake q23.
+_MED_REPORT_RE = re.compile(
+    r"\b(?:is|she'?s|he'?s|they'?re)\s+(?:currently\s+|already\s+)?(?:on|taking|using)\b"
+    r"|\b(?:has|have)\s+been\s+(?:taking|using|on)\b"
+    r"|\b(?:takes|taking|using)\s+(?:iron|folic|calcium|vitamin)",
+    re.IGNORECASE,
+)
+
+
+def english_medication_request(text: str) -> bool:
+    """True only when the turn ASKS for medication guidance in English.
+
+    "she is taking iron tablets" is an answer to intake q23 and must pass.
+    "should I give her medicine" is a request for a prescription and must not.
+    """
+    if not text or not _MED_NOUN_RE.search(text):
+        return False
+    if _MED_REPORT_RE.search(text) and not _MED_REQUEST_RE.search(text):
+        return False
+    return bool(_MED_REQUEST_RE.search(text))
+
+
 def medication_requested(text: str) -> bool:
     """True when a turn asks about medicine, in any supported language."""
     if not text:
@@ -387,6 +434,12 @@ def medication_requested(text: str) -> bool:
         or _DOSAGE_RE.search(text)
         or _DRUG_NAMES_RE.search(text)
         or _TRANSLITERATED_DRUGS_RE.search(text)
+        # English requests were reaching the LLM entirely unguarded: there was
+        # no roman-script medicine pattern at all, so "should I give her
+        # medicine for BP" and "prescribe medicine" passed straight through and
+        # the only thing standing between them and a prescription was a prompt
+        # rule - which is exactly the protection this module exists to replace.
+        or english_medication_request(text)
     )
 
 

@@ -1,12 +1,45 @@
-livekit-agents==1.6.4
-livekit-plugins-assemblyai==1.6.4
-livekit-plugins-deepgram==1.6.4
-livekit-plugins-openai==1.6.4
-livekit-plugins-google==1.6.4
-livekit-plugins-silero==1.6.4
-livekit-plugins-noise-cancellation==0.2.6
-livekit-plugins-turn-detector==1.6.4
-livekit-plugins-bey
+# Pinned to what's actually installed and tested in this session
+# (see `pip freeze` output cross-checked 2026-09-02) - the previous 1.6.4 pins
+# predate this session's Vakyam/Deepgram/noise-cancellation/gnani work and
+# were never the version actually exercised. Deploying 1.6.4 to production
+# while everything was built and tested against 1.6.10 is exactly how a
+# staging/prod drift bug gets introduced.
+livekit-agents==1.6.10
+livekit-plugins-assemblyai==1.6.10
+livekit-plugins-deepgram==1.6.10
+livekit-plugins-openai==1.6.10
+livekit-plugins-google==1.6.10
+livekit-plugins-silero==1.6.10
+livekit-plugins-noise-cancellation==0.3.0
+livekit-plugins-turn-detector==1.6.10
+livekit-plugins-bey==1.6.10
 livekit-plugins-tavus==1.6.10
-python-dotenv>=1.0
+# Added: agent.py imports these directly (gnani_wrappers/sarvam_wrappers wrap
+# raw websockets+aiohttp rather than a livekit-plugins-* package for those two
+# providers, but the Gnani plugin is still used for its TTS wrapper base and
+# smallestai is a configured-but-inactive candidate provider - see
+# smallest_wrappers.py). Missing from the old pin list entirely.
+livekit-plugins-gnani==1.6.10
+livekit-plugins-smallestai==1.6.10
+livekit-plugins-fishaudio==1.6.10
+python-dotenv>=1.2
 websockets>=15.0
+aiohttp>=3.14
+# livekit-api: already a transitive dep of livekit-agents (confirmed
+# installed at 1.2.0 in this session's environment), pinned explicitly here
+# since agent.py now imports it directly for room-composite egress
+# (start_call_recording/stop_call_recording, 2026-09-02) rather than only
+# getting it incidentally through livekit-agents.
+livekit-api>=1.2.0
+# boto3: status_server.py's /reports endpoint HEADs S3 to confirm a call
+# recording actually landed (not just that egress was told to start it),
+# and generates presigned GET URLs for the dashboard's "Play" link.
+boto3>=1.34
+# psycopg[binary,pool]: PostgresPatientRepository (sakhi_sql_repository.py),
+# active only when DATABASE_URL/POSTGRES_URL is set (ECS/RDS deployment) -
+# the single-EC2 pilot path stays on SQLitePatientRepository and never
+# imports this. psycopg over asyncpg: sakhi_schema.py's POSTGRES dialect
+# already renders %s placeholders (psycopg's style), so the connection-pooled
+# Postgres repository runs the exact same SQL text as the SQLite one instead
+# of a second hand-written query set that can drift from it.
+psycopg[binary,pool]>=3.2

@@ -123,10 +123,17 @@ def repo(tmp_path):
     return MockSixtyDBRepository(path, flush_delay=0.01)
 
 
-def test_spelling_is_requested_once_then_the_call_moves_on(repo):
-    """Never ask for a spelling twice. A worker with a mother in front of her
-    cannot be held at an identity check - the clinical value of the call is the
-    blood pressure, not the database row."""
+def test_identity_fallback_is_requested_once_then_the_call_moves_on(repo):
+    """Never ask about the name a second time over voice. A worker with a
+    mother in front of her cannot be held at an identity check - the
+    clinical value of the call is the blood pressure, not the database row.
+
+    In the real flow, tools_for() withdraws search_patient the instant
+    awaiting_identity_box is set (see test_identity_frontend_fallback.py), so
+    the model has no way to call this a second time. This test calls the
+    tool method directly, bypassing tools_for, to prove the lookup_attempts
+    >= 2 Guest-Patient branch - kept in place defensively - still behaves
+    sanely and does not reopen a loop even if invoked again anyway."""
     async def go():
         await repo.load()
         tools = ClinicalToolset(repo, TRIAGE)
@@ -135,7 +142,8 @@ def test_spelling_is_requested_once_then_the_call_moves_on(repo):
 
         first = json.loads(await tools.search_patient(ctx, name="Xyzabc Qwerty"))
         assert first["attempt"] == 1
-        assert "spell" in first["instruction"].lower(), "the one permitted spelling ask is missing"
+        assert "type the mother's name and age" in first["instruction"]
+        assert state.awaiting_identity_box is True
 
         second = json.loads(await tools.search_patient(ctx, name="Xyzabc Qwerty"))
         assert second["attempt"] == 2

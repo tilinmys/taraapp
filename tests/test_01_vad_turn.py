@@ -4,7 +4,7 @@ import os
 import agent
 
 # TC-01 & TC-02: VAD Silence threshold logic
-def test_vad_turn_endpointing_silence():
+def test_vad_turn_endpointing_silence(fake_job_context):
     """TC-02: VAD triggers endpointing signal at 250ms silence threshold."""
     # We test that the VAD configuration built by agent.py has the correct thresholds
     # agent.build_turn_handling configures the turn detection

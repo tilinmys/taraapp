@@ -3,7 +3,11 @@ import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 const WORKER_STATUS_URL = process.env.WORKER_STATUS_URL || "http://127.0.0.1:8080";
-const AGENT_NAME = process.env.LIVEKIT_AGENT_NAME || "mystree-care";
+// Default matches .env.local's LIVEKIT_AGENT_NAME - only reached if that var
+// is somehow unset. NOT "mystree-care": a separate worker under that name
+// runs on this same LiveKit Cloud project, and a silent fallback would
+// dispatch this app's calls to it instead of the Sakhi worker (2026-09-02).
+const AGENT_NAME = process.env.LIVEKIT_AGENT_NAME || "sakhi-maternal-care";
 
 async function fetchWorkerStatus(): Promise<{ ready: boolean; reason?: string }> {
   try {
@@ -18,9 +22,17 @@ export async function GET(req: NextRequest) {
   // A unique room per call guarantees a fresh agent job is dispatched every time.
   // Reusing a fixed room name meant a second call could join a stale room whose
   // agent had already greeted (or was shutting down), producing a silent call.
+  //
+  // "sakhi-room-", not the old "mystree-room-" prefix (2026-09-02): a
+  // separate "mystree-care" worker (this project's own pre-Sakhi ancestor)
+  // is running on this same LiveKit Cloud project, and "mystree-room-*"
+  // rooms read as ambiguous in shared dashboards/logs between the two. Room
+  // uniqueness itself was never the bug - AGENT_NAME below is what actually
+  // routes explicit dispatch, see LIVEKIT_AGENT_NAME's comment in .env - this
+  // is about not confusing a human reading the room list.
   const room =
     req.nextUrl.searchParams.get("room") ||
-    `mystree-room-${Date.now().toString(36)}-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    `sakhi-room-${Date.now().toString(36)}-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
   const participant = `clinic-user-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
   const provider = (req.nextUrl.searchParams.get("provider") || "").trim().toLowerCase();
   const voice = (req.nextUrl.searchParams.get("voice") || "").trim();
@@ -94,6 +106,15 @@ export async function GET(req: NextRequest) {
       voice: voice || "default",
       dispatch_id: dispatchId,
       worker: status,
+      // page.tsx reads this to open a direct EventSource to the worker's
+      // /events SSE stream (status_server.py's _handle_sse) once connected -
+      // that effect has always guarded on `!workerUrl` and this field was
+      // never actually returned, so the live-event-stream path silently
+      // never ran; every session fell back to /api/logs polling with no
+      // visible error. Same-origin-reachable address the BROWSER can open
+      // directly, not just the Next.js server - matches WORKER_STATUS_URL's
+      // existing use for the server-side proxy routes in this same file.
+      worker_url: WORKER_STATUS_URL,
     });
   } catch (error: any) {
     return NextResponse.json(
