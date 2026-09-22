@@ -3481,6 +3481,15 @@ async def wait_for_remote_audio(room, timeout: float = 1.5) -> bool:
 # its negation still in the unread half. Includes the Devanagari danda.
 _SENTENCE_END_RE = re.compile(r"[.!?।]+[\"')\]]*\s+|[.!?।]+[\"')\]]*$")
 
+# Clause-level release for the pre-speech guard (2026-09-22). On production
+# Sarvam REST turns, waiting for the first full sentence held a perfectly safe
+# opening clause for roughly another 200ms even though EagerClauseTokenizer was
+# already able to synthesize it. The guard still vets EVERY released piece;
+# this changes only when a vetted piece may leave the buffer. Disable with
+# SAKHI_PRESPEECH_GUARD_CLAUSE_LEVEL=false to restore the byte-identical
+# sentence-boundary path above while comparing live TTFA.
+_CLAUSE_BREAK_RE = re.compile(r"[,;:]\s+|[.!?…]\s+|[।॥]\s+")
+
 
 # --- Pre-speech correctness guard (2026-09-03) ---------------------------
 #
@@ -4694,6 +4703,11 @@ class SakhiAgent(Agent):
             # added latency is one sentence boundary, the same granularity
             # TTS already synthesises at. See claims_completed_write().
             guard_on = env_flag("SAKHI_PRESPEECH_GUARD_ENABLED", True)
+            split_re = (
+                _CLAUSE_BREAK_RE
+                if env_flag("SAKHI_PRESPEECH_GUARD_CLAUSE_LEVEL", True)
+                else _SENTENCE_END_RE
+            )
             state = self._state()
             pending = ""
 
@@ -4733,10 +4747,13 @@ class SakhiAgent(Agent):
                         full_text_parts.append(clean)
                         yield clean
                     continue
-                # Accumulate to the next sentence boundary, vet, release.
+                # Accumulate to the selected sentence/clause boundary, vet,
+                # release. Clause mode moves first audio ~200ms earlier on the
+                # measured Sarvam path; the kill-switch keeps the old sentence
+                # behavior available without weakening _vet().
                 pending += chunk or ""
                 while True:
-                    match = _SENTENCE_END_RE.search(pending)
+                    match = split_re.search(pending)
                     if not match:
                         break
                     sentence, pending = pending[: match.end()], pending[match.end():]
