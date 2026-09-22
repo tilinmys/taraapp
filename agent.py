@@ -16,7 +16,7 @@ import re
 import threading
 import time
 import traceback
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from datetime import datetime, timezone
 import dataclasses
 import aiohttp
@@ -3754,6 +3754,15 @@ def looks_incomplete(text: str) -> bool:
     return bool(_DANGLING_RE.search(stripped))
 
 
+def _approx_item_token_units(item) -> int:
+    """Character units used by the hot-path token estimate for one item."""
+    if getattr(item, "type", None) == "message":
+        return len(item.text_content or "")
+    return len(str(getattr(item, "arguments", "") or "")) + len(
+        str(getattr(item, "output", "") or "")
+    )
+
+
 def _approx_context_tokens(chat_ctx) -> int:
     """Rough token count for a ChatContext.
 
@@ -3763,16 +3772,28 @@ def _approx_context_tokens(chat_ctx) -> int:
     divisor is conservative (~3 chars/token) to avoid under-counting the very
     scripts that caused the bloat.
     """
-    total = 0
-    for item in chat_ctx.items:
-        if getattr(item, "type", None) == "message":
-            total += len(item.text_content or "")
-        else:
-            # function_call / function_call_output carry JSON payloads.
-            total += len(str(getattr(item, "arguments", "") or "")) + len(
-                str(getattr(item, "output", "") or "")
-            )
-    return total // 3
+    return sum(_approx_item_token_units(item) for item in chat_ctx.items) // 3
+
+
+def _prune_conversation_incrementally(items, max_items: int, max_tokens: int):
+    """Drop oldest items with the exact legacy estimate, without O(n²) copies.
+
+    A long call previously copied the complete ChatContext and rescanned every
+    surviving item after each pop. At 40 transcript/tool items that made the
+    pre-generation pruning pass quadratic. We cache each item's character
+    units once, subtract on popleft(), and retain the legacy final `// 3`
+    rounding so the surviving items are byte-for-byte identical.
+    """
+    pending = deque(
+        (item, _approx_item_token_units(item)) for item in items
+    )
+    total_units = sum(units for _, units in pending)
+    while pending and (
+        len(pending) > max_items or total_units // 3 > max_tokens
+    ):
+        _, removed_units = pending.popleft()
+        total_units -= removed_units
+    return [item for item, _ in pending]
 
 
 class SakhiAgent(Agent):
@@ -4503,15 +4524,25 @@ class SakhiAgent(Agent):
                     if getattr(item, "role", None) != "system"
                 ]
 
-                def _conversation_tokens() -> int:
-                    probe = chat_ctx.copy()
-                    probe.items = list(conversation)
-                    return _approx_context_tokens(probe)
+                if env_flag("SAKHI_INCREMENTAL_CONTEXT_PRUNING_ENABLED", True):
+                    # Measured long-call contexts made the old copy+rescan loop
+                    # O(n²) immediately before every LLM request. This helper
+                    # computes each item's estimate once and subtracts as the
+                    # deque advances; disable to restore the exact legacy loop.
+                    conversation = _prune_conversation_incrementally(
+                        conversation, max_items, max_tokens
+                    )
+                else:
+                    def _conversation_tokens() -> int:
+                        probe = chat_ctx.copy()
+                        probe.items = list(conversation)
+                        return _approx_context_tokens(probe)
 
-                while conversation and (
-                    len(conversation) > max_items or _conversation_tokens() > max_tokens
-                ):
-                    conversation.pop(0)      # oldest turn first
+                    while conversation and (
+                        len(conversation) > max_items
+                        or _conversation_tokens() > max_tokens
+                    ):
+                        conversation.pop(0)  # oldest turn first
 
                 chat_ctx.items = [*system_items, *conversation]
 
