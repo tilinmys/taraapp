@@ -133,12 +133,22 @@ class CachedTTS(tts.TTS):
             num_channels=provider.num_channels,
         )
         self._provider = provider
+        # LiveKit and this repository's provider diagnostics historically
+        # inspect `_wrapped_tts` and selected vendor-private attributes. Keep
+        # that introspection contract while the cache remains transparent to
+        # synthesis; this does not alter fallback ordering or request data.
+        self._wrapped_tts = provider
         self._cache_root = Path(
             os.getenv("TTS_AUDIO_CACHE_DIR", "assets/audio/tts_cache")
         )
         self._max_entries = max(
             1, int(os.getenv("TTS_AUDIO_CACHE_MAX_ENTRIES", "2000"))
         )
+
+    def __getattr__(self, name: str):
+        """Delegate provider metadata used by language/voice diagnostics."""
+        provider = object.__getattribute__(self, "_provider")
+        return getattr(provider, name)
 
     @property
     def model(self) -> str:

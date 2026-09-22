@@ -150,7 +150,7 @@ def test_build_tts_defaults_to_sarvam_now_that_vakyam_is_out_of_credits(monkeypa
     t = agent.build_tts(None, language=Language.KANNADA)
     from sarvam_wrappers import SarvamTTS
 
-    assert isinstance(t, SarvamTTS)
+    assert isinstance(getattr(t, "_wrapped_tts", t), SarvamTTS)
 
 
 def test_build_tts_chains_gnani_and_sarvam_as_fallback(monkeypatch):
