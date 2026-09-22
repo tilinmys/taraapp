@@ -294,6 +294,7 @@ from sarvam_wrappers import (
     SarvamTTS,
     resolve_sarvam_voice,
 )
+from tts_audio_cache import CachedTTS
 from rumik_wrappers import RumikTTS
 from gemini_wrappers import GeminiTTS
 from vakyam_wrappers import (
@@ -2379,6 +2380,13 @@ def build_tts(
             pace_override=speed_override,
             language=lang.sarvam_code,
         )
+        # Repeated clinical prompts dominate a structured ANC call. Once a
+        # clause has been synthesized, a disk hit removes the measured Sarvam
+        # REST network TTFB entirely. CachedTTS preserves the provider's
+        # ChunkedStream contract and performs disk reads off-loop; disable this
+        # independently if cache behavior needs to be isolated in production.
+        if env_flag("VOICE_TTS_AUDIO_CACHE_ENABLED", True):
+            primary = CachedTTS(primary)
     elif requested == "smallest_ai":
         primary = _build_smallest_ai_tts(
             voice_id, speed_override=speed_override, language=lang
