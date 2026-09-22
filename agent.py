@@ -316,6 +316,7 @@ from sakhi_domain import (
     SakhiCallState,
     danger_sign_lock_reason,
     detect_gestational_age,
+    detect_pregnancy_number,
     detect_symptoms,
     kannada_symptom_terms,
 )
@@ -3699,6 +3700,27 @@ def _answers_pending_question(state, text: str, last_agent_utterance: str | None
     return ends_in_question(last_agent_utterance)
 
 
+def _is_deterministic_intake_answer(question, text: str) -> bool:
+    """Whether an armed closed-question answer is safe to route without LLM.
+
+    This is intentionally narrower than IntakeProgress.validate_answer(). A
+    FAST question may accept a broad value for progress tracking, but bypassing
+    clinical interpretation is allowed only when an existing deterministic
+    parser resolves that value, or when the shared assent parser recognizes a
+    yes/no answer. Unknown dates, weights, BP strings and descriptive replies
+    continue to the unchanged LLM/tool path rather than being guessed here.
+    """
+    if question is None or question.vad.upper() != "FAST" or not text.strip():
+        return False
+    if is_assent(text):
+        return True
+    if question.id == "q02":
+        return detect_gestational_age(text) is not None
+    if question.id == "q04":
+        return detect_pregnancy_number(text) is not None
+    return False
+
+
 # Dangling connectives: the caller was cut off mid-thought. Committing the turn
 # here answers half a sentence, and on a clinical call the missing half is
 # often the important one ("her BP is one forty five and ---").
@@ -3811,6 +3833,48 @@ class SakhiAgent(Agent):
                 self._vad_controller.evaluate_agent_text(spoken_text)
             except Exception:
                 logger.warning("Adaptive VAD evaluation failed", exc_info=True)
+
+    def _route_deterministic_intake(
+        self,
+        state: SakhiCallState | None,
+        armed_question_id: str | None,
+        raw_turn_text: str,
+    ) -> None:
+        """Speak the next question when the armed closed answer is unambiguous.
+
+        The normal tracker earlier in on_user_turn_completed remains the single
+        writer of the answer. This hook runs only after side-talk, repeat,
+        fragment, symptom, identity and guardrail gates have all completed.
+        That ordering matters: the ~LLM-TTFT saving must never outrun a danger
+        sign or medication-safety response. Set
+        SAKHI_DETERMINISTIC_INTAKE_ENABLED=false to restore generation for
+        every otherwise-safe intake turn.
+        """
+        if (
+            not env_flag("SAKHI_DETERMINISTIC_INTAKE_ENABLED", True)
+            or state is None
+            or not armed_question_id
+            or armed_question_id not in state.intake.answered
+        ):
+            return
+        question = QUESTIONS_BY_ID.get(armed_question_id)
+        if not _is_deterministic_intake_answer(question, raw_turn_text):
+            return
+
+        next_question = state.intake.arm_next()
+        if next_question is None:
+            return
+        next_text = question_text(next_question, state.language.value)
+        pipeline_event(
+            "turn", "ok", "Intake answered deterministically",
+            f"{armed_question_id} resolved without an LLM call; asking {next_question.id}",
+            event="intake_answered_deterministically",
+            question_id=armed_question_id,
+            next_question_id=next_question.id,
+        )
+        _safe_say(self.session, next_text)
+        self._vad_eval(f"[VAD: {next_question.vad}] {next_text}")
+        raise StopResponse()
 
     def _maybe_schedule_farewell_hangup(self, spoken_text: str) -> None:
         """End the call when Sakhi speaks her scripted goodbye, even if the LLM
@@ -4196,6 +4260,13 @@ class SakhiAgent(Agent):
             )
             raise StopResponse()
 
+        # Snapshot the armed item only after every early conversational gate.
+        # record_answer() clears pending_id later, so this is the stable link
+        # between the validated write and the post-guardrail latency router.
+        deterministic_armed_question = (
+            state.intake.pending_id if state is not None else None
+        )
+
         # Deterministic symptom capture, before the LLM gets a say.
         #
         # Observed live: the worker reported a severe headache in her opening
@@ -4336,6 +4407,9 @@ class SakhiAgent(Agent):
 
         category = decision.category
         if category is None:
+            self._route_deterministic_intake(
+                state, deterministic_armed_question, raw_turn_text
+            )
             return
 
         if category == "abuse":
