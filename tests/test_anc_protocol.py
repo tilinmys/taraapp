@@ -213,8 +213,20 @@ def test_monosyllabic_assent_answers_a_yes_no_question(assent):
 
 
 def test_preemptive_generation_is_off_by_default(monkeypatch):
+    """Checks the options the session is actually built with. The previous
+    version asserted env_flag(..., False) - a tautology that stayed green
+    while build_turn_handling's own default drifted to True and caused the
+    repeated-question reports (speculative reply generated before the
+    answer was recorded)."""
     monkeypatch.delenv("PREEMPTIVE_GENERATION", raising=False)
-    assert agent.env_flag("PREEMPTIVE_GENERATION", False) is False
+    # The turn-detector model needs a live job context; not under test here.
+    monkeypatch.setattr(agent, "multilingual_model", None)
+    assert agent.preemptive_generation_enabled() is False
+    options = agent.build_turn_handling(0.35)
+    assert options["preemptive_generation"]["enabled"] is False
+
+    monkeypatch.setenv("PREEMPTIVE_GENERATION", "true")
+    assert agent.build_turn_handling(0.35)["preemptive_generation"]["enabled"] is True
 
 
 def test_noise_filter_defaults_to_the_telephony_model(monkeypatch):

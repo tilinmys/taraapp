@@ -369,3 +369,15 @@ def test_concurrent_registrations_never_collide_on_patient_id(pg_repo):
         assert len(ids) == len(set(ids)), f"duplicate patient_id allocated: {ids}"
         await pg_repo.close()
     _run(go())
+
+
+def test_postgres_pin_without_dsn_refuses_to_fall_back_to_sqlite(monkeypatch):
+    """Production pins SAKHI_REPOSITORY=postgres. If DATABASE_URL is ever lost
+    the worker must fail to build its repository - never quietly write
+    clinical records to a SQLite file on the instance."""
+    import agent
+    monkeypatch.setenv("SAKHI_REPOSITORY", "postgres")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
+    with pytest.raises(RuntimeError, match="refusing to fall back to SQLite"):
+        agent.build_repository()

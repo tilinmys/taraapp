@@ -660,13 +660,49 @@ DANGER_SIGN_ADVISORY: dict[str, str] = {
 # Negation markers. Kannada and Hindi place negation AFTER the noun
 # ("ತಲೆನೋವು ಇಲ್ಲ" = headache not-present), English places it before
 # ("no headache"), so the window is checked on both sides.
+#
+# Kannada negative VERB forms carry the negation as a vowel sign + ಲ್ಲ
+# ("ಆಗಿಲ್ಲ" = has-not-happened), which never contains the free-standing
+# "ಇಲ್ಲ" - so each needs its own entry. Turn 22 (2026-09-25): "... ಫಿಟ್ಸ್
+# ಯಾವುದು ಡಯಾಗ್ನೋಸ್ ಆಗಿಲ್ಲ" (fits: never diagnosed) flagged convulsions.
 _NEGATIONS = (
     "ಇಲ್ಲ", "ಇಲ್ಲವೇ", "ಇರಲಿಲ್ಲ",
+    "ಆಗಿಲ್ಲ", "ಕಾಣಿಸಿಲ್ಲ", "ಬಂದಿಲ್ಲ", "ತೊಂದರೆ ಇಲ್ಲ", "ಏನೂ ಇಲ್ಲ",
     "नहीं", "नही",
     " no ", " not ", " without ", "denies", "negative",
 )
 
-_NEGATION_WINDOW = 28
+# 28 -> 65 (2026-09-25) for longer sentences, made safe by clipping: the
+# window never crosses a sentence end or a contrast word, so "ತಲೆನೋವು ಇಲ್ಲ,
+# ಆದರೆ ಫಿಟ್ಸ್ ಬಂತು" (no headache, BUT fits) still records the fits. A wider
+# unclipped window would let one denied symptom erase a real danger sign -
+# under-triage, the worse failure on this call.
+_NEGATION_WINDOW = 65
+
+_CLAUSE_BREAK_RE = re.compile(
+    r"[.?!।\n]|(?<![a-z])(?:but|however)(?![a-z])"
+    r"|ಆದರೆ|ಆದ್ರೆ|ಆದರೂ|ಆದ್ರೂ|लेकिन|मगर|परंतु|किंतु"
+)
+
+# Indic "it happened / it is there" right after the symptom: the symptom is
+# AFFIRMED, and a negation later in the same window belongs to a later noun
+# ("ಫಿಟ್ಸ್ ಬಂತು, ಹೊಟ್ಟೆ ನೋವು ಏನೂ ಇಲ್ಲ" = fits came, no stomach pain).
+_AFFIRMATIONS = (
+    "ಬಂತು", "ಬಂದಿದೆ", "ಬಂದಿತ್ತು", "ಬರ್ತಿದೆ", "ಬರುತ್ತಿದೆ", "ಆಯ್ತು", "ಆಗಿದೆ",
+    "ಆಗ್ತಿದೆ", "ಆಗುತ್ತಿದೆ", "ಇದೆ", "ಇತ್ತು",
+    "हुआ", "हुई", "हो रहा", "हो रही", "है", "था", "थी",
+)
+
+# Past-history intake questions (chronic disease, current medicines). A
+# disclosure there - "ಫಿಟ್ಸ್ ಇದೆ, ಮಾತ್ರೆ ತಗೋತಾರೆ" (known epilepsy, on
+# tablets) - is history, not an acute danger sign, unless the worker also
+# says it is happening NOW.
+_HISTORY_QUESTION_IDS = frozenset({"q19", "q20"})
+_CURRENT_MARKERS = (
+    "ಈಗ", "ಇವತ್ತು", "ಇಂದು", "ನಿನ್ನೆ", "ಇದೀಗ",
+    "अभी", "आज", "कल", "इस समय",
+    "now", "today", "yesterday", "currently",
+)
 
 # Fields whose PATTERNS ARE THEMSELVES NEGATIVE PHRASES.
 #
@@ -682,12 +718,49 @@ _NEGATION_WINDOW = 28
 _SELF_NEGATING_FIELDS = frozenset({"reduced_fetal_movement"})
 
 
-def detect_symptoms(text: str) -> SymptomSet:
+def _find_first(text: str, needles) -> int:
+    hits = [i for i in (text.find(n.lower()) for n in needles) if i != -1]
+    return min(hits) if hits else -1
+
+
+def _is_negated(haystack: str, start: int, end: int) -> bool:
+    """Negation check for one pattern match at haystack[start:end].
+
+    Looks _NEGATION_WINDOW characters each side, clipped at the nearest
+    clause break. After the match, whichever comes first wins: an
+    affirmation ("ಬಂತು", "है") means present, a negation means denied.
+    Before the match, any negation (English "no fits", or an introductory
+    Kannada/Hindi denial in the same clause) means denied.
+    """
+    before = haystack[max(0, start - _NEGATION_WINDOW):start]
+    breaks = list(_CLAUSE_BREAK_RE.finditer(before))
+    if breaks:
+        before = before[breaks[-1].end():]
+    after = haystack[end:end + _NEGATION_WINDOW]
+    cut = _CLAUSE_BREAK_RE.search(after)
+    if cut:
+        after = after[:cut.start()]
+
+    negation_at = _find_first(after, _NEGATIONS)
+    affirmed_at = _find_first(after, _AFFIRMATIONS)
+    if affirmed_at != -1 and (negation_at == -1 or affirmed_at < negation_at):
+        return False
+    if negation_at != -1:
+        return True
+    return any(neg.lower() in before for neg in _NEGATIONS)
+
+
+def detect_symptoms(text: str, question_id: str | None = None) -> SymptomSet:
     """Extract danger symptoms from what the ASHA worker actually said.
 
     Negation-aware: "ತಲೆನೋವು ಇಲ್ಲ" (no headache) and "no swelling" must NOT
     register the symptom, or every screening question would flag itself the
     moment it was answered "no".
+
+    `question_id` is the armed intake question. On a past-history question
+    (_HISTORY_QUESTION_IDS) a symptom word is only recorded when the answer
+    also says it is happening now (_CURRENT_MARKERS); otherwise it is
+    history, not an acute danger sign. None keeps the old behaviour.
 
     Never raises - a detector that crashes a turn is worse than one that misses.
     """
@@ -703,6 +776,10 @@ def detect_symptoms(text: str) -> SymptomSet:
     # "s"), which is why the detector looked like it worked.
     collapsed = re.sub(r"\s+", " ", str(text)).lower()
     haystack = f" {collapsed} "
+    if question_id in _HISTORY_QUESTION_IDS and not any(
+        marker.lower() in haystack for marker in _CURRENT_MARKERS
+    ):
+        return SymptomSet()       # history disclosure, not a current sign
     found: dict[str, bool] = {}
 
     for field, patterns in _SYMPTOM_PATTERNS.items():
@@ -711,12 +788,8 @@ def detect_symptoms(text: str) -> SymptomSet:
             start = haystack.find(pattern.lower())
             if start == -1:
                 continue
-            window = haystack[
-                max(0, start - _NEGATION_WINDOW):
-                start + len(pattern) + _NEGATION_WINDOW
-            ]
-            if field not in _SELF_NEGATING_FIELDS and any(
-                neg.lower() in window for neg in _NEGATIONS
+            if field not in _SELF_NEGATING_FIELDS and _is_negated(
+                haystack, start, start + len(pattern)
             ):
                 continue          # explicitly denied - do not record
             present = True
@@ -770,6 +843,25 @@ _MONTH_WORD_TO_NUM: dict[str, int] = {
     # Kannada cardinals (the register q02 is actually asked in)
     "ಒಂದು": 1, "ಎರಡು": 2, "ಮೂರು": 3, "ನಾಲ್ಕು": 4, "ಐದು": 5,
     "ಆರು": 6, "ಏಳು": 7, "ಎಂಟು": 8, "ಒಂಬತ್ತು": 9,
+    # Romanized Kannada cardinals — Sarvam STT colloquial output (2026-09-22).
+    #
+    # Sarvam STT transcribes spoken North Karnataka Kannada into Latin script
+    # when the caller uses colloquial pronunciation: "yelu" not "ಏಳು",
+    # "tingalu" not "ತಿಂಗಳು". Without these entries the whole family of
+    # utterances — "yelu tingalu akka", "7 tingalu", "eradu tingalu" — returns
+    # None from detect_gestational_age(), leaving state.gestational_weeks unset
+    # and q02 never auto-satisfied, which causes Sakhi to repeatedly rephrase
+    # the same gestational-month question instead of advancing. See
+    # test_kannada_progression_regression.py for the exact failing call.
+    "ondu": 1, "eradu": 2, "erdu": 2, "mooru": 3, "naalku": 4, "naaku": 4,
+    "aidu": 5, "aidu": 5, "aaru": 6, "yelu": 7, "yelu": 7,
+    "entu": 8, "ombattu": 9, "ombhatu": 9,
+    # Romanized Kannada ordinals heard in ASHA calls
+    # ("eradaneya garbha dharane" = second pregnancy, but "eradaneya tingalu"
+    # would mean second month - both need the same numeric mapping here).
+    "eradaneya": 2, "eradu ne": 2, "moorneya": 3, "naalkaneya": 4,
+    "aidaneya": 5, "aaraneya": 6, "yellaneya": 7, "yel aneya": 7,
+    "entaneya": 8, "ombattaneya": 9,
     # Hindi cardinals
     "एक": 1, "दो": 2, "तीन": 3, "चार": 4, "पांच": 5, "पाँच": 5,
     "छह": 6, "छः": 6, "सात": 7, "आठ": 8, "नौ": 9,
@@ -791,7 +883,12 @@ _MONTH_WORD_TO_NUM: dict[str, int] = {
 # same reason detect_symptoms() above matches its Kannada/Hindi patterns via
 # plain substring search rather than a word-boundary regex - established
 # precedent in this file, not a new workaround.
-_MONTH_UNIT_WORDS = ("months", "month", "ತಿಂಗಳು", "ತಿಂಗಳ", "महीने", "महीना", "माह")
+_MONTH_UNIT_WORDS = (
+    "months", "month",
+    "ತಿಂಗಳು", "ತಿಂಗಳ",                    # Kannada script
+    "tingalu", "tingal", "tingala",         # romanized Kannada (Sarvam STT, 2026-09-22)
+    "महीने", "महीना", "माह",               # Hindi script
+)
 # \b is safe here: digits and the st/nd/rd/th suffixes are pure ASCII, which
 # Python's re module has always classified as \w correctly.
 _DIGIT_MONTH_RE = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\b", re.IGNORECASE)
@@ -826,7 +923,12 @@ def detect_gestational_age(text: str) -> int | None:
         before = haystack[max(0, idx - 20):idx]
 
         month = None
-        digit_match = _DIGIT_MONTH_RE.search(before)
+        # The number NEAREST the unit. search() took the first number in the
+        # 20-char window, so "22 ವರ್ಷ, 7 ತಿಂಗಳು" read 22 (her age), failed the
+        # 1-9 check, and the stated seven months was dropped - Sakhi then
+        # asked for it again (live-LLM scenario, 2026-09-24).
+        digit_matches = list(_DIGIT_MONTH_RE.finditer(before))
+        digit_match = digit_matches[-1] if digit_matches else None
         if digit_match:
             month = int(digit_match.group(1))
         else:
@@ -841,7 +943,22 @@ def detect_gestational_age(text: str) -> int | None:
 
         if month is not None and 1 <= month <= 9:
             return month * 4
+
+    # Weeks said directly ("28 weeks", "28 ವಾರ", "28 हफ्ते") - q02 asks
+    # "how many months OR weeks", and an answer in weeks was never heard.
+    for unit in _WEEK_UNIT_WORDS:
+        idx = haystack.find(unit)
+        if idx == -1:
+            continue
+        digit_matches = list(_DIGIT_MONTH_RE.finditer(haystack[max(0, idx - 12):idx]))
+        if digit_matches:
+            weeks = int(digit_matches[-1].group(1))
+            if 4 <= weeks <= 42:
+                return weeks
     return None
+
+
+_WEEK_UNIT_WORDS = ("weeks", "week", "ವಾರಗಳು", "ವಾರ", "हफ्ते", "हफ़्ते", "सप्ताह")
 
 
 # --------------------------------------------------------------------------
@@ -922,6 +1039,172 @@ def clean_person_name(raw: str | None) -> str | None:
     if not any(ch.isalpha() for ch in name):
         return None
     return name
+
+
+_NAME_PATTERNS = [
+    re.compile(
+        r"(?:ತಾಯಿಯ?\s*ಹೆಸರು|ಹೆಸರು|taayiya?\s*hesaru|hesaru|maa\s*ka\s*naam|mother(?:'s)?\s*name(?:\s*is)?|her\s+name\s+is)\s*[:=\-]?\s*"
+        r"([A-Za-z\u0C80-\u0CFF\s]+?)"
+        r"(?:[,.\n]|\s+(?:ಅವರ|avara|ಅವರಿಗೆ|avarige|ವಯಸ್ಸು|vayass?u|age|umar|ವರ್ಷ|varsha|years)|\s*$)",
+        re.IGNORECASE,
+    ),
+    # Sarvam commonly omits the introductory "hesaru/name is" token but
+    # preserves the age marker: "Priya Sharma, avara vayasu ippatentu
+    # varsha".  The comma/age boundary makes this materially safer than
+    # treating the first arbitrary words of every utterance as a name.  This
+    # exact shape was the 2026-09-22 incident transcript.
+    re.compile(
+        r"^\s*([A-Za-z\u0C80-\u0CFF][A-Za-z\u0C80-\u0CFF .'-]{1,58}?)\s*,?\s*"
+        r"(?:ಅವರ\s+|ಅವರಿಗೆ\s+|avara\s+|avarige\s+)?"
+        r"(?:ವಯಸ್ಸು|vayass?u|age|umar|उम्र)\b",
+        re.IGNORECASE,
+    ),
+]
+
+_AGE_PATTERNS = [
+    re.compile(
+        r"(?:ವಯಸ್ಸು|vayass?u|age|umar|उम्र)\s*[:=\-]?\s*(\d{1,2})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(\d{1,2})\s*(?:ವರ್ಷ|varsha|varshagalu|years?|saal|साल)\b",
+        re.IGNORECASE,
+    ),
+    # Explicit name introductions often end "her name is X, 24" without an
+    # age unit. This comma-delimited form is evaluated only inside the
+    # demographics extractor and still passes the 10-60 biological bound.
+    re.compile(r",\s*(\d{2})\b", re.IGNORECASE),
+]
+
+
+def detect_patient_demographics(text: str) -> tuple[str | None, int | None]:
+    """Deterministically extract patient name and age from conversational speech.
+
+    Returns (name, age). Only returns non-None for plausible values (name cleaned,
+    age 10-60). Never raises.
+    """
+    if not text:
+        return None, None
+
+    from clinical_terms import clean_currency_symbols, normalise_kannada_numbers
+    working = clean_currency_symbols(str(text))
+    working = normalise_kannada_numbers(working)
+
+    extracted_name = None
+    for pattern in _NAME_PATTERNS:
+        match = pattern.search(working)
+        if match:
+            candidate = match.group(1).strip()
+            cleaned = clean_person_name(candidate)
+            if cleaned and len(cleaned.split()) <= 4:
+                extracted_name = cleaned
+                break
+
+    extracted_age = None
+    for pattern in _AGE_PATTERNS:
+        match = pattern.search(working)
+        if match:
+            try:
+                age_val = int(match.group(1))
+                if 10 <= age_val <= 60:
+                    extracted_age = age_val
+                    break
+            except (ValueError, TypeError):
+                pass
+
+    return extracted_name, extracted_age
+
+
+_PREGNANCY_ORDINAL_MAP = {
+    "ಮೊದಲನೆಯ": 1, "ಮೊದಲನೇ": 1, "ಮೊದಲನೆ": 1, "ಒಂದನೇ": 1, "ಮೊದಲ": 1,
+    "modalaneya": 1, "modalane": 1, "modala": 1, "first": 1,
+    "ಎರಡನೆಯ": 2, "ಎರಡನೇ": 2, "eradaneya": 2, "eradane": 2, "second": 2,
+    "ಮೂರನೆಯ": 3, "ಮೂರನೇ": 3, "mooraneya": 3, "moorane": 3, "third": 3,
+    "ನಾಲ್ಕನೆಯ": 4, "ನಾಲ್ಕನೇ": 4, "naalkaneya": 4, "naalkane": 4, "fourth": 4,
+    "ಐದನೆಯ": 5, "ಐದನೇ": 5, "aidaneya": 5, "aidane": 5, "fifth": 5,
+    # Hindi (2026-09-25: "दूसरा गर्भ है" was not understood and q04 repeated)
+    "पहला": 1, "पहली": 1, "दूसरा": 2, "दूसरी": 2, "तीसरा": 3, "तीसरी": 3,
+    "चौथा": 4, "चौथी": 4, "पांचवां": 5, "पाँचवाँ": 5, "पांचवीं": 5,
+}
+
+# Ordinals that are also the stem of unrelated words: matched only as a whole
+# word. "ಮೊದಲ ಹೆರಿಗೆ" (first delivery) = 1, but "ಮೊದಲು"/"ಮೊದಲೇ" mean
+# before/already and "ಮೊದಲಿನಿಂದಲೂ" from-the-start - none of them is a count.
+# "ಮೊದಲೇ ಹೆರಿಗೆ ಆಗಿದೆ" (already delivered before) is deliberately NOT 1.
+_WHOLE_WORD_ORDINALS = frozenset({"ಮೊದಲ"})
+_KANNADA_LETTER = r"ಀ-೿"
+
+# Pregnancy nouns: an ordinal OR a plain number next to one is the gravida
+# ("2 ಗರ್ಭ" / "ಎರಡನೇ ಗರ್ಭ" = second pregnancy). ಗೃಹ್ಮಧಾರಣೆ is how Sarvam STT
+# has written ಗರ್ಭಧಾರಣೆ.
+_PREGNANCY_KEYWORDS = (
+    r"(?:ಗರ್ಭಧಾರಣೆ|ಗೃಹ್ಮಧಾರಣೆ|ಗರ್ಭಾವಸ್ಥೆ|ಗರ್ಭ|garbhadharane|garbha\s*dharane|garbha"
+    r"|pregnancy|gravida|गर्भ|गर्भावस्था|प्रेगनेंसी)"
+)
+
+# Delivery / child nouns: only an ORDINAL next to one is the gravida
+# ("ಎರಡನೇ ಹೆರಿಗೆ" = this is her 2nd delivery). A plain number counts past
+# deliveries or living children - "2 ಹೆರಿಗೆ ಆಗಿದೆ", "2 ಮಗು" - which is the
+# PARITY (the gravida would be 3), so it is never returned as the gravida.
+_DELIVERY_KEYWORDS = (
+    r"(?:ಹೆರಿಗೆ|ಹೇರಿಗೆ|ಪ್ರಸವ|ಮಗು|delivery|herige|बच्चा|डिलीवरी|प्रसव)"
+)
+
+_ORDINAL_CONTEXT_RE = re.compile(
+    rf"{_PREGNANCY_KEYWORDS}|{_DELIVERY_KEYWORDS}", re.IGNORECASE
+)
+
+_PREGNANCY_PATTERNS = [
+    re.compile(
+        # No trailing \b: after a Kannada vowel sign ("ಗರ್ಭಧಾರಣೆ") \b never
+        # matches, so "2 ಗರ್ಭಧಾರಣೆ" used to return None.
+        rf"\b(\d{{1,2}})(?:st|nd|rd|th|ನೇ|ನೆಯ)?\s*{_PREGNANCY_KEYWORDS}(?![A-Za-z])",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:gravida|G)\s*[:=\-]?\s*(\d{1,2})\b",
+        re.IGNORECASE,
+    ),
+]
+
+
+def detect_pregnancy_number(text: str) -> int | None:
+    """Extract pregnancy count (gravida) from speech (e.g. 'eradaneya garbha dharane' -> 2).
+
+    Returns 1-10 or None. Never raises.
+    """
+    if not text:
+        return None
+    raw = str(text).strip()
+    low = raw.lower()
+
+    for word, num in _PREGNANCY_ORDINAL_MAP.items():
+        if word not in low:
+            continue
+        if word in _WHOLE_WORD_ORDINALS:
+            match = re.search(
+                rf"(?<![{_KANNADA_LETTER}]){re.escape(word)}(?![{_KANNADA_LETTER}])", low
+            )
+            if not match:
+                continue
+            idx = match.start()
+        else:
+            idx = low.find(word)
+        window = low[max(0, idx - 10):min(len(low), idx + len(word) + 25)]
+        if _ORDINAL_CONTEXT_RE.search(window):
+            return num
+
+    for pattern in _PREGNANCY_PATTERNS:
+        match = pattern.search(raw)
+        if match:
+            try:
+                num = int(match.group(1))
+                if 1 <= num <= 10:
+                    return num
+            except (ValueError, TypeError):
+                pass
+
+    return None
 
 
 @dataclasses.dataclass
@@ -1056,6 +1339,7 @@ class SakhiCallState:
         phone: str | None = None,
         age: int | None = None,
         gestational_weeks: int | None = None,
+        force: bool = False,
     ) -> None:
         """Record whatever identity fields we just learned.
 
@@ -1066,18 +1350,22 @@ class SakhiCallState:
             self.patient_id = patient_id
         cleaned = clean_person_name(name)
         if cleaned:
-            self.name = cleaned
-            self.name_confirmed = True
+            if not self.name or not self.name_confirmed or force:
+                self.name = cleaned
+                self.name_confirmed = True
         if village:
-            self.village = str(village).strip() or None
+            if not self.village or force:
+                self.village = str(village).strip() or None
         if phone:
             digits = re.sub(r"\D", "", str(phone))
-            if len(digits) >= 10:
+            if len(digits) >= 10 and (not self.phone or force):
                 self.phone = digits[-10:]
         if isinstance(age, int) and 10 <= age <= 60:
-            self.age = age
+            if not self.age or force:
+                self.age = age
         if isinstance(gestational_weeks, int) and 1 <= gestational_weeks <= 45:
-            self.gestational_weeks = gestational_weeks
+            if not self.gestational_weeks or force:
+                self.gestational_weeks = gestational_weeks
 
     def lock_identity_from_frontend(self, *, name: str, age: int | None) -> None:
         """Identity resolved via the frontend text box, bypassing voice/STT.

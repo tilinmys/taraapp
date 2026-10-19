@@ -228,7 +228,8 @@ async def hook_tests() -> None:
         fired = True
     spoken = session.say.call_args[0][0] if session.say.called else ""
     check("paracetamol case: turn stopped before LLM", fired)
-    check("paracetamol case: approved script verbatim", spoken == guardrails.MEDICAL_REFUSAL_SCRIPT)
+    # Script verbatim, then back to the checklist question (never a question of its own).
+    check("paracetamol case: approved script verbatim", spoken.startswith(guardrails.MEDICAL_REFUSAL_SCRIPT))
 
     # emergency: escalation script, not a refusal
     state = agent.CallState()
@@ -253,7 +254,7 @@ async def hook_tests() -> None:
         except agent.StopResponse:
             pass
         first = session.say.call_args[0][0]
-        check("abuse strike 1: warning script", first == guardrails.ABUSE_WARNING_SCRIPT)
+        check("abuse strike 1: warning script", first.startswith(guardrails.ABUSE_WARNING_SCRIPT))
         check("abuse strike 1: no hangup yet", not hangup.called)
         try:
             await gracy.on_user_turn_completed(tc, msg("shut up you bitch"))

@@ -111,6 +111,29 @@ def test_fetal_heart_rate_question_applies_when_gestation_unknown():
     assert "q25" not in state.intake.answered
 
 
+def test_fetal_movement_question_skipped_before_24_weeks():
+    """Official template: skip fetal movement check if gestational age is under 24 weeks."""
+    state = SakhiCallState(gestational_weeks=20)
+    state.intake.sync_from_state(state)
+    state.intake.sync_applicability(state)
+    assert "q12" in state.intake.answered
+    assert state.intake.answered["q12"] == "(not applicable)"
+
+
+def test_fetal_movement_question_applies_from_24_weeks():
+    state = SakhiCallState(gestational_weeks=26)
+    state.intake.sync_from_state(state)
+    state.intake.sync_applicability(state)
+    assert "q12" not in state.intake.answered
+
+
+def test_fetal_movement_question_applies_when_gestation_unknown():
+    state = SakhiCallState()
+    state.intake.sync_from_state(state)
+    state.intake.sync_applicability(state)
+    assert "q12" not in state.intake.answered
+
+
 def test_applicability_is_re_evaluated_once_gestation_becomes_known():
     """A gating fact learned mid-call must be picked up on the very next
     prompt_summary(), not just at call start."""

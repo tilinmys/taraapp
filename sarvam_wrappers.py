@@ -1,11 +1,13 @@
 import aiohttp
 import asyncio
 import base64
+import hashlib
 import inspect
 import io
 import json
 import logging
 import os
+import time
 import uuid
 import wave
 from urllib.parse import urlencode, urlparse
@@ -17,6 +19,7 @@ from livekit import rtc
 from livekit.agents import APIConnectionError, APIStatusError, stt, tts
 from livekit.agents.types import APIConnectOptions, DEFAULT_API_CONNECT_OPTIONS
 from livekit.agents.utils import AudioBuffer
+from sakhi_normalizer import SakhiSpeechNormalizer
 
 logger = logging.getLogger("sarvam_wrappers")
 
@@ -24,8 +27,8 @@ logger = logging.getLogger("sarvam_wrappers")
 _TTS_COMPLETION_TYPES = {"flush_complete", "flushed", "done", "complete", "end", "eos"}
 _seen_unknown_types: set[str] = set()
 
-# At least one letter or digit (any script) — the minimum Sarvam will accept.
-_SPEAKABLE_RE = re.compile(r"[A-Za-z0-9\u0900-\u097F]", re.UNICODE)
+# At least one letter or digit (any script, including Kannada \u0C80-\u0CFF and Devanagari) — the minimum Sarvam will accept.
+_SPEAKABLE_RE = re.compile(r"[A-Za-z0-9\u0900-\u0D7F]", re.UNICODE)
 _SARVAM_V3_SPEAKERS = {
     "aditya", "ritu", "ashutosh", "priya", "neha", "rahul", "pooja", "rohan",
     "simran", "kavya", "amit", "dev", "ishita", "shreya", "ratan", "varun",
@@ -53,11 +56,88 @@ def _payload_shape(value):
     return type(value).__name__
 
 
+def sanitize_kannada_tts(text: str) -> str:
+    """Backward-compatible entry point for the shared speech normalizer."""
+    return SakhiSpeechNormalizer.sanitize_for_tts(text)
+
+
 def _normalize_tts_text(text: str, *, max_chars: int) -> str:
-    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    sanitized = sanitize_kannada_tts(text)
+    normalized = re.sub(r"\s+", " ", str(sanitized or "")).strip()
     if not normalized or not _SPEAKABLE_RE.search(normalized):
         return ""
     return normalized[:max_chars].strip()
+
+
+class SarvamStreamingTTS:
+    """High-reliability streaming WebSocket TTS client for Sarvam Bulbul:v3 with ping keep-alives and timeouts."""
+    SARVAM_WS_URL = "wss://api.sarvam.ai/text-to-speech-websocket"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "bulbul:v3",
+        speaker: str = "shreya",
+        target_language_code: str = "kn-IN",
+        pace: float = 0.95,
+        speech_sample_rate: int = 24000,
+    ):
+        self.api_key = api_key or os.getenv("SARVAM_API_KEY", "")
+        self.model = model
+        self.speaker = speaker
+        self.target_language_code = target_language_code
+        self.pace = pace
+        self.speech_sample_rate = speech_sample_rate
+        self.ws = None
+
+    async def connect(self):
+        headers = {
+            "api-subscription-key": self.api_key,
+            "x-api-key": self.api_key,
+        }
+        self.ws = await websockets.connect(
+            self.SARVAM_WS_URL,
+            extra_headers=headers,
+            ping_interval=10,
+            ping_timeout=5,
+            open_timeout=5.0,
+        )
+        return self.ws
+
+    async def send_text(self, text: str):
+        clean_text = sanitize_kannada_tts(text)
+        payload = {
+            "inputs": [clean_text],
+            "target_language_code": self.target_language_code,
+            "speaker": self.speaker,
+            "pace": self.pace,
+            "speech_sample_rate": self.speech_sample_rate,
+            "enable_preprocessing": True,
+            "model": self.model,
+        }
+        if self.ws:
+            await self.ws.send(json.dumps(payload))
+
+    async def recv_audio(self, timeout: float = 3.0) -> bytes | None:
+        if not self.ws:
+            return None
+        try:
+            msg = await asyncio.wait_for(self.ws.recv(), timeout=timeout)
+            data = json.loads(msg)
+            if "audios" in data and data["audios"]:
+                return base64.b64decode(data["audios"][0])
+            if "audio" in data.get("data", {}):
+                return base64.b64decode(data["data"]["audio"])
+        except asyncio.TimeoutError:
+            logger.warning("SarvamStreamingTTS recv timed out after %.1fs", timeout)
+        except Exception as e:
+            logger.error("SarvamStreamingTTS recv error: %s", e)
+        return None
+
+    async def close(self):
+        if self.ws:
+            await self.ws.close()
+            self.ws = None
 
 
 def _sarvam_tts_config_payload(tts_instance: "SarvamTTS") -> dict:
@@ -157,12 +237,23 @@ def _ws_headers(api_key: str) -> dict[str, str]:
     }
 
 
-def _websocket_connect(uri: str, headers: dict[str, str], *, open_timeout: float | None = None):
+def _websocket_connect(
+    uri: str,
+    headers: dict[str, str],
+    *,
+    open_timeout: float | None = None,
+    ping_interval: float | None = 10,
+    ping_timeout: float | None = 5,
+):
     connect_params = inspect.signature(websockets.connect).parameters
     header_kw = "additional_headers" if "additional_headers" in connect_params else "extra_headers"
     kwargs = {header_kw: headers}
     if open_timeout is not None and "open_timeout" in connect_params:
         kwargs["open_timeout"] = open_timeout
+    if "ping_interval" in connect_params:
+        kwargs["ping_interval"] = ping_interval
+    if "ping_timeout" in connect_params:
+        kwargs["ping_timeout"] = ping_timeout
     return websockets.connect(uri, **kwargs)
 
 
@@ -180,6 +271,144 @@ def _pcm16_to_wav_bytes(pcm: bytes, *, sample_rate: int, num_channels: int) -> b
     return buffer.getvalue()
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    """Small local env parser (keeps this provider module independent of agent.py)."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sarvam_stt_query(
+    *,
+    model: str,
+    language_code: str,
+    mode: str,
+    current_protocol: bool,
+) -> dict[str, str]:
+    """Return the handshake query for the selected Sarvam STT protocol.
+
+    Incident 2026-09-24: live browser audio reached Silero VAD, but Sarvam
+    returned no transcript and raised no error, so LiveKit's fallback never
+    activated.  The v3 endpoint now takes its configuration in the handshake;
+    the old wrapper sent only language/model there and then sent a separate
+    v2-era ``config`` message that the v3 schema does not accept.
+
+    ``SARVAM_STT_CURRENT_PROTOCOL_ENABLED=false`` retains the exact legacy
+    query for emergency rollback without reverting code.
+    """
+    query = {"language-code": language_code, "model": model}
+    if not current_protocol:
+        return query
+    query.update(
+        {
+            "mode": mode,
+            "sample_rate": "16000",
+            "vad_signals": "true",
+            # OFF by default (2026-09-24 incident, measured - see
+            # docs/STT_FRAGMENTATION_INCIDENT.md). "true" makes Sarvam end a
+            # segment at every micro-pause: one 3.6s answer came back as 4
+            # context-free finals, "ಇಪ್ಪತ್ತೆಂಟು" was cut into "ಇಪ್ಪತ್ತು" + "28"
+            # (age read as 20), and short fragments were hallucinated as
+            # filler ("Yes Sir.", "Okay"). Clean speech: 0/10 correct with
+            # it on, 10/10 with it off; speaker-to-mic 3/10 vs 10/10.
+            "high_vad_sensitivity": "true"
+            if _env_bool("SARVAM_STT_HIGH_VAD_SENSITIVITY", False)
+            else "false",
+            "flush_signal": "true"
+            if _env_bool("SARVAM_STT_FLUSH_SIGNAL_ENABLED", True)
+            else "false",
+        }
+    )
+    return query
+
+
+def _sarvam_stt_audio_message(pcm: bytes, *, current_protocol: bool) -> dict:
+    """Build one STT audio message without ever exposing provider credentials.
+
+    Current Saaras streaming consumes raw 16 kHz PCM bytes, but the production
+    endpoint's message validator still requires the literal encoding label
+    ``audio/wav`` (confirmed by its exact validation error on 2026-09-24 and
+    mirrored by LiveKit's maintained Sarvam plugin).  The old implementation
+    wrapped every 100 ms block in a fresh WAV file and added an undocumented
+    outer ``type=audio`` field.  Keep that byte-for-byte legacy shape behind
+    the protocol kill-switch, but default to the current plugin contract.
+    """
+    if current_protocol:
+        encoded = base64.b64encode(pcm).decode("ascii")
+        return {
+            "audio": {
+                "data": encoded,
+                "encoding": "audio/wav",
+                "sample_rate": 16000,
+            }
+        }
+
+    wav_bytes = _pcm16_to_wav_bytes(pcm, sample_rate=16000, num_channels=1)
+    return {
+        "type": "audio",
+        "audio": {
+            "data": base64.b64encode(wav_bytes).decode("ascii"),
+            "encoding": "audio/wav",
+            "sample_rate": 16000,
+        },
+    }
+
+
+def _sarvam_stt_flush_message() -> dict[str, str]:
+    return {"type": "flush"}
+
+
+# [SAKHI_STT_DEBUG] - one structured record per transcript, so a failed turn
+# can be placed before STT (little or no audio reached it), inside STT
+# (plenty of audio, wrong/fragmented text) or after it (right text, not
+# extracted). agent.py points this at pipeline_event; None = log only.
+# No transcript text leaves this module - only its length and a hash.
+STT_DEBUG_SINK = None
+# Called (with {audio_duration_ms, gain_db}) when our VAD detected speech
+# but the provider returned no text. agent.py sets it per call.
+STT_EMPTY_SINK = None
+
+
+def _dbfs(sumsq: float, n: int) -> float | None:
+    if n <= 0 or sumsq <= 0:
+        return None
+    import math
+    return round(10 * math.log10(sumsq / n / (32768.0 ** 2)), 1)
+
+
+class _SegmentAudio:
+    """Audio actually sent to the provider since the previous final."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.samples = 0
+        self.sumsq = 0.0
+        self.peak = 0
+
+    def add(self, pcm: bytes) -> None:
+        import array
+        a = array.array("h")
+        a.frombytes(pcm[: len(pcm) // 2 * 2])
+        if not a:
+            return
+        self.samples += len(a)
+        self.sumsq += float(sum(x * x for x in a))
+        self.peak = max(self.peak, max(abs(x) for x in a))
+
+
+def _emit_stt_debug(record: dict) -> None:
+    logger.info("[SAKHI_STT_DEBUG] %s", json.dumps(record, ensure_ascii=True))
+    sink = STT_DEBUG_SINK
+    if sink is not None:
+        try:
+            sink(record)
+        except Exception:
+            logger.debug("STT debug sink failed", exc_info=True)
+
+
 def _strip_wav_header(audio_bytes: bytes) -> bytes:
     if audio_bytes.startswith(b"RIFF"):
         idx = audio_bytes.find(b"data")
@@ -192,7 +421,7 @@ class SarvamSTT(stt.STT):
     def __init__(
         self,
         api_key: str,
-        model: str = "saarika:v2.5",
+        model: str = "saaras:v3",
         language_code: str = "en-IN",
         base_url: str = "https://api.sarvam.ai",
         mode: str = "transcribe",
@@ -215,6 +444,10 @@ class SarvamSTT(stt.STT):
         # but that acceptance is not the same as a documented, confirmed
         # effect, so it is wired as configurable rather than defaulted to.
         self._mode = mode
+        # ON by default because Saaras v3/v4 use the current handshake/audio
+        # contract.  This remains a per-process kill-switch so production can
+        # revert to the pre-incident wire format without a code rollback.
+        self._current_protocol = _env_bool("SARVAM_STT_CURRENT_PROTOCOL_ENABLED", True)
 
     _VALID_LANGS = {
         "en-IN", "hi-IN", "bn-IN", "gu-IN", "kn-IN", "ml-IN",
@@ -246,7 +479,7 @@ class SarvamSTT(stt.STT):
         lang = self._sanitize_language(language)
         return SarvamSpeechStream(
             self, self._api_key, self._model, lang, self._base_url, conn_options,
-            mode=self._mode,
+            mode=self._mode, current_protocol=self._current_protocol,
         )
 
     async def _recognize_impl(
@@ -257,6 +490,192 @@ class SarvamSTT(stt.STT):
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
     ) -> stt.SpeechEvent:
         raise NotImplementedError("SarvamSTT only supports streaming STT.")
+
+
+class SarvamBatchSTT(stt.STT):
+    """Sarvam's REST speech-to-text, one whole utterance per request.
+
+    Used behind livekit's stt.StreamAdapter, which segments the call with
+    the worker's own Silero VAD and hands each finished utterance here
+    (agent.build_stt). Why not the streaming socket: there, SARVAM's
+    server-side VAD decides what speech is. On a real call (2026-09-25,
+    01:23) LiveKit's VAD heard three bursts from the ASHA worker and Sarvam
+    transcribed only the last - the other two never produced a transcript,
+    and the intake stalled on q01. One VAD (ours, the one the turn detector
+    also uses) owning segmentation removes that disagreement entirely.
+
+    Measured on production: the full q01 answer transcribed exactly, in
+    0.25-0.33 s per utterance (the streaming final took 0.63-0.69 s).
+    """
+
+    _ENDPOINT = "/speech-to-text"
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "saaras:v3",
+        language_code: str = "kn-IN",
+        base_url: str = "https://api.sarvam.ai",
+        mode: str = "transcribe",
+        timeout_s: float | None = None,
+    ):
+        super().__init__(capabilities=stt.STTCapabilities(streaming=False, interim_results=False))
+        self._api_key = api_key
+        self._model = model
+        self._language_code = language_code if language_code in SarvamSTT._VALID_LANGS else "kn-IN"
+        self._base_url = base_url.rstrip("/")
+        self._mode = mode
+        self._timeout = timeout_s or float(os.getenv("SARVAM_STT_REST_TIMEOUT", "6"))
+        self._session: aiohttp.ClientSession | None = None
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def provider(self) -> str:
+        return "sarvam"
+
+    def _http(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def aclose(self) -> None:
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+
+    @staticmethod
+    def _to_wav16k(buffer: AudioBuffer) -> tuple[bytes, int]:
+        frame = rtc.combine_audio_frames(buffer) if isinstance(buffer, list) else buffer
+        if frame.sample_rate != 16000 or frame.num_channels != 1:
+            resampler = rtc.AudioResampler(
+                input_rate=frame.sample_rate, output_rate=16000, num_channels=frame.num_channels,
+            )
+            parts = [bytes(f.data) for f in resampler.push(frame)] + [bytes(f.data) for f in resampler.flush()]
+            pcm = b"".join(parts)
+            if frame.num_channels > 1:            # keep channel 0
+                import array
+                a = array.array("h"); a.frombytes(pcm)
+                pcm = a[::frame.num_channels].tobytes()
+        else:
+            pcm = bytes(frame.data)
+        return _pcm16_to_wav_bytes(pcm, sample_rate=16000, num_channels=1), len(pcm) // 2
+
+    @staticmethod
+    def _normalise(pcm: bytes) -> tuple[bytes, float]:
+        """Lift a quiet utterance to a -3 dBFS peak (at most +30 dB).
+
+        A real call (2026-09-25 01:36) delivered a 2.5 s utterance at
+        -60 dBFS RMS / -34 dBFS peak - near silence after the browser and
+        noise filter - and Sarvam returned an empty transcript. Speech at
+        that level is still intelligible once amplified; the gain cap keeps
+        pure background hiss from being blown up into "speech".
+        Returns (pcm, gain_db). Loud audio is never attenuated.
+        """
+        import array, math
+        a = array.array("h"); a.frombytes(pcm[: len(pcm) // 2 * 2])
+        if not a:
+            return pcm, 0.0
+        peak = max(abs(x) for x in a)
+        if peak <= 0:
+            return pcm, 0.0
+        target = 32767 * 10 ** (-3 / 20)
+        gain = min(target / peak, 10 ** (float(os.getenv("SARVAM_STT_MAX_GAIN_DB", "30")) / 20))
+        if gain <= 1.05:
+            return pcm, 0.0
+        out = array.array("h", (max(-32768, min(32767, int(x * gain))) for x in a))
+        return out.tobytes(), round(20 * math.log10(gain), 1)
+
+    async def _recognize_impl(
+        self,
+        buffer: AudioBuffer,
+        *,
+        language: str | None = None,
+        conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
+    ) -> stt.SpeechEvent:
+        # The framework passes hints like "en" or NOT_GIVEN; an unknown code
+        # makes Sarvam silent, so anything unrecognised uses the call's own.
+        lang = language.strip() if isinstance(language, str) and language.strip() in SarvamSTT._VALID_LANGS \
+            else self._language_code
+        wav, samples = self._to_wav16k(buffer)
+        raw_pcm = wav[44:44 + samples * 2]
+        gain_db = 0.0
+        if _env_bool("SARVAM_STT_NORMALIZE", True):
+            norm_pcm, gain_db = self._normalise(raw_pcm)
+            if gain_db:
+                wav = _pcm16_to_wav_bytes(norm_pcm, sample_rate=16000, num_channels=1)
+        form = aiohttp.FormData()
+        form.add_field("file", wav, filename="utterance.wav", content_type="audio/wav")
+        form.add_field("model", self._model)
+        form.add_field("language_code", lang)
+        if self._mode:
+            form.add_field("mode", self._mode)
+        started = time.perf_counter()
+        try:
+            async with self._http().post(
+                self._base_url + self._ENDPOINT, data=form,
+                headers={"api-subscription-key": self._api_key},
+                timeout=aiohttp.ClientTimeout(total=self._timeout),
+            ) as resp:
+                body = await resp.text()
+                if resp.status != 200:
+                    raise APIStatusError(
+                        f"Sarvam STT {resp.status}", status_code=resp.status,
+                        body=body[:300], retryable=resp.status >= 500 or resp.status == 429,
+                    )
+        except (APIStatusError, APIConnectionError):
+            raise
+        except asyncio.TimeoutError as e:
+            raise APIConnectionError("Sarvam STT request timed out") from e
+        except aiohttp.ClientError as e:
+            raise APIConnectionError(f"Sarvam STT request failed: {e}") from e
+
+        try:
+            data = json.loads(body)
+        except ValueError as e:
+            raise APIConnectionError("Sarvam STT returned non-JSON") from e
+        transcript = (data.get("transcript") or "").strip()
+
+        if _env_bool("SAKHI_STT_DEBUG", True):
+            import array
+            a = array.array("h"); a.frombytes(raw_pcm)      # level BEFORE normalisation
+            sumsq = float(sum(x * x for x in a)); peak = max((abs(x) for x in a), default=0)
+            _emit_stt_debug({
+                "stt_provider": "sarvam-batch",
+                "stt_model": self._model,
+                "stt_mode": self._mode,
+                "stt_language": lang,
+                "stt_utterance_id": data.get("request_id"),
+                "is_final": True,
+                "transcript_length": len(transcript),
+                "transcript_hash": hashlib.sha256(transcript.encode("utf-8")).hexdigest()[:12],
+                "stt_confidence": None,
+                "audio_sample_rate": 16000,
+                "audio_channels": 1,
+                "audio_duration_ms": round(samples / 16.0, 1),
+                "audio_rms_dbfs": _dbfs(sumsq, len(a)),
+                "audio_peak_dbfs": _dbfs(float(peak) ** 2, 1),
+                "stt_latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                "segmentation": "livekit_vad",
+                "gain_db": gain_db,
+            })
+
+        # Speech was detected but nothing came back: tell the agent, so the
+        # ASHA worker hears "I didn't catch that" instead of silence.
+        if not transcript and samples >= 16000 * float(os.getenv("STT_EMPTY_MIN_SECONDS", "0.8")):
+            sink = STT_EMPTY_SINK
+            if sink is not None:
+                try:
+                    sink({"audio_duration_ms": round(samples / 16.0, 1), "gain_db": gain_db})
+                except Exception:
+                    logger.debug("STT empty sink failed", exc_info=True)
+
+        return stt.SpeechEvent(
+            type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+            request_id=data.get("request_id") or "",
+            alternatives=[stt.SpeechData(text=transcript, language=lang, confidence=0.99)],
+        )
 
 
 class SarvamSpeechStream(stt.SpeechStream):
@@ -274,6 +693,7 @@ class SarvamSpeechStream(stt.SpeechStream):
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
         *,
         mode: str = "transcribe",
+        current_protocol: bool = True,
     ):
         super().__init__(stt=stt_instance, conn_options=conn_options)
         self._api_key = api_key
@@ -281,32 +701,50 @@ class SarvamSpeechStream(stt.SpeechStream):
         self._language_code = language_code
         self._base_url = base_url
         self._mode = mode
+        self._current_protocol = current_protocol
 
     async def _run(self) -> None:
         uri = _ws_url(
             self._base_url,
             "/speech-to-text/ws",
-            {"language-code": self._language_code, "model": self._model},
+            _sarvam_stt_query(
+                model=self._model,
+                language_code=self._language_code,
+                mode=self._mode,
+                current_protocol=self._current_protocol,
+            ),
         )
         headers = _ws_headers(self._api_key)
         resampler: rtc.AudioResampler | None = None
         resampler_rate: int | None = None
         pending = bytearray()
+        segment = _SegmentAudio()
+        debug_on = _env_bool("SAKHI_STT_DEBUG", True)
+        stream_started = time.monotonic()
+        input_format = {"rate": None, "channels": None}
+        vad_marks = {"start": None, "end": None}
+        utterance_no = 0
 
         try:
             logger.info("Connecting to Sarvam STT WebSocket: %s", _redact_url(uri))
             async with _websocket_connect(uri, headers) as websocket:
-                config_msg = {
-                    "type": "config",
-                    "data": {
-                        "model": self._model,
-                        "mode": self._mode,
-                        "language_code": self._language_code,
-                    },
-                }
-                await websocket.send(json.dumps(config_msg))
+                # Saaras v3/v4 configure the stream entirely through query
+                # parameters.  A separate config message belongs to the old
+                # translate protocol and is silently ignored by the current
+                # endpoint.  Only send it when the rollback switch is active.
+                if not self._current_protocol:
+                    config_msg = {
+                        "type": "config",
+                        "data": {
+                            "model": self._model,
+                            "mode": self._mode,
+                            "language_code": self._language_code,
+                        },
+                    }
+                    await websocket.send(json.dumps(config_msg))
 
                 async def receive_loop():
+                    nonlocal utterance_no
                     async for message in websocket:
                         resp = json.loads(message)
                         logger.debug("Sarvam STT received: %s", resp)
@@ -318,6 +756,25 @@ class SarvamSpeechStream(stt.SpeechStream):
                                 body=resp,
                                 retryable=False,
                             )
+
+                        # With vad_signals=true Sarvam marks the provider-side
+                        # end of speech.  Flush immediately so short Kannada
+                        # answers do not remain buffered forever.  This is the
+                        # condition seen in the incident: local VAD ended the
+                        # turn but the provider socket stayed open and silent.
+                        data = resp.get("data") if isinstance(resp.get("data"), dict) else {}
+                        signal = data.get("signal_type")
+                        if signal == "START_SPEECH":
+                            vad_marks["start"] = round(time.monotonic() - stream_started, 3)
+                        elif signal == "END_SPEECH":
+                            vad_marks["end"] = round(time.monotonic() - stream_started, 3)
+                        if (
+                            self._current_protocol
+                            and resp.get("type") in {"event", "events"}
+                            and data.get("signal_type") == "END_SPEECH"
+                            and _env_bool("SARVAM_STT_FLUSH_SIGNAL_ENABLED", True)
+                        ):
+                            await websocket.send(json.dumps(_sarvam_stt_flush_message()))
 
                         transcript = ""
                         is_final = False
@@ -332,6 +789,30 @@ class SarvamSpeechStream(stt.SpeechStream):
                             # as FINAL — otherwise the agent only ever sees interims and
                             # the turn never completes.
                             is_final = bool(resp["data"].get("is_final", resp.get("type") == "data"))
+
+                        if transcript and debug_on:
+                            utterance_no += 1
+                            _emit_stt_debug({
+                                "stt_provider": "sarvam",
+                                "stt_model": self._model,
+                                "stt_mode": self._mode,
+                                "stt_language": self._language_code,
+                                "stt_utterance_id": data.get("request_id") or f"seg-{utterance_no}",
+                                "is_final": bool(is_final),
+                                "transcript_length": len(transcript),
+                                "transcript_hash": hashlib.sha256(transcript.encode("utf-8")).hexdigest()[:12],
+                                "stt_confidence": data.get("confidence"),
+                                "audio_sample_rate": input_format["rate"],
+                                "audio_channels": input_format["channels"],
+                                "audio_duration_ms": round(segment.samples / 16.0, 1),
+                                "audio_rms_dbfs": _dbfs(segment.sumsq, segment.samples),
+                                "audio_peak_dbfs": _dbfs(float(segment.peak) ** 2, 1),
+                                "vad_start_s": vad_marks["start"],
+                                "vad_end_s": vad_marks["end"],
+                                "high_vad_sensitivity": _env_bool("SARVAM_STT_HIGH_VAD_SENSITIVITY", False),
+                            })
+                            if is_final:
+                                segment.reset()
 
                         if transcript:
                             event_type = (
@@ -356,16 +837,13 @@ class SarvamSpeechStream(stt.SpeechStream):
                     nonlocal pending
                     if not pending or (not force and len(pending) < self._SEND_CHUNK_BYTES):
                         return
-                    wav_bytes = _pcm16_to_wav_bytes(bytes(pending), sample_rate=16000, num_channels=1)
+                    pcm = bytes(pending)
                     pending = bytearray()
-                    audio_msg = {
-                        "type": "audio",
-                        "audio": {
-                            "data": base64.b64encode(wav_bytes).decode("ascii"),
-                            "encoding": "audio/wav",
-                            "sample_rate": 16000,
-                        },
-                    }
+                    if debug_on:
+                        segment.add(pcm)
+                    audio_msg = _sarvam_stt_audio_message(
+                        pcm, current_protocol=self._current_protocol
+                    )
                     await websocket.send(json.dumps(audio_msg))
 
                 recv_task = asyncio.create_task(receive_loop())
@@ -377,11 +855,18 @@ class SarvamSpeechStream(stt.SpeechStream):
 
                         if isinstance(item, self._FlushSentinel):
                             await send_pending(force=True)
+                            if (
+                                self._current_protocol
+                                and _env_bool("SARVAM_STT_FLUSH_SIGNAL_ENABLED", True)
+                            ):
+                                await websocket.send(json.dumps(_sarvam_stt_flush_message()))
                             continue
 
                         frame = item
                         if resampler is None or resampler_rate != frame.sample_rate:
                             resampler_rate = frame.sample_rate
+                            input_format["rate"] = frame.sample_rate
+                            input_format["channels"] = frame.num_channels
                             resampler = rtc.AudioResampler(
                                 input_rate=frame.sample_rate,
                                 output_rate=16000,
@@ -491,28 +976,23 @@ class SarvamTTS(tts.TTS):
         target_language_code: str = "en-IN",
         base_url: str = "https://api.sarvam.ai",
         pace: float = 1.05,
-        min_buffer_size: int = 35,
+        min_buffer_size: int = 20,
         max_chunk_length: int = 160,
         output_audio_codec: str = "wav",
         enable_preprocessing: bool = False,
     ):
         model, speaker = resolve_sarvam_voice(model, speaker)
         super().__init__(
-            # streaming=False on purpose.
-            #
-            # The WebSocket endpoint (wss://api.sarvam.ai/text-to-speech/ws) was
-            # probed directly on 2026-08-14 and NEVER returned audio for either
-            # model - it connects, accepts config/text/flush, then hangs until
-            # the client gives up. That is the 11-second dead-air timeout.
-            #
-            # Declaring the provider non-streaming makes AgentSession route
-            # through tts.StreamAdapter, which feeds the REST endpoint one
-            # clause at a time using EagerClauseTokenizer (already wired in
-            # SakhiAgent.tts_node, and only active for non-streaming providers).
-            # The caller therefore hears the first clause after ~440ms instead of
-            # waiting on a socket that never answers.
+            # streaming=True by default (2026-09-25). The old claim that the
+            # WebSocket endpoint "hangs and never returns audio" is out of
+            # date: re-tested on the production host through this class's own
+            # stream(), 3/3 runs completed with first audio in 385-484 ms vs
+            # ~1.6 s for REST .synthesize(). tts_audio_cache.CachedTTS now
+            # mirrors this flag and passes stream() straight through.
+            # SARVAM_TTS_STREAMING=false restores StreamAdapter +
+            # EagerClauseTokenizer over REST, one clause at a time.
             capabilities=tts.TTSCapabilities(
-                streaming=False,
+                streaming=_env_bool("SARVAM_TTS_STREAMING", True),
             ),
             sample_rate=SARVAM_SAMPLE_RATE,
             num_channels=1,
@@ -543,12 +1023,10 @@ class SarvamTTS(tts.TTS):
 
     @property
     def idle_timeout(self) -> float:
-        # After the final flush, how long to wait with no server message before
-        # considering the segment fully synthesized. Live calls showed Sarvam can
-        # pause >1s between synthesis batches on longer replies — 1.0s truncated
-        # audible words (132 chars -> 3.8s audio), so keep this generous. The tail
-        # wait overlaps playback of already-buffered audio, so callers never hear it.
-        return float(os.getenv("SARVAM_TTS_IDLE_TIMEOUT", "3.0"))
+        # Fallback only: the stream normally ends on Sarvam's "final" event
+        # (send_completion_event). 0.25 s was shorter than the measured
+        # 235-249 ms gap between clauses and cut the last clause off.
+        return float(os.getenv("SARVAM_TTS_IDLE_TIMEOUT", "1.5"))
 
     def config_message(self) -> str:
         payload = _sarvam_tts_config_payload(self)
@@ -589,7 +1067,17 @@ async def _run_sarvam_tts_ws(
     Completes when the input ends AND the server has drained all audio
     (explicit completion message, socket close, or idle timeout after flush).
     """
-    uri = _ws_url(tts_instance._base_url, "/text-to-speech/ws", {"model": tts_instance._model})
+    # send_completion_event=true: Sarvam then sends {"type": "event", "data":
+    # {"event_type": "final"}} right after the last audio of each flush.
+    # Without it no end marker arrives and the stream can only end on
+    # silence - measured 2026-09-25, the gap between clauses (235-249 ms) is
+    # as long as the old 0.25 s idle cut-off, which dropped the final clause
+    # (the question) in 1 of 4 runs.
+    uri = _ws_url(
+        tts_instance._base_url,
+        "/text-to-speech/ws",
+        {"model": tts_instance._model, "send_completion_event": "true"},
+    )
     headers = _ws_headers(tts_instance._api_key)
     open_timeout = min(float(getattr(conn_options, "timeout", 10.0) or 10.0), tts_instance.ws_open_timeout)
     recv_timeout = float(getattr(conn_options, "timeout", 10.0) or 10.0)
@@ -609,6 +1097,9 @@ async def _run_sarvam_tts_ws(
         input_done = asyncio.Event()
         fatal_tts_error = asyncio.Event()
         last_payload_shape = {"type": "none"}
+        # One "final" event arrives per flush; the stream is complete only once
+        # every flush has been answered, not at the first final.
+        flush_counts = {"sent": 0, "final": 0}
 
         async def send_loop() -> None:
             # Sarvam rejects text messages with no letters/digits with a fatal
@@ -664,6 +1155,7 @@ async def _run_sarvam_tts_ws(
                             last_payload_shape = _payload_shape(payload)
                             logger.debug("Sarvam TTS sending flush payload shape=%s", last_payload_shape)
                             await websocket.send(json.dumps(payload))
+                            flush_counts["sent"] += 1
                             pending_since_flush = False
                         continue
                     if not item:
@@ -676,6 +1168,7 @@ async def _run_sarvam_tts_ws(
                     last_payload_shape = _payload_shape(payload)
                     logger.debug("Sarvam TTS sending flush payload shape=%s", last_payload_shape)
                     await websocket.send(json.dumps(payload))
+                    flush_counts["sent"] += 1
             finally:
                 input_done.set()
 
@@ -738,6 +1231,12 @@ async def _run_sarvam_tts_ws(
                     if audio_bytes:
                         received_audio = True
                         output_emitter.push(audio_bytes)
+                elif rtype == "event":
+                    data = resp.get("data") if isinstance(resp.get("data"), dict) else {}
+                    if str(data.get("event_type", "")).lower() == "final":
+                        flush_counts["final"] += 1
+                        if input_done.is_set() and flush_counts["final"] >= flush_counts["sent"]:
+                            return
                 elif rtype in _TTS_COMPLETION_TYPES:
                     if input_done.is_set():
                         return
@@ -824,89 +1323,148 @@ class SarvamTTSChunkedStream(tts.ChunkedStream):
         super().__init__(tts=tts_instance, input_text=text, conn_options=conn_options)
         self._sarvam_tts = tts_instance
 
+    def __await__(self):
+        async def _collect():
+            # Compatibility for component diagnostics that await synthesize()
+            # directly. LiveKit itself consumes this object as an async
+            # iterator, so this does not alter the framework contract.
+            frames = []
+            async for event in self:
+                frame_data = event.frame.data
+                frames.append(
+                    frame_data.tobytes()
+                    if hasattr(frame_data, "tobytes")
+                    else bytes(frame_data)
+                )
+            if not frames:
+                return None
+            return type(
+                "PCM16AudioResult",
+                (),
+                {
+                    "data": b"".join(frames),
+                    "sample_rate": self._sarvam_tts.sample_rate,
+                    "num_channels": self._sarvam_tts.num_channels,
+                },
+            )()
+        return _collect().__await__()
+
     async def _run(self, output_emitter: tts.AudioEmitter) -> None:
         try:
             from livekit.agents import utils
-            request_id = f"sarvam-tts-{utils.shortuuid()}"
-            output_emitter.initialize(
-                request_id=request_id,
-                sample_rate=self._sarvam_tts.sample_rate,
-                num_channels=1,
-                mime_type="audio/pcm",
-                stream=False,
-            )
+            clean_input = sanitize_kannada_tts(self._input_text)
+            if not clean_input or not _SPEAKABLE_RE.search(clean_input):
+                raise APIConnectionError("Sarvam TTS received no speakable text")
 
-            payload = _sarvam_tts_rest_payload(self._sarvam_tts, self._input_text)
+            payload = _sarvam_tts_rest_payload(self._sarvam_tts, clean_input)
             headers = {
                 "api-subscription-key": self._sarvam_tts._api_key,
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
             }
-            # Hard 3s ceiling per clause. Measured clause synthesis is ~440ms on
-            # bulbul:v2, so 3s is ~7x headroom while still failing fast enough
-            # for the TTS FallbackAdapter to reach OpenAI before the caller
-            # notices a gap. Without an explicit timeout aiohttp waits
-            # indefinitely, which is how a slow synthesis became dead air.
+            url = f"{self._sarvam_tts._base_url}/text-to-speech"
+            logger.info(f"[SARVAM TTS] Synthesizing: {clean_input}")
+
             timeout = aiohttp.ClientTimeout(
                 total=float(os.getenv("SARVAM_TTS_HTTP_TIMEOUT", "3.0"))
             )
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    f"{self._sarvam_tts._base_url}/text-to-speech",
-                    json=payload,
-                    headers=headers
-                ) as resp:
+                async with session.post(url, headers=headers, json=payload) as resp:
                     if resp.status != 200:
-                        # Surface the body: Sarvam explains speaker/model
-                        # mismatches here, and a silent failure is the worst
-                        # possible outcome on a clinical call.
                         detail = (await resp.text())[:300]
+                        logger.error("[SARVAM TTS ERROR] Status %s: %s", resp.status, detail)
                         raise APIStatusError(
                             f"Sarvam TTS {resp.status}: {detail}",
                             status_code=resp.status,
                         )
                     data = await resp.json()
-                    audios = data.get("audios", [])
 
-                    if not audios or not audios[0]:
-                        # Raise rather than return: an empty body must trigger
-                        # the fallback chain, not produce a silent turn.
-                        raise APIConnectionError("Sarvam TTS returned no audio")
+            audios = data.get("audios", []) if isinstance(data, dict) else []
+            if not audios or not audios[0]:
+                raise APIConnectionError("Sarvam returned empty audio buffer")
 
-                # Decode Base64 WAV from Sarvam
-                wav_bytes = base64.b64decode(audios[0])
+            try:
+                audio_bytes = base64.b64decode(audios[0], validate=True)
+            except Exception as exc:
+                raise APIConnectionError("Sarvam returned invalid base64 audio") from exc
 
-                # Extract raw PCM frames from the WAV container
-                with io.BytesIO(wav_bytes) as wav_io:
-                    with wave.open(wav_io, 'rb') as wav_file:
+            # Sarvam REST returns a WAV container. AudioEmitter requires only
+            # the underlying signed 16-bit PCM frames; forwarding the RIFF
+            # bytes makes the beginning of the buffer invalid audio.
+            try:
+                with io.BytesIO(audio_bytes) as wav_io:
+                    with wave.open(wav_io, "rb") as wav_file:
                         actual_rate = wav_file.getframerate()
-                        raw_pcm = wav_file.readframes(wav_file.getnframes())
+                        num_channels = wav_file.getnchannels()
+                        sample_width = wav_file.getsampwidth()
+                        compression = wav_file.getcomptype()
+                        pcm_bytes = wav_file.readframes(wav_file.getnframes())
+            except (EOFError, wave.Error) as exc:
+                raise APIConnectionError("Sarvam returned malformed WAV audio") from exc
 
-                # The emitter was initialized with the declared sample rate. If
-                # the API ever returns a different one the audio plays at the
-                # wrong speed and pitch instead of failing visibly - so say so.
-                if actual_rate != self._sarvam_tts.sample_rate:
-                    logger.warning(
-                        "Sarvam returned %dHz but the provider declares %dHz; "
-                        "playback will be pitch-shifted. Update SARVAM_SAMPLE_RATE.",
-                        actual_rate, self._sarvam_tts.sample_rate,
-                    )
+            expected_rate = self._sarvam_tts.sample_rate
+            if actual_rate != expected_rate or num_channels != 1 or sample_width != 2:
+                raise APIConnectionError(
+                    "Sarvam audio format mismatch: "
+                    f"expected PCM16 mono {expected_rate}Hz, got "
+                    f"{sample_width * 8}-bit {num_channels}ch {actual_rate}Hz"
+                )
+            if compression != "NONE":
+                raise APIConnectionError(
+                    f"Sarvam returned unsupported WAV compression {compression}"
+                )
+            if not pcm_bytes or len(pcm_bytes) % 2:
+                raise APIConnectionError("Sarvam returned empty or unaligned PCM16 audio")
 
-                # Push valid audio bytes to LiveKit's AudioEmitter
-                output_emitter.push(raw_pcm)
-                output_emitter.flush()
+            request_id = f"sarvam-tts-{utils.shortuuid()}"
+            output_emitter.initialize(
+                request_id=request_id,
+                sample_rate=expected_rate,
+                num_channels=1,
+                mime_type="audio/pcm",
+                stream=False,
+            )
+
+            logger.info(
+                f"[SARVAM TTS] Synthesized {len(pcm_bytes)} PCM bytes successfully at {actual_rate}Hz"
+            )
+
+            output_emitter.push(pcm_bytes)
+            output_emitter.flush()
 
         except (APIConnectionError, APIStatusError):
-            # Already the right type - let it reach the FallbackAdapter.
             raise
         except asyncio.TimeoutError as e:
-            # The whole point of the 3s ceiling: convert a hang into a fast,
-            # typed failure the fallback chain can act on.
             logger.warning("Sarvam TTS timed out; failing over")
             raise APIConnectionError("Sarvam TTS timed out") from e
         except Exception as e:
-            # This previously logged and returned, swallowing the failure. The
-            # emitter then produced no audio, AgentSession saw a "successful"
-            # empty synthesis, and the fallback chain never fired - the caller
-            # just got silence. Every failure must propagate.
             logger.error("Error in SarvamTTSChunkedStream._run", exc_info=True)
             raise _to_api_error("Sarvam TTS request failed", e) from e
+
+
+class SafeSarvamRESTTTS(SarvamTTS):
+    """Direct, robust REST-based Sarvam TTS provider for LiveKit.
+    Pushes valid linear PCM audio frames without deadlocking or WebSocket hanging.
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "bulbul:v3",
+        speaker: str = "shreya",
+        target_language_code: str = "kn-IN",
+        base_url: str = "https://api.sarvam.ai",
+        pace: float = 0.95,
+        **kwargs,
+    ):
+        key = api_key or os.getenv("SARVAM_API_KEY", "")
+        super().__init__(
+            api_key=key,
+            model=model,
+            speaker=speaker,
+            target_language_code=target_language_code,
+            base_url=base_url,
+            pace=pace,
+            **kwargs,
+        )
+        # REST-only by name and contract: never inherit SARVAM_TTS_STREAMING.
+        self._capabilities = tts.TTSCapabilities(streaming=False)

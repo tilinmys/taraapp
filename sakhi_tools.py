@@ -24,13 +24,263 @@ determined and what to say next. The model never computes a risk level.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 from typing import Any, Callable
+from pydantic import BaseModel, Field, ValidationError
 
 from livekit.agents import RunContext, llm
 
-from sakhi_intake import ANC_STAGES, stage_name
+if not hasattr(llm, "FunctionContext"):
+    class FunctionContext:
+        def __init__(self):
+            pass
+    llm.FunctionContext = FunctionContext
+
+if not hasattr(llm, "ai_callable"):
+    llm.ai_callable = llm.function_tool
+
+
+class DemographicInput(BaseModel):
+    name: str = Field(description="Mother's name", min_length=1)
+    age: int = Field(description="Mother's age in years", ge=12, le=55)
+
+
+class SakhiIntakeTools(llm.FunctionContext):
+    def __init__(self, current_stage: int = 1, repo=None, session=None):
+        super().__init__()
+        self.current_stage = current_stage
+        self.last_spoken_prompt = ""
+        self.repo = repo
+        self.session = session
+
+    @llm.ai_callable(
+        name="record_patient_intake",
+        description="Save mother's demographic name and age, and get the next question to speak.",
+    )
+    async def record_patient_intake(self, name: str, age: int) -> str:
+        try:
+            demographic = DemographicInput(
+                name=str(name or "").strip(),
+                age=int(str(age).strip()),
+            )
+        except (TypeError, ValueError, ValidationError):
+            spoken_text = "ತಾಯಿಯ ಹೆಸರು ಮತ್ತು ಸರಿಯಾದ ವಯಸ್ಸನ್ನು ಮತ್ತೆ ಹೇಳಿ ಅಕ್ಕಾ."
+            self.last_spoken_prompt = spoken_text
+            return f"NOT_RECORDED. Speak this response: {spoken_text}"
+
+        clean_name = demographic.name
+        clean_age = demographic.age
+        logger.info(f"[CRITICAL CHECK] Tool invoked for {clean_name=}, {clean_age=}")
+
+        # Persist through the injected repository only, in the background so
+        # the voice path never waits on network/disk; yield one event-loop turn
+        # so the write is registered immediately. (Removed: `from database
+        # import db_repo` - no such module exists - and a `db_helper.db_repo`
+        # probe; both failed silently inside `except Exception: pass`.)
+        if self.repo is not None:
+            async def _save_mother_bg():
+                try:
+                    await self.repo.create_patient(name=clean_name, age=clean_age)
+                except Exception:
+                    logger.warning("record_patient_intake: saving the mother failed", exc_info=True)
+            asyncio.create_task(_save_mother_bg())
+            await asyncio.sleep(0)
+        else:
+            logger.warning("record_patient_intake: no repository configured; mother not persisted")
+
+        # The active tool turn owns playback. Starting session.say() here would
+        # create a competing speech handle while LiveKit is still generating
+        # the tool continuation, which can cancel both responses.
+        spoken_text = f"ತಾಯಿ {clean_name}, ವಯಸ್ಸು {clean_age} ದಾಖಲಾಗಿದೆ. ಇದು ಅವರ ಎಷ್ಟನೇ ಗರ್ಭಧಾರಣೆ ಅಕ್ಕಾ?"
+        self.last_spoken_prompt = spoken_text
+        return f"COMPLETED. Speak this response now: {spoken_text}"
+
+    @llm.ai_callable(
+        name="record_demographics",
+        description="Save mother's demographic name and age, and get the next question to speak.",
+    )
+    async def record_demographics(self, name: str, age: int) -> str:
+        return await self.record_patient_intake(name=name, age=age)
+
+
+class Stage1Tools(llm.FunctionContext):
+    def __init__(self, session=None, stage_machine=None, repo=None):
+        super().__init__()
+        self.session = session
+        self.stage_machine = stage_machine
+        self.repo = repo
+
+    @llm.ai_callable(description="Records mother's name and age for Stage 1 intake.")
+    async def record_demographics(self, name: str, age: int) -> str:
+        clean_name = str(name).strip()
+        clean_age = int(age)
+
+        # 1. Save to SQLite repository in background task (non-blocking)
+        async def _save_stage1_bg():
+            if self.repo is not None:
+                try:
+                    await self.repo.create_patient(name=clean_name, age=clean_age)
+                except Exception:
+                    pass
+            try:
+                import db_helper
+                if hasattr(db_helper, "db_repo") and hasattr(db_helper.db_repo, "save_mother"):
+                    await db_helper.db_repo.save_mother(clean_name, clean_age)
+            except Exception:
+                pass
+        asyncio.create_task(_save_stage1_bg())
+
+        # 2. Advance intake state machine
+        if hasattr(self.stage_machine, "advance_to"):
+            self.stage_machine.advance_to(stage=2)
+        elif hasattr(self.stage_machine, "arm_next"):
+            self.stage_machine.arm_next()
+
+        # Return speech to the active generation instead of starting a second
+        # session speech from within the tool callback.
+        spoken_response = (
+            f"ತಾಯಿ {clean_name}, ವಯಸ್ಸು {clean_age} ದಾಖಲಾಗಿದೆ. "
+            f"ಇದು ಅವರ ಎಷ್ಟನೇ ಗರ್ಭಧಾರಣೆ ಮತ್ತು ಎಷ್ಟು ಮಕ್ಕಳು ಇದ್ದಾರೆ ಅಕ್ಕಾ?"
+        )
+
+        return f"Successfully saved. Speak this response now: {spoken_response}"
+
+    @llm.ai_callable(description="Records mother's name and age for Stage 1 intake.")
+    async def record_patient_intake(self, name: str, age: int) -> str:
+        return await self.record_demographics(name=name, age=age)
+
+
+class Stage2Tools(llm.FunctionContext):
+    def __init__(self, session=None, stage_machine=None, repo=None):
+        super().__init__()
+        self.session = session
+        self.stage_machine = stage_machine
+        self.repo = repo
+
+    @llm.ai_callable(description="Records obstetric history: gestational weeks, gravida, and para.")
+    async def record_obstetric_history(self, gestational_weeks: int, gravida: int = 1, para: int = 0) -> str:
+        weeks = int(gestational_weeks)
+        if hasattr(self.stage_machine, "advance_to"):
+            self.stage_machine.advance_to(stage=3)
+        elif hasattr(self.stage_machine, "arm_next"):
+            self.stage_machine.arm_next()
+
+        spoken_response = (
+            f"{weeks} ವಾರಗಳ ಗರ್ಭಧಾರಣೆ ದಾಖಲಾಗಿದೆ. "
+            f"ಈಗ ತಾಯಿಗೆ ಹೊಟ್ಟೆ ನೋವು, ರಕ್ತಸ್ರಾವ, ಅಥವಾ ನೀರಿನಂಶ ಹೋಗುವ ತೊಂದರೆ ಇದೆಯಾ ಅಕ್ಕಾ?"
+        )
+        return f"Successfully saved obstetric history. Speak this response now: {spoken_response}"
+
+    @llm.ai_callable(description="Records gestational age in weeks or months.")
+    async def record_gestational_age(self, weeks_or_months: str | int) -> str:
+        try:
+            val = int(str(weeks_or_months).strip())
+        except Exception:
+            val = 12
+        return await self.record_obstetric_history(gestational_weeks=val)
+
+
+class Stage3Tools(llm.FunctionContext):
+    def __init__(self, session=None, stage_machine=None, repo=None):
+        super().__init__()
+        self.session = session
+        self.stage_machine = stage_machine
+        self.repo = repo
+
+    @llm.ai_callable(description="Records maternal symptom screen results.")
+    async def record_symptoms_screen(self, bleeding: bool = False, abdominal_pain: bool = False, severe_headache: bool = False, swelling: bool = False) -> str:
+        if hasattr(self.stage_machine, "advance_to"):
+            self.stage_machine.advance_to(stage=4)
+        elif hasattr(self.stage_machine, "arm_next"):
+            self.stage_machine.arm_next()
+
+        spoken_response = (
+            "ಲಕ್ಷಣಗಳನ್ನು ದಾಖಲಿಸಲಾಗಿದೆ. "
+            "ತಾಯಿಯ ಇಂದಿನ ರಕ್ತದೊತ್ತಡ ಬಿಪಿ ಎಷ್ಟು ದಾಖಲಾಗಿದೆ ಅಕ್ಕಾ?"
+        )
+        return f"Successfully saved symptoms. Speak this response now: {spoken_response}"
+
+    @llm.ai_callable(description="Records maternal danger signs and symptoms.")
+    async def record_symptoms(self, headache: bool = False, blurry_vision: bool = False, swelling: bool = False, vaginal_bleeding: bool = False, severe_abdominal_pain: bool = False) -> str:
+        return await self.record_symptoms_screen(bleeding=vaginal_bleeding, abdominal_pain=severe_abdominal_pain, severe_headache=headache, swelling=swelling)
+
+
+class Stage4Tools(llm.FunctionContext):
+    def __init__(self, session=None, stage_machine=None, repo=None):
+        super().__init__()
+        self.session = session
+        self.stage_machine = stage_machine
+        self.repo = repo
+
+    @llm.ai_callable(description="Records maternal clinical vitals: blood pressure and weight.")
+    async def record_vitals(self, systolic: int, diastolic: int, weight: float = 0.0) -> str:
+        if hasattr(self.stage_machine, "advance_to"):
+            self.stage_machine.advance_to(stage=5)
+        elif hasattr(self.stage_machine, "arm_next"):
+            self.stage_machine.arm_next()
+
+        spoken_response = (
+            f"ಬಿಪಿ {systolic} {diastolic} ದಾಖಲಾಗಿದೆ. "
+            "ಎಲ್ಲಾ ವಿವರಗಳನ್ನು ಯಶಸ್ವಿಯಾಗಿ ದಾಖಲಿಸಲಾಗಿದೆ. ಧನ್ಯವಾದಗಳು ಅಕ್ಕಾ."
+        )
+        return f"Successfully saved vitals. Speak this response now: {spoken_response}"
+
+    @llm.ai_callable(description="Record blood pressure in mmHg.")
+    async def record_bp(self, systolic: int, diastolic: int) -> str:
+        return await self.record_vitals(systolic=systolic, diastolic=diastolic)
+
+
+def get_stage_tool_context(stage_id: int, session=None, stage_machine=None, repo=None):
+    """Return ONLY the tools needed for the current stage to prevent context bloat."""
+    if stage_id == 1:
+        return Stage1Tools(session, stage_machine, repo=repo)
+    if stage_id == 2:
+        return Stage2Tools(session, stage_machine, repo=repo)
+    if stage_id == 3:
+        return Stage3Tools(session, stage_machine, repo=repo)
+    if stage_id == 4:
+        return Stage4Tools(session, stage_machine, repo=repo)
+    return Stage1Tools(session, stage_machine, repo=repo)
+
+
+from sakhi_intake import ANC_STAGES, question_for_model, question_text, stage_name
+
+
+def _intake_ack(language, name: str, age) -> str:
+    """"Noted: <name>, <age> years" in the call's language."""
+    lang = str(getattr(language, "value", language) or "").lower()
+    age_part = f", {age}" if age else ""
+    if lang.startswith("hi"):
+        return f"ठीक है, {name}{age_part} साल दर्ज हो गया।"
+    if lang.startswith("en"):
+        return f"Noted, {name}{age_part} years."
+    return f"ಸರಿ, {name}{age_part} ವರ್ಷ ದಾಖಲಾಗಿದೆ."
+
+
+def tool_fallback_line(kind: str, language, *, systolic=None, diastolic=None, weeks=None) -> str:
+    """What Sakhi says when the model returns a tool call but no text.
+
+    An acknowledgement ONLY, in the call's language (2026-09-28). The old lines
+    were fixed Kannada and carried their own clinical content: record_bp's said
+    "all details recorded, thank you" (a false closing mid-call - the "thank
+    you" loop), record_symptoms' re-asked the BP question (a duplicate question)
+    and record_gestational_age's jumped to the abdominal-pain question. Which
+    question comes next is decided by the checklist, never by this line.
+    """
+    lang = str(getattr(language, "value", language) or "").lower()
+    hindi = lang.startswith("hi")
+    if kind == "bp" and systolic and diastolic:
+        return (f"ठीक है, बीपी {systolic} {diastolic} दर्ज हो गया।" if hindi
+                else f"ಸರಿ, ಬಿಪಿ {systolic} {diastolic} ದಾಖಲಾಗಿದೆ.")
+    if kind == "gestational_age" and weeks:
+        return (f"ठीक है, {weeks} हफ़्ते दर्ज हो गए।" if hindi
+                else f"ಸರಿ, {weeks} ವಾರ ದಾಖಲಾಗಿದೆ.")
+    return "ठीक है, दर्ज हो गया।" if hindi else "ಸರಿ, ದಾಖಲಾಗಿದೆ."
+
+
 from sakhi_domain import (
     DANGER_SIGN_ADVISORY,
     BloodPressure,
@@ -101,10 +351,36 @@ class ClinicalToolset:
         triage: TriageEngine,
         *,
         event_sink: EventSink = _noop_event,
+        session=None,
     ) -> None:
         self._repo = repository
         self._triage = triage
         self._event = event_sink
+        self.session = session
+        self.last_spoken_prompt = ""
+
+    def persist_captured_demographics(self, state: SakhiCallState) -> None:
+        """Persist deterministic name/age capture without blocking the turn.
+
+        The structured turn detector can resolve q01 before the LLM tool loop,
+        so the ordinary record_patient_intake tool may never be called.  This
+        keeps the same repository write semantics while leaving network/disk
+        work off the voice hot path.  State identity guards prevent a delayed
+        write from replacing a later confirmed value.
+        """
+        if self._repo is None or state.patient_id or not state.name or not state.age:
+            return
+
+        async def _persist() -> None:
+            if state.patient_id:
+                return
+            try:
+                record = await self._repo.create_patient(name=state.name, age=state.age)
+                state.identify(patient_id=record.patient_id)
+            except Exception:
+                logger.warning("Deterministic Stage-1 persistence failed", exc_info=True)
+
+        asyncio.create_task(_persist())
 
     # --- helpers -------------------------------------------------------
 
@@ -340,6 +616,7 @@ class ClinicalToolset:
                 + self._speak_instruction(state, assessment)
             )
         payload.update(extra)
+        payload["directive"] = "CRITICAL PROTOCOL: Speak immediately to the ASHA worker without silence or hesitation."
         return json.dumps(payload, ensure_ascii=False)
 
     # --- tools ---------------------------------------------------------
@@ -600,6 +877,12 @@ class ClinicalToolset:
                     risk_level=assessment.level.value)
         self._emit_live_form_sync(state)
 
+        spoken_text = tool_fallback_line(
+            "bp", state.language, systolic=bp.systolic, diastolic=bp.diastolic
+        )
+        self.last_spoken_prompt = spoken_text
+        logger.info(f"[TOOL EXECUTED] record_bp: systolic={bp.systolic}, diastolic={bp.diastolic}")
+
         return self._result(
             state, assessment,
             persisted=persisted,
@@ -691,6 +974,10 @@ class ClinicalToolset:
                     event="symptoms_recorded", risk_level=assessment.level.value)
         self._emit_live_form_sync(state)
 
+        spoken_text = tool_fallback_line("symptoms", state.language)
+        self.last_spoken_prompt = spoken_text
+        logger.info("[TOOL EXECUTED] record_symptoms")
+
         return self._result(
             state, assessment,
             persisted=persisted or bool(state.patient_id),
@@ -720,8 +1007,9 @@ class ClinicalToolset:
             )
             return json.dumps({
                 "recorded": False,
+                "directive": "CRITICAL PROTOCOL: Speak immediately to the ASHA worker without silence.",
                 "instruction": "SAY: politely say you did not catch that clearly and ask "
-                               "how many months or weeks pregnant she is, again.",
+                               "how many months or weeks pregnant she is, in under 10 words.",
             }, ensure_ascii=False)
 
         self._event(
@@ -730,11 +1018,21 @@ class ClinicalToolset:
             event="gestational_age_recorded", weeks=state.gestational_weeks,
         )
         self._emit_live_form_sync(state)
+        nxt = state.intake.next_question()
+        nxt_text = question_for_model(nxt, state.language) if nxt else "continue with the next check"
+
+        spoken_text = tool_fallback_line(
+            "gestational_age", state.language, weeks=state.gestational_weeks
+        )
+        self.last_spoken_prompt = spoken_text
+        logger.info(f"[TOOL EXECUTED] record_gestational_age: weeks={state.gestational_weeks}")
+
         return json.dumps({
             "recorded": True,
             "gestational_weeks": state.gestational_weeks,
-            "instruction": "SAY: acknowledge it briefly, then continue with whatever "
-                           "question is next.",
+            "directive": "CRITICAL PROTOCOL: Speak immediately to the ASHA worker without silence.",
+            "instruction": f"Acknowledge briefly in under 10 words, then ask the next question: '{nxt_text}'.",
+            "next_question": nxt_text,
         }, ensure_ascii=False)
 
     @llm.function_tool
@@ -848,13 +1146,16 @@ class ClinicalToolset:
             f"{stage_name(stage_num)} | {param}={str(value)[:60]}",
             event="anc_checkpoint", stage=stage_num, parameter=param,
         )
-        self._emit_live_form_sync(state)
+        nxt = state.intake.next_question()
+        nxt_text = question_for_model(nxt, state.language) if nxt else "continue to the next check"
         return json.dumps({
             "recorded": True,
             "stage": stage_num,
             "parameter": param,
-            "instruction": "SAY: acknowledge in under six words, then ask the NEXT QUESTION "
-                           "from the state block. Do not summarise what you recorded.",
+            "value": str(value)[:120],
+            "directive": "CRITICAL PROTOCOL: Speak immediately to the ASHA worker without silence.",
+            "instruction": f"Acknowledge in under six words, then ask the next question: '{nxt_text}'. Do not stay silent.",
+            "next_question": nxt_text,
         }, ensure_ascii=False)
 
     @llm.function_tool
@@ -875,22 +1176,23 @@ class ClinicalToolset:
             )
             return json.dumps({
                 "recorded": False,
-                "instruction": "SAY: say you did not catch the name and ask for it once more, plainly.",
+                "directive": "CRITICAL PROTOCOL: Speak immediately to the ASHA worker without silence.",
+                "instruction": "Say you did not catch the name and ask for it once more plainly in under ten words.",
             }, ensure_ascii=False)
 
         before_age = state.age
         state.identify(name=cleaned, age=age)
         age_ok = state.age is not None and state.age != before_age or state.age == age
 
-        record = None
-        if self._repo is not None and not state.patient_id:
-            try:
-                record = await self._repo.create_patient(name=cleaned, age=state.age)
-                state.identify(patient_id=record.patient_id)
-            except Exception:
-                # A failed write must not stop the screening - the clinical
-                # value of this call is the BP and the red flags, not the row.
-                logger.warning("Stage-1 intake persistence failed", exc_info=True)
+        # Background DB persistence: save runs asynchronously without blocking tool return
+        async def _persist_patient_bg():
+            if self._repo is not None and not state.patient_id:
+                try:
+                    record = await self._repo.create_patient(name=cleaned, age=state.age)
+                    state.identify(patient_id=record.patient_id)
+                except Exception:
+                    logger.warning("Stage-1 intake persistence failed", exc_info=True)
+        asyncio.create_task(_persist_patient_bg())
 
         self._event(
             "tools", "ok", "Patient intake recorded",
@@ -898,13 +1200,28 @@ class ClinicalToolset:
             patient_id=state.patient_id, name=cleaned, age=state.age,
         )
         self._emit_live_form_sync(state)
+        nxt = state.intake.next_question()
+        nxt_text = question_for_model(nxt, state.language) if nxt else "ask which month of pregnancy she is in"
+
+        logger.info(f"[CRITICAL CHECK] Tool invoked for {cleaned=}, age={state.age}")
+        # Acknowledgement in the CALL's language + the checklist's actual next
+        # question. It used to be one hardcoded Kannada sentence ending in the
+        # gravida question (q04) - Kannada on Hindi/English calls, and asked
+        # ahead of q02 (months), so the months question came back afterwards.
+        next_question = f"{_intake_ack(state.language, cleaned, state.age)} {nxt_text}"
+        self.last_spoken_prompt = next_question
+
         return json.dumps({
+            "status": "DATA_RECORDED",
+            "directive": f"You must say this exact sentence to the user right now: {next_question}",
             "recorded": True,
+            "patient_id": state.patient_id,
             "name": cleaned,
             "age": state.age,
             "age_accepted": bool(age_ok),
-            "instruction": "SAY: greet her by name in under ten words, then move to Stage 2 "
-                           "and ask which month of pregnancy she is in.",
+            "instruction": f"Say this exact sentence to the user right now: {next_question}",
+            "next_question": next_question,
+            "spoken": next_question,
         }, ensure_ascii=False)
 
     @llm.function_tool
@@ -995,11 +1312,46 @@ class ClinicalToolset:
         # this because existing tests call these tools directly on the
         # toolset object, bypassing tools_for() entirely - see
         # tests/test_scoped_tools.py.
-        tools = [
-            self.record_bp, self.record_symptoms, self.record_gestational_age,
-            self.record_anc_checkpoint, self.record_patient_intake,
-            self.check_pregnancy_risk_factors,
-        ]
+        lean_mode = os.getenv("SAKHI_LEAN_INTAKE_MODE", "true").strip().lower() in ("true", "1", "yes")
+        stage = 1
+        if state is not None:
+            intake = getattr(state, "intake", None)
+            if intake is not None and hasattr(intake, "current_stage"):
+                try:
+                    stage = intake.current_stage()
+                except Exception:
+                    stage = 1
+
+        if lean_mode:
+            if stage == 1:
+                tools = [
+                    self.record_patient_intake,
+                    self.record_bp,
+                    self.record_symptoms,
+                    self.record_gestational_age,
+                    self.record_anc_checkpoint,
+                    self.check_pregnancy_risk_factors,
+                ]
+            elif stage == 2:
+                tools = [
+                    self.record_gestational_age,
+                    self.record_anc_checkpoint,
+                    self.check_pregnancy_risk_factors,
+                    self.record_bp,
+                    self.record_symptoms,
+                ]
+            elif stage == 3:
+                tools = [self.record_bp, self.record_anc_checkpoint, self.record_symptoms]
+            elif stage == 4:
+                tools = [self.record_symptoms, self.record_anc_checkpoint, self.record_bp]
+            else:
+                tools = [self.record_anc_checkpoint, self.record_bp, self.record_symptoms]
+        else:
+            tools = [
+                self.record_bp, self.record_symptoms, self.record_gestational_age,
+                self.record_anc_checkpoint, self.record_patient_intake,
+                self.check_pregnancy_risk_factors,
+            ]
 
         if not getattr(state, "patient_id", None):
             # Identity not settled: look her up, or create her.

@@ -114,19 +114,148 @@ _BP_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Spoken number words, English + the two call languages, for readings dictated
-# as words ("one twenty over eighty"). Only the forms that actually turn up in
-# a BP reading - this is not a general number parser and is not trying to be.
+# Spoken number words, English + Kannada + Hindi, for readings dictated
+# as words ("one twenty over eighty", "ippatentu varsha", etc.).
 _SPOKEN_NUMBERS: dict[str, str] = {
+    # English BP readings
     "one twenty": "120", "one thirty": "130", "one forty": "140",
     "one fifty": "150", "one sixty": "160", "one seventy": "170",
     "one eighty": "180", "one ninety": "190", "two hundred": "200",
     "ninety": "90", "eighty": "80", "seventy": "70", "sixty": "60",
     "hundred": "100", "one ten": "110", "one hundred": "100",
+    # Demographic ages seen in English/code-mixed intake. Longest-first regex
+    # construction below keeps these from being split into their components.
+    "twenty five": "25", "twenty six": "26", "twenty seven": "27",
+    "twenty eight": "28", "twenty nine": "29", "twenty four": "24",
 }
+
+# Kannada cardinal and colloquial numbers (cardinals 0-60 and common multiples)
+# in both Kannada script and Latin/romanized transliteration.
+KANNADA_NUMBER_WORDS: dict[str, str] = {
+    # 0 - 9
+    "ಸೊನ್ನೆ": "0", "sonne": "0", "zero": "0",
+    "ಒಂದು": "1", "ondu": "1",
+    "ಎರಡು": "2", "eradu": "2",
+    "ಮೂರು": "3", "mooru": "3", "muru": "3",
+    "ನಾಲ್ಕು": "4", "naalku": "4", "nalku": "4",
+    "ಐದು": "5", "aidu": "5",
+    "ಆರು": "6", "aaru": "6",
+    "ಏಳು": "7", "yelu": "7", "elu": "7",
+    "ಎಂಟು": "8", "entu": "8",
+    "ಒಂಬತ್ತು": "9", "ombattu": "9",
+    # 10 - 19
+    "ಹತ್ತು": "10", "hattu": "10",
+    "ಹನ್ನೊಂದು": "11", "hannondu": "11",
+    "ಹನ್ನೆರಡು": "12", "hanneradu": "12",
+    "ಹದಿಮೂರು": "13", "hadimooru": "13",
+    "ಹದಿನಾಲ್ಕು": "14", "hadinaalku": "14",
+    "ಹದಿನೈದು": "15", "hadinaidu": "15",
+    "ಹದಿನಾರು": "16", "hadinaaru": "16",
+    "ಹದಿನೇಳು": "17", "hadinelu": "17",
+    "ಹದಿನೆಂಟು": "18", "hadinentu": "18",
+    "ಹತ್ತೊಂಬತ್ತು": "19", "hattombattu": "19",
+    # 20 - 29
+    "ಇಪ್ಪತ್ತು": "20", "ippattu": "20",
+    "ಇಪ್ಪತ್ತೊಂದು": "21", "ippattondu": "21",
+    "ಇಪ್ಪತ್ತೆರಡು": "22", "ippatteradu": "22",
+    "ಇಪ್ಪತ್ಮೂರು": "23", "ಇಪ್ಪತ್ತಮೂರು": "23", "ippammooru": "23", "ippattmooru": "23",
+    "ಇಪ್ಪತ್ನಾಲ್ಕು": "24", "ಇಪ್ಪತ್ತನಾಲ್ಕು": "24", "ippattnaalku": "24", "ippattnalku": "24",
+    "ಇಪ್ಪತ್ತೈದು": "25", "ippattaidu": "25",
+    "ಇಪ್ಪತ್ತಾರು": "26", "ippattaaru": "26",
+    "ಇಪ್ಪತ್ತೇಳು": "27", "ippattelu": "27",
+    "ಇಪ್ಪತ್ತೆಂಟು": "28", "ಇಪ್ಪತೆಂಟು": "28", "ಇಪ್ಪತ್ತು ಎಂಟು": "28",
+    "ippatentu": "28", "ippattentu": "28", "ippattu entu": "28",
+    "ಇಪ್ಪತ್ತೊಂಬತ್ತು": "29", "ippattombattu": "29",
+    # 30 - 39
+    "ಮೂವತ್ತು": "30", "moovattu": "30",
+    "ಮೂವತ್ತೊಂದು": "31", "moovattondu": "31",
+    "ಮೂವತ್ತೆರಡು": "32", "moovatteradu": "32",
+    "ಮೂವತ್ಮೂರು": "33", "moovattmooru": "33",
+    "ಮೂವತ್ನಾಲ್ಕು": "34", "moovattnaalku": "34",
+    "ಮೂವತ್ತೈದು": "35", "moovattaidu": "35",
+    "ಮೂವತ್ತಾರು": "36", "moovattaaru": "36",
+    "ಮೂವತ್ತೇಳು": "37", "moovattelu": "37",
+    "ಮೂವತ್ತೆಂಟು": "38", "moovattentu": "38",
+    "ಮೂವತ್ತೊಂಬತ್ತು": "39", "moovattombattu": "39",
+    # 40 - 49
+    "ನಲವತ್ತು": "40", "nalavattu": "40",
+    "ನಲವತ್ತೊಂದು": "41", "nalavattondu": "41",
+    "ನಲವತ್ತೆರಡು": "42", "nalavatteradu": "42",
+    "ನಲವತ್ಮೂರು": "43", "nalavattmooru": "43",
+    "ನಲವತ್ನಾಲ್ಕು": "44", "nalavattnaalku": "44",
+    "ನಲವತ್ತೈದು": "45", "nalavattaidu": "45",
+    # 50 - 60
+    "ಐವತ್ತು": "50", "aivattu": "50",
+    "ಅರವತ್ತು": "60", "aravattu": "60",
+    "ಎಪ್ಪತ್ತು": "70", "eppattu": "70",
+    "ಎಂಬತ್ತು": "80", "embattu": "80",
+    "ತೊಂಬತ್ತು": "90", "tombattu": "90",
+    "ನೂರು": "100", "nooru": "100",
+}
+
+# Kannada ordinals (e.g. "eradaneya" -> 2nd pregnancy)
+KANNADA_ORDINAL_WORDS: dict[str, str] = {
+    "ಮೊದಲನೆಯ": "1", "ಮೊದಲನೇ": "1", "modalaneya": "1", "modalane": "1", "modala": "1",
+    "ಎರಡನೆಯ": "2", "ಎರಡನೇ": "2", "eradaneya": "2", "eradane": "2",
+    "ಮೂರನೆಯ": "3", "ಮೂರನೇ": "3", "mooraneya": "3", "moorane": "3",
+    "ನಾಲ್ಕನೆಯ": "4", "ನಾಲ್ಕನೇ": "4", "naalkaneya": "4", "naalkane": "4",
+    "ಐದನೆಯ": "5", "ಐದನೇ": "5", "aidaneya": "5", "aidane": "5",
+}
+
+def _kannada_tens_compounds() -> dict[str, str]:
+    """41-99 as single joined words ("ಐವತ್ತೆರಡು" 52, "ಎಂಬತ್ತೈದು" 85).
+
+    Generated from each tens word rather than typed: weights (52 kg) and
+    diastolic readings (85, 95) live in exactly this range, and the typed
+    table above stops at the round tens from 50 up. A missing compound is
+    left as words, which is harmless; the danger is a PARTIAL conversion,
+    handled by _combine_digit_runs below.
+    """
+    tens = {"ನಲವತ್ತು": 40, "ಐವತ್ತು": 50, "ಅರವತ್ತು": 60, "ಎಪ್ಪತ್ತು": 70, "ಎಂಬತ್ತು": 80, "ತೊಂಬತ್ತು": 90}
+    joined = {"ೊಂದು": 1, "ೆರಡು": 2, "ೈದು": 5, "ಾರು": 6, "ೇಳು": 7, "ೆಂಟು": 8, "ೊಂಬತ್ತು": 9}
+    out: dict[str, str] = {}
+    for word, value in tens.items():
+        stem = word[:-1]              # drop the final vowel sign: ಎಪ್ಪತ್ತು -> ಎಪ್ಪತ್ತ
+        short = word[:-2]             # ಎಪ್ಪತ್ತು -> ಎಪ್ಪತ್ (for ಮೂರು / ನಾಲ್ಕು)
+        for suffix, unit in joined.items():
+            out.setdefault(stem + suffix, str(value + unit))
+        for base, unit in (("ಮೂರು", 3), ("ನಾಲ್ಕು", 4)):
+            out.setdefault(short + base, str(value + unit))
+            out.setdefault(stem + base, str(value + unit))
+    return out
+
+
+_ALL_KANNADA_NUMBERS = {
+    **_kannada_tens_compounds(),
+    **KANNADA_NUMBER_WORDS,
+    # "ನೂರ" is how "hundred" is actually said before a remainder
+    # ("ನೂರ ಇಪ್ಪತ್ತು" = 120); only "ನೂರು" was listed, so the remainder was
+    # converted alone and "ನೂರ ಇಪ್ಪತ್ತು ಬೈ ಎಂಬತ್ತು" reached the model and
+    # record_bp as "ನೂರ 20 ಬೈ 80".
+    "ನೂರ": "100", "ನೂರಾ": "100", "noora": "100",
+    "ಇನ್ನೂರು": "200", "innooru": "200",
+}
+
+# "hundred" followed by a remainder, recombined after word conversion:
+#   "1 100 70" / "100 70" -> 170     (ಒಂದು ನೂರ ಎಪ್ಪತ್ತು / ನೂರ ಎಪ್ಪತ್ತು)
+# Deliberately NOT generalised to "70 5" -> 75: in "…ಬೈ ತೊಂಬತ್ತು ಐದು ತಿಂಗಳು"
+# (by 90, five months) that would silently turn two facts into one wrong one.
+_HUNDREDS_RUN_RE = re.compile(r"(?<!\d)(?:1\s+)?100\s+(\d{1,2})(?!\d)")
+
+
+def _combine_digit_runs(text: str) -> str:
+    return _HUNDREDS_RUN_RE.sub(lambda m: str(100 + int(m.group(1))), text)
+
 _SPOKEN_NUMBER_RE = re.compile(
     r"\b(" + "|".join(sorted(_SPOKEN_NUMBERS, key=len, reverse=True)) + r")\b",
     re.IGNORECASE,
+)
+
+_KANNADA_NUMBERS_RE = re.compile(
+    r"(?<![A-Za-z0-9\u0C80-\u0CFF])("
+    + "|".join(re.escape(k) for k in sorted(_ALL_KANNADA_NUMBERS, key=len, reverse=True))
+    + r")(?![A-Za-z0-9\u0C80-\u0CFF])",
+    re.IGNORECASE | re.UNICODE,
 )
 
 
@@ -244,6 +373,31 @@ def canonicalise_terms(text: str) -> str:
     return _CANONICAL_RE.sub(_replace, text)
 
 
+def clean_currency_symbols(text: str) -> str:
+    """Strip stray currency formatting (₹, Rs., etc.) produced by code-mix ASR models.
+
+    In a maternal healthcare questionnaire, numbers represent age, gestational weeks,
+    BP readings, or pregnancy counts - never rupee amounts. Stray currency symbols
+    corrupt downstream extraction.
+    """
+    if not text:
+        return text
+    cleaned = re.sub(r"[₹\u20B9]|(?:\b(?:rs|inr)\b\.?)", "", text, flags=re.IGNORECASE)
+    return re.sub(r"\s{2,}", " ", cleaned).strip()
+
+
+def normalise_kannada_numbers(text: str) -> str:
+    """Normalize spoken Kannada number words (script and romanized) to Arabic digits."""
+    if not text:
+        return text
+
+    def _rep(match: re.Match) -> str:
+        word = match.group(0).casefold()
+        return _ALL_KANNADA_NUMBERS.get(word, match.group(0))
+
+    return _combine_digit_runs(_KANNADA_NUMBERS_RE.sub(_rep, text))
+
+
 def canonicalise(text: str) -> str:
     """The single entry point: run every Tier-2 pass over one transcript.
 
@@ -260,6 +414,8 @@ def canonicalise(text: str) -> str:
     if not text or not text.strip():
         return text
     working = unicodedata.normalize("NFC", text)
+    working = clean_currency_symbols(working)
     working = canonicalise_terms(working)
+    working = normalise_kannada_numbers(working)
     working = normalise_blood_pressure(working)
     return working

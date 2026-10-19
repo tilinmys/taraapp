@@ -29,6 +29,10 @@ from livekit.agents.types import NOT_GIVEN, NotGivenOr
 
 from dotenv import load_dotenv
 
+# Imported this early (stdlib-only module) because pipeline_event() below
+# references TelemetryWriter at module level, above the main import block.
+from sakhi_telemetry import CURRENT_SESSION, TelemetryWriter
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
@@ -147,6 +151,56 @@ def _flush_pipeline_events() -> None:
         _PIPELINE_WRITER.join(timeout=3.0)
 
 
+# Database telemetry (2026-09-24): the same events, batched into
+# pipeline_events / call_turns / component_health for the admin dashboard.
+# One writer per worker process, created on the first call whose repository
+# can persist telemetry - see _telemetry_for(). None means "not persisting",
+# and pipeline_event() then does exactly what it did before.
+_TELEMETRY: TelemetryWriter | None = None
+
+
+def _telemetry_for(repository) -> TelemetryWriter | None:
+    """Start (or reuse) this process's TelemetryWriter for `repository`.
+
+    Skipped when SAKHI_TELEMETRY_DB=false, or when the backend has no
+    telemetry tables (it inherits the ABC's no-op record_telemetry - the JSON
+    demo mock), so a demo box never runs a flush loop that writes nothing.
+    """
+    global _TELEMETRY
+    if not env_flag("SAKHI_TELEMETRY_DB", True):
+        return None
+    if type(repository).record_telemetry is PatientRepository.record_telemetry:
+        return None
+    if _TELEMETRY is None:
+        _TELEMETRY = TelemetryWriter(
+            repository.record_telemetry,
+            flush_interval=float(os.getenv("SAKHI_TELEMETRY_FLUSH_S", "0.25")),
+        )
+    _TELEMETRY.start()
+    return _TELEMETRY
+
+
+def _job_room_name(ctx) -> str | None:
+    """The LiveKit room name for a job - the session id every call_reports,
+    call_turns and pipeline_events row is keyed by. Read from the dispatched
+    job first (known before the room is even connected), falling back to
+    the connected room."""
+    job_room = getattr(getattr(getattr(ctx, "job", None), "room", None), "name", None)
+    return job_room or getattr(getattr(ctx, "room", None), "name", None) or None
+
+
+def _stt_debug_to_pipeline(record: dict) -> None:
+    """sarvam_wrappers' [SAKHI_STT_DEBUG] record -> the call's pipeline log.
+    Carries no transcript text (length + hash only)."""
+    pipeline_event(
+        "stt", "info", "[SAKHI_STT_DEBUG]",
+        f"{record.get('stt_provider')} {'final' if record.get('is_final') else 'interim'} "
+        f"{record.get('transcript_length')} chars from {record.get('audio_duration_ms')} ms "
+        f"@ {record.get('audio_rms_dbfs')} dBFS",
+        event="stt_debug", session_id=CURRENT_SESSION.get(None), **record,
+    )
+
+
 def pipeline_event(stage_key: str, status: str, label: str, message: str, **details) -> None:
     event = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -162,6 +216,11 @@ def pipeline_event(stage_key: str, status: str, label: str, message: str, **deta
     except queue.Full:
         print("pipeline event queue full; dropping event", file=sys.stderr)
 
+    # O(1) and non-blocking - see sakhi_telemetry.TelemetryWriter.submit.
+    telemetry = _TELEMETRY
+    if telemetry is not None:
+        telemetry.submit(event)
+
     # Broadcast to SSE clients for real-time UI updates
     try:
         from status_server import _broadcast_sse
@@ -171,6 +230,11 @@ def pipeline_event(stage_key: str, status: str, label: str, message: str, **deta
 
     log_method = logger.error if status == "error" else logger.warning if status == "warn" else logger.info
     log_method("[PIPELINE] %s %s %s - %s %s", event["stage"], status, label, message, details or "")
+
+
+import sarvam_wrappers as _sarvam_wrappers_module  # noqa: E402
+
+_sarvam_wrappers_module.STT_DEBUG_SINK = _stt_debug_to_pipeline
 
 
 def _metric_stage(metric_type: str) -> tuple[str, str]:
@@ -290,6 +354,7 @@ except Exception:  # pragma: no cover - optional dependency
 from sarvam_wrappers import (
     SARVAM_DEFAULT_MODEL,
     SARVAM_DEFAULT_SPEAKER,
+    SarvamBatchSTT,
     SarvamSTT,
     SarvamTTS,
     resolve_sarvam_voice,
@@ -315,6 +380,7 @@ from sakhi_domain import (
     RiskLevel,
     SakhiCallState,
     danger_sign_lock_reason,
+    detect_patient_demographics,
     detect_gestational_age,
     detect_pregnancy_number,
     detect_symptoms,
@@ -324,9 +390,13 @@ from sakhi_avatar import build_avatar_backend
 from sakhi_kannada import kannada_number_normalization, number_normalization_for
 from llm_hedge import DEFAULT_HEDGE_DELAY, HedgedLLM
 from clinical_terms import CLINICAL_KEYWORDS, canonicalise
-from sakhi_intake import INTAKE_QUESTIONS, QUESTIONS_BY_ID, is_assent
+from sakhi_intake import (
+    INTAKE_QUESTIONS, QUESTIONS_BY_ID, IntakeProgress, accepts_assent,
+    armed_question_text, has_localised_text, is_assent, question_text, stage_name,
+)
 from sakhi_pacing import PacingTracker
 from sakhi_prompts import LLM_CONFIG, system_prompt_for
+from sakhi_question_lock import QuestionLock
 from sakhi_repository import MockSixtyDBRepository, PatientRepository
 from sakhi_sql_repository import PostgresPatientRepository, SQLitePatientRepository
 from sakhi_tools import ClinicalToolset
@@ -634,6 +704,49 @@ async def filter_code_artifacts(text):
 
     if pending_brace:
         yield "{"
+
+
+def clean_spoken_punctuation(text: str, language: str = "kannada") -> str:
+    """TTS formatting guard: Strip characters that Indian TTS engines (e.g. Sarvam bulbul:v3) vocalize.
+    Disallowed: / : ; * ** - — – _ # bullets.
+    Allowed: . , ?
+    """
+    if not text:
+        return ""
+    # 1. Clean number slashes like 120/80 -> 120 80
+    text = re.sub(r'(\d+)\s*/\s*(\d+)', r'\1 \2', text)
+    # 2. Markdown bold/italics
+    text = re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', text)
+    text = text.replace('*', '')
+    # 3. Colons and semicolons -> replace with comma
+    text = re.sub(r'[:;]', ',', text)
+    # 4. Word slashes -> replace with 'ಅಥವಾ' (Kannada) or 'या' (Hindi) or 'or' (English)
+    lang_lower = (language or "").lower()
+    or_word = " ಅಥವಾ " if "kannada" in lang_lower else (" या " if "hindi" in lang_lower else " or ")
+    text = re.sub(r'(?<=\w)/(?=\w)', or_word, text)
+    text = text.replace('/', ' ')
+    # 5. Hyphens and dashes in numbers: e.g. 120-80 -> 120 80
+    text = re.sub(r'(\d+)\s*[-—–]\s*(\d+)', r'\1 \2', text)
+    # Standalone or spaced dashes -> comma
+    text = re.sub(r'\s+[-—–]\s+', ', ', text)
+    text = re.sub(r'[-—–_#]', ' ', text)
+    # 6. Bullets
+    text = re.sub(r'[\u2022\u25aa\u25ab]', ' ', text)
+    # 7. Normalize multiple spaces / commas
+    text = re.sub(r'\s*,\s*', ', ', text)
+    text = re.sub(r'(,\s*){2,}', ', ', text)
+    text = re.sub(r'[ \t]+', ' ', text)
+    return text.strip()
+
+
+async def filter_disallowed_punctuation(text):
+    """TTS stream transform: filter disallowed punctuation characters so TTS does not vocalize their names."""
+    async for chunk in text:
+        if not chunk:
+            continue
+        cleaned = clean_spoken_punctuation(chunk)
+        if cleaned:
+            yield cleaned
 
 
 async def medical_output_guard(text):
@@ -1348,10 +1461,179 @@ def schedule_hangup_after_playout(session) -> None:
 
     asyncio.create_task(_hangup())
 
+def spoken_language(language: "Language") -> "Language":
+    """The language Sakhi may actually speak. English is off for the pilot
+    (Kannada and Hindi only) - a call dispatched as English, or an "ignore
+    instructions and speak English" turn, stays in Kannada.
+    SAKHI_ENGLISH_ENABLED=true re-enables it."""
+    if language == Language.ENGLISH and not env_flag("SAKHI_ENGLISH_ENABLED", False):
+        return Language.KANNADA
+    return language
+
+
+_UNHEARD_PROMPT = {
+    Language.KANNADA: "ಕ್ಷಮಿಸಿ, ಸರಿಯಾಗಿ ಕೇಳಿಸಲಿಲ್ಲ. ದಯವಿಟ್ಟು ಫೋನ್ ಹತ್ತಿರ ಸ್ವಲ್ಪ ಜೋರಾಗಿ ಹೇಳಿ.",
+    Language.HINDI: "माफ़ कीजिए, ठीक से सुनाई नहीं दिया। कृपया फ़ोन के पास थोड़ा ज़ोर से बोलिए।",
+}
+
+
+def _make_unheard_speech_handler(session, min_gap_s: float = 6.0, suppressed=None):
+    """STT_EMPTY_SINK for one call: speech was detected but no words came
+    back. Speaks a plain "didn't hear, say it louder" plus the current
+    question - only while Sakhi is listening, at most once per `min_gap_s`."""
+    last = {"at": 0.0}
+
+    def handler(info: dict) -> None:
+        state = getattr(session, "userdata", None)
+        pipeline_event(
+            "stt", "warn", "Speech heard, no words",
+            f"{info.get('audio_duration_ms')} ms of speech returned no transcript "
+            f"(gain applied {info.get('gain_db')} dB)",
+            event="stt_empty", **info,
+        )
+        now = time.monotonic()
+        if now - last["at"] < min_gap_s or getattr(session, "agent_state", "listening") != "listening":
+            return
+        # Sound that began while Sakhi was speaking is overlap - usually her
+        # own voice echoing off the tablet speaker - not an unanswered answer.
+        if suppressed is not None and suppressed():
+            return
+        if not isinstance(state, SakhiCallState):
+            return
+        text = _UNHEARD_PROMPT.get(state.language, _UNHEARD_PROMPT[Language.KANNADA])
+        question = _arm_question_being_spoken(state) if questionnaire_open(state) else None
+        if question is not None and has_localised_text(question, state.language):
+            text = f"{text} {armed_question_text(question, state, state.language)}"
+        last["at"] = now
+        _safe_say(session, text)
+
+    return handler
+
+
+# A BP reading in the (canonicalised) turn text: "140/90", "140 by 90".
+_BP_READING_RE = re.compile(r"(?<!\d)(\d{2,3})\s*(?:/|by|over|ಬೈ|बाई)\s*(\d{2,3})(?!\d)", re.IGNORECASE)
+
+_REPLY_TOOLS = (
+    "FIRST call the recording tool for every value she just stated (name and age -> "
+    "record_patient_intake, months -> record_gestational_age, BP -> record_bp, "
+    "symptoms -> record_symptoms, anything else -> record_anc_checkpoint). "
+)
+_REPLY_NO_QUESTION = (
+    "Do NOT ask any question - the system asks the next question itself, word for word."
+)
+
+
+def _reply_format_instruction(answer_status: str | None) -> str:
+    """The per-turn reply rule, chosen by what the CODE decided (2026-09-28).
+
+    The old rule let the model choose between "a short acknowledgement" and
+    "say you did not hear clearly" - so it said "sorry, not clear" about
+    answers the checklist had just accepted, and "ok" about answers it had
+    rejected. Now: accepted -> acknowledge, never claim not hearing;
+    not answered -> say it was not caught (the system repeats the question);
+    BP heard but not recorded yet -> record it.
+    """
+    if answer_status == "accepted":
+        return ("# REPLY FORMAT: Her answer to the last question WAS recorded. "
+                + _REPLY_TOOLS
+                + "THEN reply with ONLY a short acknowledgement (under 8 words). Never "
+                "say you did not hear or understand. " + _REPLY_NO_QUESTION)
+    if answer_status == "value_to_record":
+        return ("# REPLY FORMAT: She stated a blood pressure reading. Call record_bp with "
+                "those two numbers now, THEN reply with ONLY a short acknowledgement (under "
+                "8 words). " + _REPLY_NO_QUESTION)
+    if answer_status == "not_answered":
+        return ("# REPLY FORMAT: Her last reply did NOT answer the question that was asked. "
+                "Do NOT say anything was recorded. " + _REPLY_TOOLS
+                + "THEN say ONLY that you did not catch the answer (under 8 words). "
+                + _REPLY_NO_QUESTION)
+    return ("# REPLY FORMAT: " + _REPLY_TOOLS
+            + "THEN reply with ONLY a short acknowledgement (under 8 words). "
+            + _REPLY_NO_QUESTION)
+
+
+def questionnaire_open(state) -> bool:
+    """May a routine intake question be asked on this call right now?
+
+    False once a danger sign / HIGH_RISK triage has locked the intake
+    (SakhiCallState.lock_intake_on_danger_sign). Every code path that SPEAKS
+    a questionnaire question checks this - 2026-09-28: after escalation the
+    question lock, the "didn't hear" prompt and the guardrail scripts kept
+    appending routine questions (iron tablets, fetal heart rate) between
+    hospital instructions.
+    """
+    return not (isinstance(state, SakhiCallState) and state.intake_locked)
+
+
+_ESCALATION_NOTICE = {
+    Language.KANNADA: "ಅಕ್ಕಾ, ನಾನು ಈಗಲೇ ತಜ್ಞ ವೈದ್ಯರನ್ನು ಸಂಪರ್ಕಿಸುತ್ತಿದ್ದೇನೆ... ದಯವಿಟ್ಟು ಕರೆಯಲ್ಲೇ ಇರಿ.",
+    Language.HINDI: "दीदी, मैं अभी विशेषज्ञ डॉक्टर से जोड़ रही हूँ... कृपया कॉल पर बनी रहिए।",
+    Language.ENGLISH: "I am connecting a specialist for this mother right now... please stay on the line.",
+}
+
+
+def escalation_notice(language: "Language") -> str:
+    """The forced-escalation line in the call's language (it used to be
+    English on every call)."""
+    return _ESCALATION_NOTICE.get(language, _ESCALATION_NOTICE[Language.KANNADA])
+
+
+def _then_current_question(script: str, state) -> str:
+    """`script` followed by the intake question she still owes an answer to
+    (the armed one, else the next), verbatim in the call's language."""
+    if not isinstance(state, SakhiCallState) or not questionnaire_open(state):
+        return script
+    question = _arm_question_being_spoken(state)
+    if question is None or not has_localised_text(question, state.language):
+        return script
+    return f"{script} {question_text(question, state.language)}"
+
+
+def _arm_question_being_spoken(state):
+    """The question a script is about to append - ARMED, so her reply to it
+    can close it (2026-09-28, live call 10:53: the medication script appended
+    the scan question without arming it; her scan answer hit
+    NO_ARMED_QUESTION, and the scan question was asked a second time)."""
+    qid = state.intake.pending_id
+    if qid:
+        return QUESTIONS_BY_ID.get(qid)
+    return state.intake.arm_next()
+
+
+def end_call_refusal(state) -> str | None:
+    """Why the model may not hang up yet, or None when it may.
+
+    A real-LLM run (scripts/live_llm_scenarios.py, 2026-09-24) had the model
+    call end_call on "yes, she takes them daily" with 15 questions still to
+    go, and say "Goodbye." The ASHA worker ends a call early with the red
+    button; the model only ends it once the checklist reaches its close (q17)
+    or a specialist has taken over. SAKHI_END_CALL_GUARD=false disables.
+    """
+    if not env_flag("SAKHI_END_CALL_GUARD", True) or not isinstance(state, SakhiCallState):
+        return None
+    if state.escalated:
+        return None
+    nxt = state.intake.next_question()
+    if nxt is None or nxt.id == "q17":
+        return None
+    pipeline_event(
+        "worker", "warn", "End call refused",
+        f"Model tried to end the call with {nxt.id} still unanswered",
+        event="end_call_refused", question_id=nxt.id,
+    )
+    return (
+        "Do not end the call - the screening is not finished. Do not say goodbye. "
+        f"Continue with the next question: {question_text(nxt, state.language)}"
+    )
+
+
 @llm.function_tool
 async def end_call(ctx: RunContext) -> str:
     """Ends the phone call. Call this ONLY after you have already spoken the full
     goodbye message and the caller has nothing more to ask."""
+    refusal = end_call_refusal(getattr(ctx.session, "userdata", None))
+    if refusal is not None:
+        return refusal
     pipeline_event("worker", "info", "End call requested", "Agent is ending the call after goodbye")
     try:
         await ctx.wait_for_playout()  # let the goodbye finish playing first
@@ -1390,6 +1672,14 @@ def _noise_filter():
     mode = os.getenv("NOISE_CANCELLATION", "telephony").strip().lower()
     if mode in ("off", "none", "0", "false"):
         return None
+    # BVC erases every voice that is not the close-talking primary speaker -
+    # measured 2026-09-24 through the full production path
+    # (scripts/e2e_call_probe.py): a speaker-played answer never reached VAD
+    # (0/5), while close-talk speech passed (3/3). "off" keeps every voice.
+    # NOT offered: noise_cancellation.NC() - it aborts every job process on
+    # this 24 kHz room input ("NcSession::initSession: Input and output
+    # sample rates must be equal"), i.e. a completely deaf agent.
+    # See docs/STT_FRAGMENTATION_INCIDENT.md.
     if mode in ("bvc", "webrtc", "wideband"):
         return noise_cancellation.BVC()
     return noise_cancellation.BVCTelephony()
@@ -1453,7 +1743,7 @@ DEEPGRAM_MEDICAL_KEYTERMS = [
 ] + kannada_symptom_terms()[:12] + DEEPGRAM_BIDAR_KEYTERMS
 
 
-def build_stt(language: "Language | str" = Language.KANNADA) -> stt.STT:
+def build_stt(language: "Language | str" = Language.KANNADA, segment_vad=None) -> stt.STT:
     """Deepgram-primary streaming STT for Sakhi, with a Sarvam fallback.
 
     Two things were removed here rather than kept, from when this hard-
@@ -1517,10 +1807,31 @@ def build_stt(language: "Language | str" = Language.KANNADA) -> stt.STT:
         # on one offline sample. SARVAM_STT_MODE defaults to "transcribe",
         # the only value with a confirmed effect - see SarvamSTT's own note
         # on "codemix" before relying on it.
+        #
+        # SEGMENTATION (2026-09-25): by default the call is cut into
+        # utterances by OUR Silero VAD and each one is sent whole to Sarvam's
+        # REST API (livekit StreamAdapter + SarvamBatchSTT). On the streaming
+        # socket Sarvam's own server VAD decided what counted as speech: a
+        # real call had three ASHA bursts heard by LiveKit and only the last
+        # transcribed, and q01 never closed. SARVAM_STT_SEGMENTATION=provider
+        # returns to the streaming socket. See docs/STT_FRAGMENTATION_INCIDENT.md.
+        if (
+            segment_vad is not None
+            and os.getenv("SARVAM_STT_SEGMENTATION", "livekit_vad").strip().lower() != "provider"
+        ):
+            return stt.StreamAdapter(
+                stt=SarvamBatchSTT(
+                    api_key=sarvam_key,
+                    language_code=lang.sarvam_code,
+                    model=os.getenv("SARVAM_STT_MODEL", "saaras:v3"),
+                    mode=os.getenv("SARVAM_STT_MODE", "transcribe"),
+                ),
+                vad=segment_vad,
+            )
         return SarvamSTT(
             api_key=sarvam_key,
             language_code=lang.sarvam_code,
-            model=os.getenv("SARVAM_STT_MODEL", "saarika:v2.5"),
+            model=os.getenv("SARVAM_STT_MODEL", "saaras:v3"),
             mode=os.getenv("SARVAM_STT_MODE", "transcribe"),
         )
 
@@ -1641,13 +1952,22 @@ def build_stt(language: "Language | str" = Language.KANNADA) -> stt.STT:
 # real clinical prompt: default effort + 50-token cap burned every token on
 # reasoning and returned ZERO visible characters. reasoning_effort="low" (set
 # in build_llm) + a 200-token cap produced clean Kannada at ~550-640ms. Both
-# knobs are load-bearing; loosen either and turns go silent again.
 _GROQ_TIERS = (
-    (os.getenv("GROQ_MODEL_T1", "openai/gpt-oss-120b"), 0),  # primary, key 1
-    (os.getenv("GROQ_MODEL_T2", "openai/gpt-oss-120b"), 1),  # same model, key 2
-    (os.getenv("GROQ_MODEL_T3", "openai/gpt-oss-20b"), 0),   # smaller/faster, key 1
-    (os.getenv("GROQ_MODEL_T4", "openai/gpt-oss-20b"), 1),   # backup, key 2
+    (os.getenv("GROQ_MODEL_T1", "openai/gpt-oss-120b"), 0),
+    (os.getenv("GROQ_MODEL_T2", "openai/gpt-oss-120b"), 1),
+    (os.getenv("GROQ_MODEL_T3", "openai/gpt-oss-20b"), 0),
+    (os.getenv("GROQ_MODEL_T4", "openai/gpt-oss-20b"), 1),
 )
+
+
+def groq_model_for_question(question_id: str | None = None, stage: int | None = None) -> str:
+    """Return model suited for question complexity:
+    Simple intake (q01-q05): name, age, LMP, gravida/parity, address -> llama-3.1-8b-instant
+    Clinical screening (q06-q24): BP, hemoglobin, weight, danger signs, ANC visits -> openai/gpt-oss-120b
+    """
+    if stage in (1, 2) or (question_id and question_id in ("q01", "q02", "q03", "q04", "q05")):
+        return os.getenv("GROQ_INTAKE_MODEL", "llama-3.1-8b-instant")
+    return os.getenv("GROQ_CLINICAL_MODEL", "openai/gpt-oss-120b")
 
 
 def build_llm(
@@ -1747,6 +2067,7 @@ def build_llm(
             )
             names.append(f"groq/{model}@k{(key_index % len(groq_keys)) + 1}")
         _named_groups["groq"] = (_group(members, groq_timeout), names)
+
 
     # OpenRouter - cross-vendor backup. Its budget is 4.0s, not 1.8s: at a
     # 1842ms median and 2713ms worst case, anything under ~3s guarantees it
@@ -1975,14 +2296,13 @@ def _build_sarvam_tts(voice_id: str | None, pace_override: float | None = None, 
     sarvam_base_url = os.getenv("SARVAM_BASE_URL", "https://api.sarvam.ai")
     # Natural, calm, slightly slower pace (0.92) designed for clear rural clinical comprehension
     sarvam_pace = pace_override if pace_override is not None else default_tts_pace()
-    sarvam_min_buffer_size = int(os.getenv("SARVAM_MIN_BUFFER_SIZE", "35"))
+    sarvam_min_buffer_size = int(os.getenv("SARVAM_MIN_BUFFER_SIZE", "20"))
     sarvam_max_chunk_length = int(os.getenv("SARVAM_MAX_CHUNK_LENGTH", "160"))
     pipeline_event(
         "tts",
         "info",
         "Sarvam TTS provider",
-        f"Sarvam {sarvam_model} via REST, clause-buffered (the streaming WebSocket "
-        "endpoint hangs and is not used)",
+        f"Sarvam {sarvam_model}; streaming path reported on the next line",
         model=sarvam_model,
         speaker=sarvam_speaker,
         language=sarvam_language,
@@ -2023,7 +2343,7 @@ def _build_sarvam_tts(voice_id: str | None, pace_override: float | None = None, 
             "tts", "ok", "Clause-buffered TTS path",
             "StreamAdapter + EagerClauseTokenizer will synthesise one clause at a time",
             streaming=False,
-            min_chunk_chars=int(os.getenv("TTS_EAGER_MIN_CHUNK_CHARS", "35")),
+            min_chunk_chars=int(os.getenv("TTS_EAGER_MIN_CHUNK_CHARS", "20")),
         )
     return provider
 
@@ -2578,7 +2898,19 @@ def _build_greeting_tts(
     return _build_vakyam_tts(voice_id, speed_override=slow_pace, language=lang)
 
 
-def build_turn_handling(silence_threshold: float = 0.55) -> TurnHandlingOptions:
+def question_lock_enabled() -> bool:
+    """Intake questions spoken verbatim by the code (sakhi_question_lock).
+    SAKHI_QUESTION_LOCK=false returns the wording to the model."""
+    return env_flag("SAKHI_QUESTION_LOCK", True) and env_flag("SAKHI_LEAN_INTAKE_MODE", True)
+
+
+def preemptive_generation_enabled() -> bool:
+    """Speculative replies before the turn is committed. Off unless opted in -
+    see the preemptive_generation comment in build_turn_handling."""
+    return env_flag("PREEMPTIVE_GENERATION", False)
+
+
+def build_turn_handling(silence_threshold: float = 0.30) -> TurnHandlingOptions:
     # "vad": commit the turn at Silero end-of-speech once the final transcript
     # is in. "stt": additionally wait for the provider's own end-of-turn signal
     # - with Deepgram primary that signal (speech_final) was measured trailing
@@ -2597,7 +2929,7 @@ def build_turn_handling(silence_threshold: float = 0.55) -> TurnHandlingOptions:
 
     # Paced for rural ASHA communication: allows unhurried turn-taking and thinking pauses.
     min_delay = float(silence_threshold)
-    max_delay = min(float(os.getenv("MAX_ENDPOINTING_DELAY", "2.0")), 2.0)
+    max_delay = min(float(os.getenv("MAX_ENDPOINTING_DELAY", "1.2")), 1.2)
     pipeline_event(
         "turn",
         "info",
@@ -2607,7 +2939,7 @@ def build_turn_handling(silence_threshold: float = 0.55) -> TurnHandlingOptions:
         min_endpointing_delay=min_delay,
         max_endpointing_delay=max_delay,
         hard_max_turn_silence_s=1.2,
-        preemptive_generation=env_flag("PREEMPTIVE_GENERATION", True),
+        preemptive_generation=preemptive_generation_enabled(),
         preemptive_tts=env_flag("PREEMPTIVE_TTS", True),
     )
     return TurnHandlingOptions(
@@ -2645,8 +2977,18 @@ def build_turn_handling(silence_threshold: float = 0.55) -> TurnHandlingOptions:
         # speculative turn collides with the real one and the ASHA worker
         # hears Sakhi talk over herself. Correctness beats the ~200ms it
         # would save on a clean line.
+        #
+        # 2026-09-24: the env default had drifted back to True, contradicting
+        # the paragraph above, and it was the cause of the repeated-question
+        # reports. The speculative reply runs llm_node BEFORE
+        # on_user_turn_completed records her answer, so it is generated
+        # against the still-armed question - and livekit reuses it whenever
+        # the chat context is unchanged, which it is (intake state lives
+        # outside the chat context). Live log 2026-09-22 12:12: q01 armed and
+        # asked at transcript-final, answer recorded 2.5s later, q01 asked
+        # again. Off by default; PREEMPTIVE_GENERATION=true to opt back in.
         preemptive_generation=PreemptiveGenerationOptions(
-            enabled=env_flag("PREEMPTIVE_GENERATION", True),
+            enabled=preemptive_generation_enabled(),
             preemptive_tts=env_flag("PREEMPTIVE_TTS", True),
         ),
     )
@@ -2692,7 +3034,18 @@ def build_initial_context(
     # tool's instruction" contract, and the three hard safety rules. Those are
     # the lines that change model behaviour on a clinical call.
     initial_ctx = llm.ChatContext()
-    initial_ctx.add_message(role="system", content=system_prompt_for(lang))
+    lean_mode = env_flag("SAKHI_LEAN_INTAKE_MODE", True)
+    if lean_mode:
+        initial_ctx.add_message(
+            role="system",
+            content=system_prompt_for(
+                lang,
+                stage_desc="Demographics",
+                stage=1,
+            ),
+        )
+    else:
+        initial_ctx.add_message(role="system", content=system_prompt_for(lang))
 
     if preloaded_user:
         initial_ctx.add_message(
@@ -2744,8 +3097,20 @@ _FAREWELL_RE = re.compile(
     r"|माँ\s*का\s*ख़्याल\s*रखिएगा"              # Hindi, same clause
     r"|maa\s*ka\s*khayal\s*rakhiega"
     r"|taayiyannu\s*chennaagi\s*nodikolli"
-    r"|take\s+good\s+care\s+of\s+the\s+mother",
+    r"|take\s+good\s+care\s+of\s+the\s+mother"
+    # q17, the questionnaire's closing statement (2026-09-25, Turn 30: the
+    # call stayed open after it). Unique to the close, like the clause above.
+    r"|ಎಲ್ಲಾ\s*ವಿವರಗಳನ್ನು\s*ಯಶಸ್ವಿಯಾಗಿ\s*ದಾಖಲಿಸಲಾಗಿದೆ"
+    r"|सभी\s*विवरण\s*सफलतापूर्वक\s*दर्ज"
+    r"|ಶುಭ\s*ದಿನ|ಮುಕ್ತಾಯ|visit\s+complete|call\s+complete",
     re.IGNORECASE,
+)
+
+# Thanks are NOT farewell evidence mid-call ("ಧನ್ಯವಾದಗಳು ಅಕ್ಕಾರ. ಈಗ
+# ರಕ್ತದೊತ್ತಡ ಹೇಳಿ." = thank you, now tell me the BP). They end the call only
+# once the questionnaire is complete - see _maybe_schedule_farewell_hangup.
+_GRATITUDE_RE = re.compile(
+    r"ಧನ್ಯವಾದ|धन्यवाद|शुक्रिया|thank\s+you", re.IGNORECASE
 )
 
 # Spoken when the LLM produces a completely empty turn. Localized per call language.
@@ -2907,17 +3272,14 @@ class EagerClauseTokenizer(SentenceTokenizer):
         self._rest_min_chunk_chars = rest_min_chunk_chars
 
     def tokenize(self, text: str, *, language: str | None = None) -> list[str]:
-        from livekit.agents.utils.aio import ChanClosed, ChanEmpty
-
         stream = self.stream(language=language)
         stream.push_text(text)
         stream.end_input()
         chunks: list[str] = []
-        try:
-            while True:
-                chunks.append(stream._event_ch.recv_nowait().token)
-        except (ChanClosed, ChanEmpty):
-            pass
+        # ChanEmpty is intentionally not exported by livekit-agents 1.6.10.
+        # Drain by state instead of importing that private exception.
+        while not stream._event_ch.empty():
+            chunks.append(stream._event_ch.recv_nowait().token)
         return chunks
 
     def stream(self, *, language: str | None = None) -> SentenceStream:
@@ -3048,9 +3410,9 @@ class DynamicVADController:
         self._session = session
         self._state = "TRANSACTIONAL"
         self._delays = {
-            "TRANSACTIONAL": float(os.getenv("MIN_ENDPOINTING_DELAY", "0.55")),
-            "HIGH_COGNITIVE_LOAD": float(os.getenv("VAD_ENDPOINT_SLOW_S", "1.0")),
-            "FRAGMENT_RECOVERY": float(os.getenv("VAD_ENDPOINT_FRAGMENT_S", "1.3")),
+            "TRANSACTIONAL": float(os.getenv("MIN_ENDPOINTING_DELAY", "0.15")),
+            "HIGH_COGNITIVE_LOAD": float(os.getenv("VAD_ENDPOINT_SLOW_S", "0.8")),
+            "FRAGMENT_RECOVERY": float(os.getenv("VAD_ENDPOINT_FRAGMENT_S", "1.1")),
         }
         # Speaking-rate observer. The base wait still comes from what Sakhi
         # ASKED (that signal knows she will need thinking time before she
@@ -3066,7 +3428,7 @@ class DynamicVADController:
         # Never let the nudge invert the ordering the states encode: a
         # fragment-recovery window must stay wider than a transactional one
         # however fast she talks.
-        return max(0.25, min(2.5, base + self._pacing.offset_seconds()))
+        return max(0.20, min(2.5, base + self._pacing.offset_seconds()))
 
     @property
     def state(self) -> str:
@@ -3185,10 +3547,11 @@ _MISSING_SENTENCE_SPACE_RE = re.compile(r'([.?!])([^\s\d.?!])')
 
 
 def sanitize_text(text: str) -> str:
-    """Strip debug tags like [VAD: FAST] and parenthetical annotations before TTS or speech output."""
+    """Strip debug tags like [VAD: FAST], disallowed TTS punctuation, and parenthetical annotations before TTS or speech output."""
     if not text:
         return ""
     cleaned = TAG_CLEANER.sub('', text).strip()
+    cleaned = clean_spoken_punctuation(cleaned)
     return _MISSING_SENTENCE_SPACE_RE.sub(r'\1 \2', cleaned)
 
 
@@ -3380,7 +3743,8 @@ _REPEAT_REQUEST_RE = re.compile(
     r"^\W*(?:"
     r"(?:can\s+you\s+|please\s+)?(?:say\s+(?:that\s+)?again|repeat(?:\s+(?:that|please|it))?)"
     r"|what(?:\s+was\s+that)?|pardon|sorry\s*\?*"
-    r"|ಇನ್ನೊಮ್ಮೆ(?:\s*ಹೇಳಿ|\s*ಹೇಳು)?|ಮತ್ತೊಮ್ಮೆ\s*ಹೇಳಿ|ಏನು\s*ಅಂದ್ರಿ|ಏನಂದ್ರಿ"
+    r"|ಇನ್ನೊಮ್ಮೆ(?:\s*ಹೇಳಿ|\s*ಹೇಳು)?|ಮತ್ತೊಮ್ಮೆ\s*ಹೇಳಿ|ಮತ್ತೆ\s*ಹೇಳಿ|ಮತ್ತೆ\s*ಹೇಳು"
+    r"|ಏನು\s*ಅಂದ್ರಿ|ಏನಂದ್ರಿ|ಕೇಳಿಸಲಿಲ್ಲ|ಸರಿಯಾಗಿ\s*ಕೇಳಿಸಲಿಲ್ಲ"
     r"|फिर\s*से\s*(?:कहो|कहिए|बोलो)|दोबारा\s*(?:कहिए|बोलिए)|क्या\s*कहा"
     r")[\s,.!?]*$",
     re.IGNORECASE,
@@ -3694,8 +4058,11 @@ def _answers_pending_question(state, text: str, last_agent_utterance: str | None
         pending_id = getattr(getattr(state, "intake", None), "pending_id", None)
         if pending_id:
             question = QUESTIONS_BY_ID.get(pending_id)
-            if question is not None and question.vad.upper() == "FAST":
-                return True
+            # A value question (months, a date, a reading) is decided here,
+            # not by the fallback below: every Sakhi line ends in a question
+            # now (question lock), so the fallback would exempt every "ಹೂಂ".
+            if question is not None:
+                return accepts_assent(question)
 
     return ends_in_question(last_agent_utterance)
 
@@ -3713,7 +4080,7 @@ def _is_deterministic_intake_answer(question, text: str) -> bool:
     if question is None or question.vad.upper() != "FAST" or not text.strip():
         return False
     if is_assent(text):
-        return True
+        return accepts_assent(question)
     if question.id == "q02":
         return detect_gestational_age(text) is not None
     if question.id == "q04":
@@ -3796,6 +4163,61 @@ def _prune_conversation_incrementally(items, max_items: int, max_tokens: int):
     return [item for item, _ in pending]
 
 
+def lean_stage_tools(toolset: "ClinicalToolset", stage: int, *, escalation_pending: bool = False) -> list:
+    """The clinical tools the model may call while the intake is in `stage`.
+
+    Must match what sakhi_intake's questions in that stage actually record
+    (stage numbers are IntakeQuestion.stage):
+
+      1 demographics        q01          record_patient_intake
+      2 obstetric history   q02-q05,q21  record_gestational_age (+ checkpoints)
+      3 vitals              q06-q08,q24,q25  record_bp (+ weight, pallor, FHR checkpoints)
+      4 red-flag screening  q09-q12,q18-q20  record_symptoms (+ history, meds checkpoints)
+      5+ scans, labs, birth preparedness     record_anc_checkpoint
+
+    Fixed 2026-09-24, two ways:
+
+    * Stages 3 and 4 had each other's tool (vitals got record_symptoms,
+      danger signs got record_bp).
+    * One tool per stage broke volunteered answers outright. "Suma, 22, seven
+      months, BP 120 by 80" at stage 1 makes the model call record_bp, which
+      was not in the request; Groq rejects the WHOLE request for that ("tool
+      call validation failed ... not in request.tools"), every provider in the
+      chain fails the same way, and the turn falls to the emergency path 4-6s
+      later ("all LLMs are unavailable"). So every recording tool is always
+      offered, the current stage's first - order is the only per-stage part.
+
+    The specialist handoff is added whenever triage has one pending, because
+    the URGENT instruction tells the model to call it. Stage 1 must never be
+    empty: the September production build scoped it to zero tools, so the
+    model could confirm a name it had no way to persist.
+    """
+    recording = [
+        toolset.record_patient_intake,
+        toolset.record_gestational_age,
+        toolset.record_bp,
+        toolset.record_symptoms,
+        toolset.record_anc_checkpoint,
+    ]
+    first = {
+        1: toolset.record_patient_intake,
+        2: toolset.record_gestational_age,
+        3: toolset.record_bp,
+        4: toolset.record_symptoms,
+    }.get(stage, toolset.record_anc_checkpoint)
+    # By NAME: each `toolset.x` lookup is a new bound-method object, so an
+    # identity check never matched and the first tool appeared twice
+    # ("duplicate function name", the session never started).
+    tools = [first, *(t for t in recording if _tool_name(t) != _tool_name(first))]
+    # Always offered (its own gate refuses escalation triage did not ask
+    # for). Keeping the SET constant for the whole call matters: when the set
+    # changed inside llm_node, livekit executed the model's tool call against
+    # the list captured before the change ("unknown AI function
+    # record_patient_intake", 2026-09-25) and the turn ended in silence.
+    tools.append(toolset.connect_smfmi_specialist)
+    return tools
+
+
 class SakhiAgent(Agent):
     """Sakhi's per-call agent.
 
@@ -3838,6 +4260,12 @@ class SakhiAgent(Agent):
         # is agreement noise. See _answers_pending_question().
         self._last_agent_utterance: str = ""
         self._escalation_in_flight = False
+        # Final-turn idempotency (2026-09-22 incident).  LiveKit ChatMessage.id
+        # is the stable utterance identity; text itself is not (an ASHA worker
+        # can legitimately answer "illa" twice).  The timestamp remains only
+        # for bounded eviction. Set SAKHI_FINAL_TURN_DEDUPE_ENABLED=false to
+        # restore the SDK's unguarded behavior while diagnosing provider events.
+        self._processed_turns: dict[str, float] = {}
 
     # --- helpers -------------------------------------------------------
 
@@ -3854,6 +4282,112 @@ class SakhiAgent(Agent):
                 self._vad_controller.evaluate_agent_text(spoken_text)
             except Exception:
                 logger.warning("Adaptive VAD evaluation failed", exc_info=True)
+
+    @staticmethod
+    def _turn_id(new_message, raw_text: str) -> str:
+        """Stable finalized-utterance id, without putting transcript PII in it."""
+        supplied = getattr(new_message, "id", None)
+        if supplied:
+            return str(supplied)
+        # Compatibility fallback for older LiveKit/test ChatMessage objects.
+        # Object identity distinguishes two legitimate equal replies while a
+        # duplicated callback carrying the same message object remains stable.
+        return f"legacy-{id(new_message):x}"
+
+    def _capture_incident_fields(self, state: SakhiCallState, text: str) -> dict:
+        """Extract the incident's structured fields before checklist closure.
+
+        This is intentionally not a general NLP rewrite.  It reuses the
+        existing domain detectors for demographics, gestational age and
+        gravida, applies each value through SakhiCallState's non-overwrite
+        mutators, and lets IntakeProgress.sync_from_state skip volunteered
+        fields.  Disable with SAKHI_STRUCTURED_TURN_CAPTURE_ENABLED=false.
+        """
+        captured: dict[str, object] = {}
+        if not env_flag("SAKHI_STRUCTURED_TURN_CAPTURE_ENABLED", True):
+            return captured
+
+        name, age = detect_patient_demographics(text)
+        if name is not None or age is not None:
+            before_name, before_age = state.name, state.age
+            state.identify(name=name, age=age)
+            if state.name != before_name:
+                captured["name"] = "[REDACTED]"
+            if state.age != before_age:
+                captured["age"] = state.age
+            if (
+                self._toolset is not None
+                and state.name
+                and state.age
+                and (state.name != before_name or state.age != before_age)
+            ):
+                self._toolset.persist_captured_demographics(state)
+
+        # _capture_gestational_age() already ran immediately before this
+        # helper. Report the value only when this utterance actually contains
+        # one; do not attribute a value retained from an earlier turn.
+        weeks = detect_gestational_age(text)
+        if weeks is not None:
+            state.identify(gestational_weeks=weeks)
+            captured["gestational_weeks"] = state.gestational_weeks
+
+        gravida = detect_pregnancy_number(text)
+        if gravida is not None and "gravida" not in state.anc_checkpoints:
+            state.record_anc_checkpoint(2, "gravida", str(gravida))
+            captured["pregnancy_number"] = gravida
+
+        return captured
+
+    @staticmethod
+    def _pending_answer_matches(
+        state: SakhiCallState, pending_id: str | None, text: str, captured: dict
+    ) -> bool:
+        """Typed dispatch: may this turn be offered to the armed question?
+
+        q01/q02/q04 have typed detectors and were the slots proven to
+        cross-close in the September incident, so they are decided here.
+
+        Every other question is decided by its typed schema in
+        IntakeProgress.validate_answer(question_id=...) - quantitative,
+        boolean or general (2026-09-25; Turn 6 "I am the network protocols
+        right now" closed a question). That check runs inside record_answer(),
+        which is also where the stall-escape lives: an irrelevant turn leaves
+        the question armed (needs clarification) and is counted, so the
+        question is re-asked at most STALL_LIMIT times. Rejecting it HERE
+        would skip record_answer() entirely - no count, no escape, and the
+        same question asked for the rest of the call.
+        """
+        if pending_id is None:
+            return False
+        if pending_id == "q01":
+            return bool(state.name and state.age)
+        if pending_id == "q02":
+            if "gestational_weeks" in captured:
+                return True
+            # q02 explicitly also accepts LMP/EDD. Keep that existing route,
+            # but require a date-shaped answer rather than any clinical fact.
+            return bool(re.search(
+                r"\b(?:\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|"
+                r"\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+                r")\b",
+                text,
+                re.IGNORECASE,
+            ))
+        if pending_id == "q04":
+            return "pregnancy_number" in captured or "gravida" in state.anc_checkpoints
+        if pending_id == "q06":
+            # BP closes only when a reading is actually RECORDED (record_bp ->
+            # sync_from_state), or on an explicit "not measured". 2026-09-28:
+            # "140/90" closed q06 here before the LLM ran; the LLM then said
+            # "BP was not clear" without recording it, and the question lock
+            # appended the weight question. BP is never skipped silently.
+            return bool(state.blood_pressure) or bool(
+                IntakeProgress._NOT_AVAILABLE_RE.search(text or "")
+            )
+        if pending_id not in QUESTIONS_BY_ID:
+            return False                      # not an intake question: nothing to close
+        # Schema-validated in record_answer() -> validate_answer(question_id=...).
+        return True
 
     def _route_deterministic_intake(
         self,
@@ -3874,12 +4408,19 @@ class SakhiAgent(Agent):
         if (
             not env_flag("SAKHI_DETERMINISTIC_INTAKE_ENABLED", True)
             or state is None
+            or not questionnaire_open(state)
             or not armed_question_id
             or armed_question_id not in state.intake.answered
         ):
             return
         question = QUESTIONS_BY_ID.get(armed_question_id)
         if not _is_deterministic_intake_answer(question, raw_turn_text):
+            return
+        # Only when the next question has written wording in this call's
+        # language - otherwise an English call hears the Kannada question
+        # (live-LLM scenario "english_call", 2026-09-24); the LLM asks it.
+        upcoming = state.intake.next_question()
+        if upcoming is None or not has_localised_text(upcoming, state.language):
             return
 
         next_question = state.intake.arm_next()
@@ -3916,7 +4457,27 @@ class SakhiAgent(Agent):
                 event="farewell_suppressed",
             )
             return
-        if not spoken_text or not _FAREWELL_RE.search(spoken_text):
+        if not spoken_text:
+            return
+        state = self._state()
+        intake = getattr(state, "intake", None)
+        farewell = bool(_FAREWELL_RE.search(spoken_text))
+        # COMPLETED: q17 is a closing STATEMENT, not a question - once Sakhi
+        # has spoken it there is nothing to answer. Record it so the intake
+        # reads complete (report, dashboard) and nothing re-arms after it.
+        if farewell and intake is not None:
+            upcoming = intake.next_question()
+            if intake.pending_id == "q17" or (upcoming is not None and upcoming.id == "q17"):
+                intake.mark_satisfied("q17", "(closing statement spoken)")
+                if intake.pending_id == "q17":
+                    intake.pending_id = None
+        completed = bool(intake is not None and intake.complete)
+        # After COMPLETED, a thank-you is the goodbye (Turn 30: "ಧನ್ಯವಾದಗಳು"
+        # after q17 left the call open). Before it, thanks never end a call.
+        if not (farewell or (completed and _GRATITUDE_RE.search(spoken_text))):
+            return
+        # A thank-you mid-screening is not a goodbye (same rule as end_call).
+        if end_call_refusal(state) is not None:
             return
         self._farewell_hangup_scheduled = True
         pipeline_event(
@@ -4116,11 +4677,7 @@ class SakhiAgent(Agent):
                 await self._toolset.connect_smfmi_specialist(
                     _ToolRunContext(self.session, state), reason
                 )
-                _safe_say(
-                    self.session,
-                    "I am connecting a specialist for this mother right now... "
-                    "please stay on the line.",
-                )
+                _safe_say(self.session, escalation_notice(state.language))
             except Exception:
                 logger.warning("Forced escalation failed", exc_info=True)
             finally:
@@ -4133,12 +4690,100 @@ class SakhiAgent(Agent):
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
         state = self._state()
 
+        # Protection against duplicate finalized STT utterances. Business
+        # logic lives only in this final-turn hook; interim transcript events
+        # are telemetry-only in entrypoint().
+        raw_speech = (new_message.text_content or "").strip()
+        turn_id = self._turn_id(new_message, raw_speech)
+        # TABLET_AUDIO_INGRESS: every committed turn, before any gate can drop
+        # it. Duration is the last VAD speech burst (ChatMessage carries none).
+        logger.info(
+            "TABLET_AUDIO_INGRESS: text='%s' duration=%.2f",
+            raw_speech,
+            float(
+                getattr(new_message, "duration", None)
+                or (getattr(self, "_state_watch", None) or {}).get("last_speech_seconds")
+                or 0.0
+            ),
+        )
+
+        # [SAKHI_TURN_GATE] - one record per committed turn, at entry, showing
+        # what every early-exit gate below WILL decide (evaluated on the same
+        # canonicalised text those gates read). A turn that ends in
+        # StopResponse() is then attributable to exactly one gate.
+        # Read-only: nothing here changes the turn. SAKHI_TURN_GATE_DEBUG=false
+        # turns it off.
+        if env_flag("SAKHI_TURN_GATE_DEBUG", True):
+            try:
+                _gate_text = canonicalise(raw_speech) if raw_speech else ""
+                _watch = getattr(self, "_state_watch", None) or {}
+                _tic_re = globals().get("_VOCAL_TIC_RE")
+                _gates = {
+                    "is_side_talk": bool(_gate_text) and is_side_talk(_gate_text),
+                    "is_repeat_request": bool(_gate_text) and is_repeat_request(_gate_text),
+                    "answers_pending_question": _answers_pending_question(
+                        state, _gate_text, self._last_agent_utterance
+                    ),
+                    "is_backchannel": bool(_gate_text) and is_backchannel(_gate_text),
+                    # .match(), anchored - the same call is_backchannel() makes
+                    "vocal_tic_re": (bool(_tic_re.match(_gate_text.strip())) if _tic_re is not None else None),
+                    "looks_incomplete": bool(_gate_text) and looks_incomplete(_gate_text),
+                }
+                logger.debug("[SAKHI_TURN_GATE] %r %s", raw_speech, _gates)
+                pipeline_event(
+                    "turn", "info", "[SAKHI_TURN_GATE]",
+                    f"{len(raw_speech)} chars; gates={[k for k, v in _gates.items() if v]}",
+                    event="turn_gate_debug",
+                    turn_id=turn_id,
+                    raw_transcript=raw_speech,
+                    canonical_transcript=_gate_text,
+                    turn_duration_s=round(float(_watch.get("last_speech_seconds") or 0.0), 3),
+                    pending_question_id=(state.intake.pending_id if state is not None else None),
+                    **_gates,
+                )
+            except Exception:
+                logger.warning("Turn gate debug failed; turn continues", exc_info=True)
+
+        if raw_speech and env_flag("SAKHI_FINAL_TURN_DEDUPE_ENABLED", True):
+            now = time.time()
+            if turn_id in self._processed_turns:
+                pipeline_event(
+                    "turn", "warn", "Duplicate transcript ignored",
+                    "A finalized utterance id was already committed; dropping duplicate callback",
+                    event="duplicate_turn_ignored",
+                    turn_id=turn_id,
+                )
+                raise StopResponse()
+            self._processed_turns[turn_id] = now
+            if len(self._processed_turns) > 100:
+                self._processed_turns = {k: v for k, v in self._processed_turns.items() if now - v < 60}
+
         # Clear last turn's write receipts before anything can set new ones.
         # Without this the pre-speech guard would let a successful BP write
         # three turns ago authorise an unbacked claim made now - see
         # SakhiCallState.begin_turn().
         if state is not None:
             state.begin_turn()
+        # What the CODE decided about this turn's answer; llm_node turns it
+        # into the reply instruction so the model never decides on its own
+        # that an answer was "not clear" (see _reply_format_instruction).
+        self._turn_answer_status = None
+
+        # COMPLETED: the goodbye is already playing and the room closes after
+        # it. A courtesy turn ("ಧನ್ಯವಾದಗಳು") must not start another generated
+        # reply (live call 2026-09-28 10:54:35 - one more "thank you" before
+        # the hangup). A danger sign still gets the full pipeline.
+        if (
+            getattr(self, "_farewell_hangup_scheduled", False)
+            and raw_speech
+            and not detect_symptoms(canonicalise(raw_speech)).any_present
+        ):
+            pipeline_event(
+                "turn", "info", "Turn after goodbye ignored",
+                "Session COMPLETED; the goodbye is playing and the call is ending",
+                event="post_farewell_turn_ignored", turn_id=turn_id,
+            )
+            raise StopResponse()
 
         # The ASHA worker is on the line and talking. Set before the
         # backchannel/fragment guards below, which return early: even a grunt
@@ -4198,11 +4843,58 @@ class SakhiAgent(Agent):
                     logger.warning("Could not rewrite turn content post-canonicalisation",
                                    exc_info=True)
 
+        # ANSWER GUARD (2026-09-25): a turn that carries clinical content is
+        # never dropped as side-talk or a vocal tic. Tablet transcripts arrive
+        # short and noisy; "ಹೂಂ, 28" or "BP 120 80" can look like chatter to a
+        # wording-only gate, and dropping it is a StopResponse() with no reply.
+        # Content = any digit (BP, age, weeks, after canonicalisation turns
+        # number words into digits), a clinical keyword (English list from
+        # clinical_terms + the Kannada/Hindi intake words), or an assent.
+        _ANSWER_WORDS = (
+            # Kannada intake vocabulary
+            "ಹೆಸರು", "ವಯಸ್ಸು", "ವರ್ಷ", "ತಿಂಗಳು", "ವಾರ", "ಬಿಪಿ", "ತೂಕ", "ಕೆಜಿ", "ಗರ್ಭ",
+            "ರಕ್ತ", "ನೋವು", "ಜ್ವರ", "ಊತ", "ತಲೆನೋವು", "ಸೆಳೆತ", "ಮಗು",
+            # Hindi intake vocabulary
+            "नाम", "उम्र", "साल", "महीने", "महीना", "हफ्ते", "बीपी", "वजन", "किलो", "गर्भ",
+            "खून", "दर्द", "बुखार", "सूजन", "बच्चा",
+        )
+        # English/romanised words as STT writes them (matched lower-cased,
+        # whole word, so "bp" never matches inside another word).
+        _ANSWER_WORDS_LATIN_RE = re.compile(
+            r"(?i)(?<![a-z])(?:bp|pressure|headache|fever|pain|bleeding|swelling|weeks?|months?|years?|kg)(?![a-z])"
+        )
+        # Whole-token assents only ("ha" must not match inside "hatti").
+        _ASSENT_TOKEN_RE = re.compile(
+            r"(?i)(?<![A-Za-z])(?:yes|yeah|ha|haa|haan|han|ok|okay)(?![A-Za-z])"
+            r"|ಹೌದು|ಹೂಂ|ಹಾಂ|ಹೂ|हाँ|हां|जी"
+        )
+
+        def _carries_answer(text: str) -> bool:
+            t = (text or "").strip()
+            if not t:
+                return False
+            if re.search(r"\d", t):
+                return True
+            low = t.lower()
+            if any(word in low for word, _weight in CLINICAL_KEYWORDS):
+                return True
+            if any(word in t for word in _ANSWER_WORDS):
+                return True
+            if _ANSWER_WORDS_LATIN_RE.search(t):
+                return True
+            return is_assent(t) or bool(_ASSENT_TOKEN_RE.search(t))
+
+        carries_answer = _carries_answer(raw_turn_text)
+
         # The worker turned away to speak to her patient. Stay silent.
         # Before the guardrail gate: an instruction to a patient is not a
         # request to Sakhi, so it should not be classified, logged as a turn,
         # or answered with a script.
-        if env_flag("VOICE_SIDE_TALK_GATE_ENABLED", True) and is_side_talk(raw_turn_text):
+        if (
+            env_flag("VOICE_SIDE_TALK_GATE_ENABLED", True)
+            and is_side_talk(raw_turn_text)
+            and not carries_answer
+        ):
             pipeline_event(
                 "turn", "info", "Side-talk ignored",
                 f"{raw_turn_text.strip()[:48]!r} is addressed to the patient, not to Sakhi",
@@ -4222,7 +4914,7 @@ class SakhiAgent(Agent):
                     f"Re-asking {armed.id} verbatim; no LLM round trip",
                     event="repeat_request", question_id=armed.id,
                 )
-                _safe_say(self.session, armed.text)
+                _safe_say(self.session, question_text(armed, state.language))
                 self._vad_eval(f"[VAD: {armed.vad}]")
                 raise StopResponse()
             # Nothing armed yet (e.g. during the greeting) - fall through and
@@ -4255,7 +4947,9 @@ class SakhiAgent(Agent):
                 event="assent_exempted",
                 question_id=(state.intake.pending_id if state is not None else None),
             )
-        elif is_backchannel(raw_turn_text):
+        elif is_backchannel(raw_turn_text) and not carries_answer:
+            # is_backchannel() is where _VOCAL_TIC_RE applies; the guard means
+            # only content-free noise (a cough, "umm") is dropped here.
             pipeline_event(
                 "turn", "info", "Backchannel ignored",
                 f"{raw_turn_text.strip()[:40]!r} treated as agreement, not a turn",
@@ -4271,7 +4965,16 @@ class SakhiAgent(Agent):
         # This is what finally wires DynamicVADController.FRAGMENT_RECOVERY,
         # which has been unreachable since the English clinic fragment detector
         # was removed.
-        if env_flag("VOICE_FRAGMENT_RECOVERY_ENABLED", True) and looks_incomplete(raw_turn_text):
+        #
+        # Only for SHORT turns (<= 3 words): a longer turn that happens to end
+        # on a connective has already said something worth answering, and
+        # holding it for the extended fragment window reads as Sakhi not
+        # responding at all.
+        if (
+            env_flag("VOICE_FRAGMENT_RECOVERY_ENABLED", True)
+            and len(raw_turn_text.split()) <= 3
+            and looks_incomplete(raw_turn_text)
+        ):
             if self._vad_controller is not None:
                 self._vad_controller.fragment_recovery()
             pipeline_event(
@@ -4331,6 +5034,13 @@ class SakhiAgent(Agent):
             # the requested language.
             try:
                 requested = detect_language_switch_request(new_message.text_content or "")
+                if requested is not None and spoken_language(requested) != requested:
+                    pipeline_event(
+                        "turn", "info", "Language switch ignored",
+                        f"{requested.display_name} is not enabled; staying in {state.language.display_name}",
+                        event="language_switch_blocked", language=requested.value,
+                    )
+                    requested = None
                 if requested is not None and state.switch_language(requested):
                     pipeline_event(
                         "turn", "warn", "Language switch requested",
@@ -4377,10 +5087,40 @@ class SakhiAgent(Agent):
             identity_pending = (
                 state.intake.pending_id not in (None, "q01") and not state.is_identified
             ) or state.awaiting_identity_box
+            _flow_transcript = (new_message.text_content or "").strip()
+            # "COMPLETE", not "q01", once every question is closed: the old
+            # fallback made post-q17 turns log as "q01 -> COMPLETE", which read
+            # as the questionnaire restarting. (Nothing re-arms after the
+            # close - arm_next() returns None.)
+            _flow_next = state.intake.next_question()
+            _flow_prev_q = state.intake.pending_id or (_flow_next.id if _flow_next else "COMPLETE")
+            _pending_q_obj = QUESTIONS_BY_ID.get(_flow_prev_q)
+            _vad = _pending_q_obj.vad if _pending_q_obj else "SLOW"
+            _is_valid, _val_reason = state.intake.validate_answer(_flow_transcript, vad=_vad)
+
             try:
-                closed = None if identity_pending else state.intake.record_answer(
-                    new_message.text_content or ""
+                # Extract typed facts first, including useful information the
+                # caller volunteered before its question was asked. sync then
+                # marks those exact questions satisfied; we do not increment
+                # a question index blindly.
+                captured_fields = self._capture_incident_fields(state, raw_turn_text)
+                state.intake.sync_from_state(state)
+                state.intake.sync_applicability(state)
+
+                pending_was_satisfied = bool(
+                    deterministic_armed_question
+                    and deterministic_armed_question in state.intake.answered
                 )
+                matches_pending = self._pending_answer_matches(
+                    state, deterministic_armed_question, raw_turn_text, captured_fields
+                )
+                closed = None
+                if pending_was_satisfied:
+                    closed = deterministic_armed_question
+                    if state.intake.pending_id == deterministic_armed_question:
+                        state.intake.pending_id = None
+                elif not identity_pending and matches_pending:
+                    closed = state.intake.record_answer(raw_turn_text)
                 if closed:
                     pipeline_event(
                         "llm", "info", "Intake answer recorded",
@@ -4388,8 +5128,72 @@ class SakhiAgent(Agent):
                         event="intake_answered", question_id=closed,
                         answered=len(state.intake.answered),
                     )
+                elif deterministic_armed_question in {"q01", "q02", "q04", "q06"} and not matches_pending:
+                    pipeline_event(
+                        "turn", "info", "Answer did not match armed field",
+                        f"{deterministic_armed_question} remains armed; typed validation did not resolve it",
+                        event="intake_answer_needs_clarification",
+                        question_id=deterministic_armed_question,
+                        captured_field_names=sorted(captured_fields),
+                    )
+                if deterministic_armed_question and not identity_pending:
+                    if closed:
+                        self._turn_answer_status = "accepted"
+                    elif deterministic_armed_question == "q06" and _BP_READING_RE.search(raw_turn_text or ""):
+                        self._turn_answer_status = "value_to_record"
+                    else:
+                        self._turn_answer_status = "not_answered"
+                # Immediately sync facts auto-satisfied by tools or extractors.
+                state.intake.sync_from_state(state)
+                state.intake.sync_applicability(state)
             except Exception:
                 logger.warning("Intake progress update failed; turn continues", exc_info=True)
+
+            # [SAKHI_FLOW] per-turn structured trace (2026-09-22).
+            #
+            # One log line per turn that shows the complete pipeline from STT
+            # transcript through state transition, so regressions like the
+            # "yelu tingalu" stall are diagnosable from production logs without
+            # requiring a re-run. Does NOT change any clinical behaviour.
+            try:
+                import hashlib as _hashlib
+                _flow_next_q = state.intake.next_question()
+                _next_qid = _flow_next_q.id if _flow_next_q else "COMPLETE"
+                _flow_retry = state.intake._stall_counts.get(_flow_prev_q or "", 0)
+                _raw_fingerprint = _hashlib.sha256(_flow_transcript.encode("utf-8")).hexdigest()[:12]
+                pipeline_event(
+                    "turn", "info", "[SAKHI_TURN]",
+                    f"{_flow_prev_q} -> {_next_qid}; structured fields={sorted(captured_fields)}",
+                    event="sakhi_flow",
+                    session_id=state.session_id,
+                    turn_id=turn_id,
+                    raw_transcript_sha256=_raw_fingerprint,
+                    raw_transcript_chars=len(_flow_transcript),
+                    current_question_id=_flow_prev_q,
+                    extracted_field_names=sorted(captured_fields),
+                    extracted_values={k: v for k, v in captured_fields.items() if k != "name"},
+                    validation_result=(
+                        "NO_ARMED_QUESTION" if deterministic_armed_question is None
+                        else "VALID" if matches_pending else "NEEDS_CLARIFICATION"
+                    ),
+                    validation_reason=_val_reason,
+                    typed_validation_reason=(
+                        state.intake.validate_answer(
+                            raw_turn_text, vad=_vad, question_id=deterministic_armed_question
+                        )[1] if deterministic_armed_question else None
+                    ),
+                    answer_status=getattr(self, "_turn_answer_status", None),
+                    risk_level=(state.assessment.level.value if state.assessment else None),
+                    intake_locked=state.intake_locked,
+                    answer_saved=bool(closed),
+                    retry_count=_flow_retry,
+                    completed_question_ids=sorted(state.intake.answered.keys()),
+                    next_question_id=(_flow_next_q.id if _flow_next_q else None),
+                    identity_pending=identity_pending,
+                )
+            except Exception:
+                logger.warning("Structured turn trace failed; turn continues", exc_info=True)
+
 
         # Safety guardrails run FIRST, on their own flag, never gated by a
         # latency toggle. A medical/emergency/jailbreak/abuse turn is answered
@@ -4447,7 +5251,8 @@ class SakhiAgent(Agent):
                 _safe_say(self.session, guardrails.script_for("abuse_goodbye", language.value))
                 schedule_hangup_after_playout(self.session)
             else:
-                _safe_say(self.session, guardrails.script_for("abuse_warning", language.value))
+                _safe_say(self.session, _then_current_question(
+                    guardrails.script_for("abuse_warning", language.value), state))
             raise StopResponse()
 
         # Zero database tools run on this path: StopResponse aborts the turn
@@ -4459,6 +5264,10 @@ class SakhiAgent(Agent):
             event="guardrail_triggered", category=category,
             response_path="deterministic", language=language.value,
         )
+        if category in ("jailbreak", "medical_advice"):
+            # Back to the checklist, not to a question of the script's own.
+            # Emergency / self-harm scripts stand alone on purpose.
+            script = _then_current_question(script, state)
         _safe_say(self.session, script)
         self._vad_eval(script)
         raise StopResponse()
@@ -4470,6 +5279,9 @@ class SakhiAgent(Agent):
         # collected instead of having to infer it from a long, sometimes-garbled
         # Kannada transcript. This is what stops the re-ask-the-BP bug.
         state = self._state()
+        # Inactive unless an intake question is armed below - see
+        # sakhi_question_lock for why the code, not the model, asks it.
+        lock = QuestionLock(None)
         if state is not None:
             try:
                 chat_ctx = chat_ctx.copy()
@@ -4544,6 +5356,25 @@ class SakhiAgent(Agent):
                     ):
                         conversation.pop(0)  # oldest turn first
 
+                # Synchronize intake state with current call state before stage calculation
+                state.intake.sync_from_state(state)
+                state.intake.sync_applicability(state)
+
+                if env_flag("SAKHI_LEAN_INTAKE_MODE", True) and system_items:
+                    intake = getattr(state, "intake", None)
+                    current_st = intake.current_stage() if intake and hasattr(intake, "current_stage") else 1
+                    nxt_q = intake.next_question() if intake else None
+                    nxt_text = question_text(nxt_q, state.language) if nxt_q else None
+                    lean_prompt = system_prompt_for(
+                        state.language,
+                        stage=current_st,
+                        stage_desc=stage_name(current_st),
+                        stage_q=nxt_text,
+                    )
+                    first_sys = system_items[0]
+                    if hasattr(first_sys, "content"):
+                        first_sys.content = [lean_prompt]
+
                 chat_ctx.items = [*system_items, *conversation]
 
                 if len(chat_ctx.items) != before_items:
@@ -4557,6 +5388,8 @@ class SakhiAgent(Agent):
                         tokens_after=_approx_context_tokens(chat_ctx),
                     )
 
+                # Ground truth: always inject current state summary so the model
+                # knows what is already recorded and never re-asks completed questions.
                 chat_ctx.add_message(
                     role="system",
                     content=(
@@ -4566,52 +5399,28 @@ class SakhiAgent(Agent):
                 )
 
                 # Re-scope the tool surface to this phase of the call.
-                #
-                # Rules about tool ORDER in a prompt are followed
-                # probabilistically; a tool the model cannot see is a rule it
-                # cannot break. Withdrawing `register_mother` after identity is
-                # settled removes the duplicate-record failure entirely, and
-                # `connect_smfmi_specialist` only appears once TriageEngine has
-                # classified the mother HIGH_RISK - so the model never gets to
-                # decide that a page is warranted. See ClinicalToolset.tools_for.
                 if self._toolset is not None and env_flag("SAKHI_SCOPED_TOOLS", True):
                     try:
-                        scoped = self._toolset.tools_for(state)
-                        # Preserve any non-clinical tool already attached
-                        # (end_call), so re-scoping never strips the model's
-                        # ability to hang up.
-                        #
-                        # The two collections have DIFFERENT shapes and that
-                        # difference caused a live outage: `tools_for` returns
-                        # bound methods (which carry __name__), while
-                        # `self.tools` holds registered FunctionTool objects
-                        # (which carry .info.name and no __name__). Filtering
-                        # on __name__ alone matched nothing, so every clinical
-                        # tool was re-appended as an "extra" and LiveKit raised
-                        # `duplicate function name: search_patient`, killing
-                        # _pipeline_reply_task on EVERY turn after the greeting.
-                        # Sakhi went silent and the worker answered nothing.
-                        #
-                        # 2026-09-03: the fix above shipped with `clinical` as a
-                        # hand-typed set of 5 names - confirmed live it silently
-                        # fell out of sync the moment record_gestational_age,
-                        # record_anc_checkpoint, record_patient_intake, and
-                        # check_pregnancy_risk_factors were added to
-                        # ClinicalToolset later in the same session, and the
-                        # exact same "duplicate function name" crash came back
-                        # for whichever of those four `tools_for()` already
-                        # included in `scoped` and this set still treated as a
-                        # non-clinical "extra". A hand-maintained name list is
-                        # exactly the kind of thing that goes stale the next
-                        # time a tool is added - derive it from
-                        # ClinicalToolset.as_list() (the actual authoritative
-                        # set) instead, so it can't drift again.
-                        clinical = {_tool_name(t) for t in self._toolset.as_list()}
-                        extras = [
-                            tool for tool in (self.tools or [])
-                            if _tool_name(tool) not in clinical
-                        ]
-                        scoped = [*scoped, *extras]
+                        if env_flag("SAKHI_LEAN_INTAKE_MODE", True):
+                            intake = getattr(state, "intake", None)
+                            current_st = intake.current_stage() if intake and hasattr(intake, "current_stage") else 1
+                            stage_tools = lean_stage_tools(
+                                self._toolset, current_st,
+                                escalation_pending=self._escalation_pending(),
+                            )
+                            # end_call stays offered (a tool missing from the
+                            # request fails the whole request on Groq - see
+                            # lean_stage_tools); it refuses by itself while
+                            # questions remain - see end_call.
+                            scoped = [*stage_tools, end_call]
+                        else:
+                            scoped = self._toolset.tools_for(state)
+                            clinical = {_tool_name(t) for t in self._toolset.as_list()}
+                            extras = [
+                                tool for tool in (self.tools or [])
+                                if _tool_name(tool) not in clinical
+                            ]
+                            scoped = [*scoped, *extras]
                         current = {_tool_name(t) for t in (self.tools or [])}
                         wanted = {_tool_name(t) for t in scoped}
                         if current != wanted:
@@ -4621,6 +5430,11 @@ class SakhiAgent(Agent):
                                 ", ".join(sorted(wanted)),
                                 event="tools_scoped", tools=sorted(wanted),
                             )
+                            # Should not happen in lean mode any more (the
+                            # set is constant from construction). Do NOT
+                            # swap `tools` for this generation: livekit runs
+                            # tool calls against the list it captured, so
+                            # the model would call tools that "don't exist".
                     except Exception:
                         # Never let scoping break a live turn - a wider surface
                         # is a lesser failure than a dead turn.
@@ -4630,7 +5444,11 @@ class SakhiAgent(Agent):
                 # worker's next turn can be attributed to it and the checklist
                 # advances deterministically instead of the model re-deriving
                 # its position from the transcript every turn.
-                armed = state.intake.arm_next()
+                # Emergency lock: no routine question is armed or appended for
+                # the rest of the call - _escalation_pending() alone turned
+                # false again once the specialist was connected, and the
+                # checklist resumed between hospital instructions.
+                armed = state.intake.arm_next() if questionnaire_open(state) else None
                 if armed is not None:
                     pipeline_event(
                         "llm", "info", "Intake question armed",
@@ -4638,6 +5456,32 @@ class SakhiAgent(Agent):
                         event="intake_armed", question_id=armed.id,
                         answered=len(state.intake.answered),
                     )
+                    if (
+                        question_lock_enabled()
+                        and not self._escalation_pending()
+                        # Only where written wording exists (not English yet):
+                        # the lock must never speak Kannada on another call.
+                        and has_localised_text(armed, state.language)
+                    ):
+                        lock = QuestionLock(
+                            armed_question_text(armed, state, state.language),
+                            armed.vad,
+                            # Every question, answered ones included: the model
+                            # re-stating an answered question ("माता का नाम और
+                            # उम्र बताइए" after the name was saved) must be
+                            # dropped too. Safe for value read-backs because
+                            # the match is measured against the QUESTION.
+                            tuple(
+                                question_text(q, state.language) for q in INTAKE_QUESTIONS
+                                if q.id != armed.id
+                            ),
+                        )
+                        chat_ctx.add_message(
+                            role="system",
+                            content=_reply_format_instruction(
+                                getattr(self, "_turn_answer_status", None)
+                            ),
+                        )
                 if self._escalation_pending():
                     # Deliberately blunt and placed last, so it is the most
                     # recent instruction the model sees.
@@ -4677,7 +5521,24 @@ class SakhiAgent(Agent):
                     text_length += len(content)
                 if delta is not None and getattr(delta, "tool_calls", None):
                     tool_calls_seen = True
+                if lock.active and not (delta is not None and getattr(delta, "tool_calls", None)):
+                    # Text goes through the lock; tool-call chunks pass untouched.
+                    for sentence in lock.feed(content or ""):
+                        yield sentence
+                    continue
                 yield chunk
+            if lock.active:
+                for sentence in lock.finish(final=not tool_calls_seen):
+                    text_length += len(sentence)
+                    yield sentence
+                if lock.dropped:
+                    pipeline_event(
+                        "llm", "warn", "Question lock",
+                        f"{len(lock.dropped)} model sentence(s) replaced by the armed question",
+                        event="question_lock_dropped",
+                        question_id=state.intake.pending_id if state is not None else None,
+                        dropped=lock.dropped[:3],
+                    )
         except Exception as exc:
             self._cancel_latent_filler(filler_task)
             pipeline_event(
@@ -4692,6 +5553,11 @@ class SakhiAgent(Agent):
         # continues this same logical turn) - it must never be treated as an
         # empty failure, and must never trigger the fallback.
         if text_length:
+            # A normal post-tool continuation won the race. Discard the
+            # deterministic backup so it cannot leak into a later turn and be
+            # spoken twice.
+            if self._toolset is not None:
+                self._toolset.last_spoken_prompt = ""
             validated_label, validated_message = "LLM text ready for TTS", "Visible assistant content validated"
         elif tool_calls_seen:
             validated_label, validated_message = "Tool-only LLM completion", "Model returned tool calls; tool loop continues this turn"
@@ -4708,6 +5574,20 @@ class SakhiAgent(Agent):
             tool_calls_present=tool_calls_seen,
         )
         if text_length or tool_calls_seen:
+            return
+
+        # FIX THE SILENT TOOL COMPLETION LOOP:
+        fallback_prompt = getattr(self._toolset, "last_spoken_prompt", "")
+        if fallback_prompt:
+            self._toolset.last_spoken_prompt = ""
+            logger.info(f"[AGENT WATCHDOG] Forcing audio playback for tool response: {fallback_prompt}")
+            pipeline_event(
+                "tts", "info", "Watchdog speech in llm_node",
+                f"[AGENT WATCHDOG] Forcing audio playback for tool response: {fallback_prompt}",
+                event="agent_watchdog_speech",
+                spoken_text=fallback_prompt,
+            )
+            yield fallback_prompt
             return
 
         # A successful-but-empty completion (or unhandled tier failure) cannot be retried by LiveKit's
@@ -4949,7 +5829,7 @@ class SakhiAgent(Agent):
         wrapped_tts = tts.StreamAdapter(
             tts=active_tts,
             sentence_tokenizer=EagerClauseTokenizer(
-                min_chunk_chars=int(os.getenv("TTS_EAGER_MIN_CHUNK_CHARS", "35")),
+                min_chunk_chars=int(os.getenv("TTS_EAGER_MIN_CHUNK_CHARS", "20")),
                 max_chunk_chars=int(os.getenv("TTS_EAGER_MAX_CHUNK_CHARS", "160")),
                 rest_min_chunk_chars=int(os.getenv("TTS_EAGER_REST_MIN_CHARS", "90")),
             ),
@@ -5061,18 +5941,37 @@ def build_repository() -> PatientRepository:
         )
 
     postgres_url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
-    if postgres_url or backend == "postgres":
+    if backend == "postgres" and not postgres_url:
+        # SAKHI_REPOSITORY=postgres is the production pin (/etc/sakhi.env): a
+        # lost DATABASE_URL must stop the worker, not quietly write clinical
+        # records to a SQLite file on the instance's disk.
+        pipeline_event(
+            "tools", "error", "PostgreSQL repository misconfigured",
+            "SAKHI_REPOSITORY=postgres but DATABASE_URL/POSTGRES_URL is not set",
+            backend="postgres",
+        )
+        raise RuntimeError(
+            "SAKHI_REPOSITORY=postgres requires DATABASE_URL (Supabase pooler "
+            "connection string); refusing to fall back to SQLite"
+        )
+    if postgres_url:
+        _dsn = urlparse(postgres_url)
+        # Supabase Supavisor: 5432 = session mode, 6543 = transaction mode.
+        # Both work - the repository disables prepared statements.
+        _pool_mode = {5432: "session", 6543: "transaction"}.get(_dsn.port or 5432, "direct/custom")
         # PostgresPatientRepository targets the REAL clinical schema
         # (mothers/bp_records/symptom_records/teleconsults/call_reports via
         # sakhi_schema.schema_statements(POSTGRES)) - not a parallel schema.
         # See its class docstring in sakhi_sql_repository.py for the driver
-        # choice (psycopg, not asyncpg) and what this does NOT cover yet
-        # (status_server.py's dashboard still reads SAKHI_DB_PATH directly).
+        # choice (psycopg, not asyncpg). The dashboard reads through
+        # sakhi_dashboard_store.get_store(), which selects its backend from
+        # this same DATABASE_URL, so worker and dashboard always agree.
         pipeline_event(
             "tools", "ok", "PostgreSQL repository selected",
             "Connection-pooled Postgres storage active (mothers/bp_records/"
             "symptom_records/teleconsults/call_reports schema)",
-            backend="postgres",
+            backend="postgres", db_host=_dsn.hostname, db_port=_dsn.port,
+            pooler_mode=_pool_mode,
         )
         return PostgresPatientRepository(postgres_url)
 
@@ -5116,26 +6015,36 @@ def _build_vad() -> "silero.VAD":
     code change, without shipping a speculative default change.
     """
     return silero.VAD.load(
-        # 2026-09-04: default here had drifted to 0.35, silently contradicting
-        # the 0.75 this docstring documents as the tested-safe value (the
-        # .env override was independently found mis-set to the same 0.35 the
-        # same day - see .env's own note on VAD_MIN_SILENCE). Restored to
-        # match the documented intent so a deploy WITHOUT this env var set
-        # doesn't silently reintroduce the mid-sentence-cutoff regression.
-        min_silence_duration=float(os.getenv("VAD_MIN_SILENCE", "0.75")),
-        # 0.12, down from 0.25 (2026-09-02): the monosyllabic assent gate
-        # depends on it. A rural ASHA worker answers a yes/no question with
-        # one syllable - "ಹೂಂ", "ಆಂ", "ಇಲ್ಲ" - roughly 150-250ms of speech.
-        # At a 0.25 floor those never became a turn at all, so the question
-        # stayed pending and Sakhi asked it again; from her side the agent
-        # simply had not heard her. See IntakeProgress._ASSENTS for the
-        # semantic half of the same fix - this half hears the syllable, that
-        # half counts it as an answer. Both are required.
-        min_speech_duration=float(os.getenv("VAD_MIN_SPEECH_DURATION", "0.12")),
-        # Keeps 200ms before onset so a one-syllable assent does not reach
-        # STT already clipped into an unrecognisable fragment.
-        prefix_padding_duration=float(os.getenv("VAD_PREFIX_PADDING", "0.2")),
-        activation_threshold=float(os.getenv("VAD_ACTIVATION_THRESHOLD", "0.5")),
+        # 2026-09-25 (tablet field tests): 0.45 -> 0.22. This VAD now only
+        # decides TURN timing - STT has its own segmentation VAD
+        # (_build_stt_segmentation_vad, 0.6 s silence), so a shorter wait here
+        # no longer fragments the words Sarvam receives; it only makes the
+        # turn commit sooner. The 0.45 s wait stacked on top of the endpointing
+        # delay. Env override still wins (VAD_MIN_SILENCE).
+        min_silence_duration=float(os.getenv("VAD_MIN_SILENCE", "0.22")),
+        min_speech_duration=float(os.getenv("VAD_MIN_SPEECH_DURATION", "0.15")),
+        # 0.15 s pre-roll so an utterance-initial Indic vowel is not clipped.
+        prefix_padding_duration=float(os.getenv("VAD_PREFIX_PADDING", "0.15")),
+        # 0.30 for tablet mic distance (softer speech still activates).
+        activation_threshold=float(os.getenv("VAD_ACTIVATION_THRESHOLD", "0.30")),
+    )
+
+
+def _build_stt_segmentation_vad() -> "silero.VAD":
+    """Silero instance that cuts the call into utterances for Sarvam's batch
+    STT (see build_stt). Separate from _build_vad() because the two jobs want
+    different settings: turn-taking wants a tight 0.10 s pre-roll, while an
+    utterance sent for transcription needs its first syllable intact (0.4 s
+    pre-roll) and should not be split at a breath inside one answer.
+    Same activation threshold, so both VADs agree on what counts as speech."""
+    return silero.VAD.load(
+        min_silence_duration=float(os.getenv("STT_SEGMENT_MIN_SILENCE", "0.6")),
+        min_speech_duration=float(os.getenv("VAD_MIN_SPEECH_DURATION", "0.15")),
+        prefix_padding_duration=float(os.getenv("STT_SEGMENT_PREFIX_PADDING", "0.4")),
+        # Slightly MORE sensitive than the turn VAD (0.35): anything the turn
+        # layer treats as speech must reach STT, or the turn is committed
+        # with no words (seen with speaker-played audio, 2026-09-25).
+        activation_threshold=float(os.getenv("STT_SEGMENT_ACTIVATION", "0.25")),
     )
 
 
@@ -5143,6 +6052,7 @@ def prewarm_process(proc: JobProcess) -> None:
     try:
         vad_started = time.perf_counter()
         proc.userdata["vad"] = _build_vad()
+        proc.userdata["stt_vad"] = _build_stt_segmentation_vad()
         pipeline_event(
             "microphone",
             "ok",
@@ -5365,7 +6275,7 @@ def prewarm_process(proc: JobProcess) -> None:
         warm_stt = SarvamSTT(
             api_key=os.getenv("SARVAM_API_KEY"),
             language_code=Language.KANNADA.sarvam_code,
-            model=os.getenv("SARVAM_STT_MODEL", "saarika:v2.5"),
+            model=os.getenv("SARVAM_STT_MODEL", "saaras:v3"),
             mode=os.getenv("SARVAM_STT_MODE", "transcribe"),
         )
         stream = warm_stt.stream()
@@ -5454,6 +6364,9 @@ async def request_process(req: JobRequest) -> None:
 
 
 async def entrypoint(ctx: JobContext):
+    # Attribute every pipeline event raised from here on - in this task and
+    # every task it spawns - to this call (see sakhi_telemetry.CURRENT_SESSION).
+    CURRENT_SESSION.set(_job_room_name(ctx))
     try:
         logger.info("Starting MyStree care coordinator agent session.")
         pipeline_event("worker", "info", "Entrypoint", "Starting MyStree care coordinator agent session")
@@ -5564,14 +6477,14 @@ async def entrypoint(ctx: JobContext):
         # instead of being passed around as a bare string that each provider
         # builder re-interpreted differently (oops.md §2.3). Kannada is the
         # Bidar pilot default.
-        call_language = Language.parse(
+        call_language = spoken_language(Language.parse(
             combined_metadata.get("language"),
             default=Language.parse(os.getenv("SAKHI_DEFAULT_LANGUAGE", "kn")),
-        )
+        ))
         call_temperature = float(
             combined_metadata.get("temperature", os.getenv("LLM_TEMPERATURE", LLM_CONFIG["temperature"]))
         )
-        call_silence_threshold = float(combined_metadata.get("silence_threshold", os.getenv("MIN_ENDPOINTING_DELAY", "0.3")))
+        call_silence_threshold = float(combined_metadata.get("silence_threshold", os.getenv("MIN_ENDPOINTING_DELAY", "0.15")))
         call_tts_speed = float(combined_metadata.get("tts_speed", default_tts_pace()))
         # The three ASSEMBLYAI_* endpointing sliders that used to be read here
         # were passed to build_stt(), which stopped using them when STT moved to
@@ -5581,7 +6494,8 @@ async def entrypoint(ctx: JobContext):
         pipeline_event("dispatch", "info", "Provider build", "Building STT, LLM, TTS, VAD, and turn detector")
         
         try:
-            stt_provider = build_stt(language=call_language)
+            stt_segment_vad = ctx.proc.userdata.get("stt_vad") or _build_stt_segmentation_vad()
+            stt_provider = build_stt(language=call_language, segment_vad=stt_segment_vad)
         except Exception:
             logger.error("Failed to build STT provider:\n%s", traceback.format_exc())
             raise
@@ -5634,16 +6548,50 @@ async def entrypoint(ctx: JobContext):
             event_sink=pipeline_event,
         )
 
+        # Dashboard telemetry. Started here (the repository is known and the
+        # call's event loop is running) and flushed from a shutdown callback,
+        # which runs after the entrypoint's own final "Room disconnected" /
+        # "Usage summary" events, so the tail of the call is never lost.
+        call_session_id = getattr(ctx.room, "name", None) or _job_room_name(ctx)
+        CURRENT_SESSION.set(call_session_id)
+        telemetry = _telemetry_for(ctx.proc.userdata["patient_repository"])
+        if telemetry is not None:
+            async def _flush_telemetry() -> None:
+                try:
+                    await telemetry.flush()
+                finally:
+                    telemetry.forget_session(call_session_id)
+            ctx.add_shutdown_callback(_flush_telemetry)
+
+        lean_mode = env_flag("SAKHI_LEAN_INTAKE_MODE", True)
+        # Lean mode relies on llm_node's per-turn re-scope to hand the model
+        # its recording tools. With SAKHI_SCOPED_TOOLS=false that re-scope
+        # never runs, so [end_call] alone would be the whole call's toolset
+        # and nothing could ever be recorded - use the full set instead.
+        # Lean mode: ONE constant tool set, registered on the Agent (not the
+        # session) before the first turn. Two failures shaped this:
+        # * listing tools on both session and agent -> "duplicate function
+        #   name" (each bound-method lookup is a new object) and no session;
+        # * changing the set inside llm_node -> livekit ran the model's tool
+        #   call against the pre-change list ("unknown AI function
+        #   record_patient_intake") and the turn ended in silence.
+        lean_agent_tools = None
+        if lean_mode and env_flag("SAKHI_SCOPED_TOOLS", True):
+            initial_tools = []
+            lean_agent_tools = [*lean_stage_tools(clinical_tools, 1), end_call]
+        else:
+            initial_tools = [*clinical_tools.as_list(), end_call]
+
         session = AgentSession(
             userdata=SakhiCallState(
-                session_id=getattr(ctx.room, "name", None),
+                session_id=call_session_id,
                 language=call_language,
             ),
             stt=stt_provider,
             vad=vad_provider,
             llm=llm_provider,
             tts=tts_provider,
-            tools=[*clinical_tools.as_list(), end_call],
+            tools=initial_tools,
             turn_handling=build_turn_handling(silence_threshold=call_silence_threshold),
             # Keep the built-in markdown/emoji filters and add the JSON/code guard
             # so tool-call leakage from the LLM is never spoken aloud.
@@ -5665,6 +6613,7 @@ async def entrypoint(ctx: JobContext):
                 "filter_emoji",
                 medical_output_guard,
                 filter_code_artifacts,
+                filter_disallowed_punctuation,
                 indian_english_phonetic_normalization,
                 number_normalization_for(call_language),
             ],
@@ -5673,7 +6622,6 @@ async def entrypoint(ctx: JobContext):
                 max_unrecoverable_errors=int(os.getenv("MAX_UNRECOVERABLE_ERRORS", "5"))
             ),
         )
-
         # --- frontend identity fallback: typed name/age via RPC -------------
         #
         # Armed by sakhi_tools.py's search_patient (lookup_attempts>=1 branch),
@@ -5816,6 +6764,41 @@ async def entrypoint(ctx: JobContext):
             usage_collector.collect(ev.metrics)
             turn_latency.on_metric(ev.metrics)
             metric_type = getattr(ev.metrics, "type", "")
+
+            # [SAKHI_AUDIO_INGEST] - Silero emits vad_metrics only while it is
+            # running inference on REMOTE audio frames, so this is the direct
+            # "are the tablet's frames reaching the worker?" signal
+            # (user_input_transcribed fires on transcripts, not frames).
+            # idle_time = seconds since VAD last detected speech.
+            if metric_type == "vad_metrics":
+                inferences = int(getattr(ev.metrics, "inference_count", 0) or 0)
+                idle_s = float(getattr(ev.metrics, "idle_time", 0.0) or 0.0)
+                if inferences and not state_watch.get("audio_ingest_logged"):
+                    state_watch["audio_ingest_logged"] = True
+                    pipeline_event(
+                        "microphone", "ok", "[SAKHI_AUDIO_INGEST]",
+                        "Remote audio frames are reaching VAD",
+                        event="audio_ingest_started",
+                        inference_count=inferences, idle_time_s=round(idle_s, 2),
+                    )
+                silent_after = float(os.getenv("AUDIO_INGEST_SILENT_WARN_S", "20"))
+                if (
+                    inferences
+                    and idle_s >= silent_after
+                    and state_watch.get("agent") == "listening"
+                    and idle_s - state_watch.get("silent_warned_idle", -1e9) >= silent_after
+                ):
+                    state_watch["silent_warned_idle"] = idle_s
+                    pipeline_event(
+                        "microphone", "warn", "[SAKHI_AUDIO_INGEST]",
+                        f"Frames arriving but no speech detected for {idle_s:.0f}s "
+                        "(mic muted, wrong input device, or near-silent audio)",
+                        event="audio_ingest_no_speech",
+                        inference_count=inferences, idle_time_s=round(idle_s, 2),
+                    )
+                elif idle_s < silent_after:
+                    state_watch["silent_warned_idle"] = -1e9
+
             stage_key, label = _metric_stage(metric_type)
             status = "warn" if getattr(ev.metrics, "cancelled", False) else "ok"
             metric_details = {"metrics": ev.metrics}
@@ -6015,24 +6998,103 @@ async def entrypoint(ctx: JobContext):
                 language=call_language,
             ),
             toolset=clinical_tools,
+            **({"tools": lean_agent_tools} if lean_agent_tools is not None else {}),
         )
+        if hasattr(agent, "fnc_ctx") and agent.fnc_ctx is not None:
+            agent.fnc_ctx.session = session
 
         logger.info("Starting AgentSession with cascaded fallback providers.")
         session_started = time.perf_counter()
         pipeline_event("dispatch", "info", "Session start", "Starting AgentSession with fallback providers")
+        # Reports what _noise_filter() actually returned - this line used to
+        # say "BVC enabled" unconditionally, even with NOISE_CANCELLATION=off.
+        _nc = _noise_filter()
         pipeline_event(
             "microphone",
             "info",
-            "Noise cancellation enabled",
-            "LiveKit BVC noise suppression applied before STT and turn detection",
-            event="noise_cancellation_enabled",
-            provider="LiveKit BVC",
+            "Noise cancellation enabled" if _nc is not None else "Noise cancellation off",
+            (f"LiveKit {type(_nc).__name__} applied before STT and turn detection"
+             if _nc is not None else "Raw microphone audio goes to VAD and STT (NOISE_CANCELLATION=off)"),
+            event="noise_cancellation_enabled" if _nc is not None else "noise_cancellation_off",
+            provider=type(_nc).__name__ if _nc is not None else "none",
         )
+        # A WebRTC transport reconnect is not a new clinical conversation.
+        # The September incident showed the greeting/q01 again after a brief
+        # link interruption because LiveKit's default closes AgentSession on
+        # participant disconnect, destroying its in-RAM SakhiCallState. Keep
+        # the session alive for the bounded supervision grace below. Set
+        # SAKHI_RECONNECT_GRACE_ENABLED=false for byte-for-byte old teardown.
+        reconnect_grace_enabled = env_flag("SAKHI_RECONNECT_GRACE_ENABLED", True)
         await session.start(
             agent,
             room=ctx.room,
-            room_input_options=RoomInputOptions(noise_cancellation=_noise_filter()),
+            room_input_options=RoomInputOptions(
+                noise_cancellation=_noise_filter(),
+                close_on_disconnect=not reconnect_grace_enabled,
+            ),
         )
+
+        # Speech detected, no words transcribed -> say so (never silence).
+        # 2026-09-25 01:36: the ASHA worker spoke, our VAD heard it, Sarvam
+        # returned "" for near-silent audio (-60 dBFS) and Sakhi said nothing
+        # at all - from her side the agent simply stopped responding.
+        _heard = {"final_at": 0.0, "speech_at": 0.0, "overlapped": False}
+        _unheard = _make_unheard_speech_handler(
+            session, suppressed=lambda: _heard["overlapped"]
+        )
+        _empty_grace_s = float(os.getenv("STT_EMPTY_GRACE_S", "1.5"))
+
+        def _on_empty_segment(info: dict) -> None:
+            # One empty STT segment is often only PART of her answer - the
+            # rest arrives as a final a moment later (live call 2026-09-28
+            # 10:52:30: "didn't hear" was spoken, then "ಎಲ್ಲಾ" arrived 3 s
+            # later). Wait briefly and apologise only if no words came.
+            reported_at = time.monotonic()
+
+            def _check() -> None:
+                if _heard["final_at"] < reported_at and _heard["speech_at"] < reported_at:
+                    _unheard(info)
+
+            try:
+                asyncio.get_running_loop().call_later(_empty_grace_s, _check)
+            except RuntimeError:
+                _unheard(info)
+
+        _sarvam_wrappers_module.STT_EMPTY_SINK = _on_empty_segment
+
+        # Watchdog for every other way words can go missing (segmenter miss,
+        # provider drop, fallback hiccup): the user spoke, no final transcript
+        # followed within STT_SILENCE_WATCHDOG_S -> answer "didn't hear".
+        _watchdog_s = float(os.getenv("STT_SILENCE_WATCHDOG_S", "3.0"))
+
+        @session.on("user_input_transcribed")
+        def _note_final(ev):
+            if getattr(ev, "is_final", False) and (getattr(ev, "transcript", "") or "").strip():
+                _heard["final_at"] = time.monotonic()
+
+        async def _watch_for_words(spoke_at: float) -> None:
+            await asyncio.sleep(_watchdog_s)
+            # She paused and kept talking (speech_at moved on): her words are
+            # still coming, it is not an unanswered answer. Live call
+            # 2026-09-28 10:51:53: "didn't hear" was spoken one second before
+            # the final transcript of her long answer arrived.
+            if _heard["final_at"] < spoke_at and _heard["speech_at"] <= spoke_at:
+                _unheard({"audio_duration_ms": None, "gain_db": None, "reason": "no_transcript_after_speech"})
+
+        @session.on("user_state_changed")
+        def _speech_watchdog(ev):
+            new, old = getattr(ev, "new_state", None), getattr(ev, "old_state", None)
+            if new == "speaking":
+                _heard["speech_at"] = time.monotonic()
+                _heard["overlapped"] = getattr(session, "agent_state", None) == "speaking"
+            elif (
+                old == "speaking"
+                and env_flag("STT_SILENCE_WATCHDOG", True)
+                and not _heard["overlapped"]
+                # a cough or a click is not an unanswered answer
+                and time.monotonic() - _heard["speech_at"] >= float(os.getenv("STT_WATCHDOG_MIN_SPEECH_S", "0.6"))
+            ):
+                asyncio.create_task(_watch_for_words(_heard["speech_at"]))
 
         if env_flag("VOICE_ADAPTIVE_VAD_ENABLED", True):
             # Needs a live session (update_options propagates to the running
@@ -6117,15 +7179,19 @@ async def entrypoint(ctx: JobContext):
             )
             try:
                 if state is not None:
-                    ceiling_recording_status = await stop_call_recording(recording_egress_id)
                     report = build_sakhi_call_report(
                         state, duration_ms=limit * 1000.0,
-                        recording_status=ceiling_recording_status,
+                        recording_status="stopped" if recording_egress_id else "none",
                         recording_key=recording_key,
                     )
                     await save_post_call_report(
                         report, ctx.proc.userdata["patient_repository"]
                     )
+                    if recording_egress_id:
+                        try:
+                            asyncio.create_task(stop_call_recording(recording_egress_id))
+                        except Exception:
+                            pass
             except Exception:
                 logger.warning("Ceiling-triggered report write failed", exc_info=True)
             try:
@@ -6194,11 +7260,17 @@ async def entrypoint(ctx: JobContext):
                 for frame in cached_greeting_frames:
                     yield frame
 
+            # allow_interruptions=False (2026-09-28): the greeting is ~4.5 s
+            # and tells the worker what to say. It was being cut mid-sentence
+            # at ~3 s by the first sound the mic picked up (Sakhi's own voice
+            # echoing from the tablet speaker, a cough), leaving silence and
+            # then a "didn't hear you" apology - heard as "the voice gets
+            # stuck". Anything she says during it is still transcribed.
             await session.say(
-                greeting_text, audio=_cached_audio_iter(), allow_interruptions=True
+                greeting_text, audio=_cached_audio_iter(), allow_interruptions=False
             )
         else:
-            await session.say(greeting_text, allow_interruptions=True)
+            await session.say(greeting_text, allow_interruptions=False)
             # Fire-and-forget: fill the cache for THIS voice+language from a
             # real job's own long-lived event loop, so the NEXT call on this
             # worker gets the instant cached path - never awaited, so it can
@@ -6223,8 +7295,37 @@ async def entrypoint(ctx: JobContext):
         # string "connected" was always False, so this loop used to exit immediately.
         from livekit import rtc
 
-        while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
+        # Fast session exit when caller disconnects or closes tab:
+        # Prevents abandoned sessions from idling for 4+ minutes and hoarding 250MB RAM each.
+        @ctx.room.on("participant_disconnected")
+        def _on_participant_leave(p):
+            logger.info("Remote participant disconnected: %s", getattr(p, "identity", "unknown"))
+            if (
+                not reconnect_grace_enabled
+                and not getattr(ctx.room, "remote_participants", {})
+            ):
+                state_watch["closing"] = True
+
+        empty_room_started: float | None = None
+        while ctx.room.connection_state == rtc.ConnectionState.CONN_CONNECTED and not state_watch["closing"]:
             await asyncio.sleep(0.5)
+            if not getattr(ctx.room, "remote_participants", {}):
+                if empty_room_started is None:
+                    empty_room_started = time.perf_counter()
+                else:
+                    reconnect_grace_s = (
+                        float(os.getenv("SAKHI_RECONNECT_GRACE_SECONDS", "20.0"))
+                        if reconnect_grace_enabled else 2.0
+                    )
+                    if (time.perf_counter() - empty_room_started) < reconnect_grace_s:
+                        continue
+                    logger.info(
+                        "Room empty for %.1fs; reconnect grace expired. Ending session cleanly.",
+                        reconnect_grace_s,
+                    )
+                    break
+            else:
+                empty_room_started = None
             now = time.perf_counter()
             silence_s = now - max(state_watch["last_user_activity"], state_watch["last_transcript"])
             ping_gap_s = now - state_watch["last_ping"]
@@ -6343,14 +7444,22 @@ async def entrypoint(ctx: JobContext):
             sentiment=legacy_summary.get("user_sentiment"),
             follow_up_required=legacy_summary.get("follow_up_required"),
         )
-        final_recording_status = await stop_call_recording(recording_egress_id)
+        # Persist the structured call report immediately so the visit summary
+        # is available on the frontend without waiting for egress stop network calls.
         sakhi_report = build_sakhi_call_report(
             session.userdata,
             duration_ms=(time.perf_counter() - call_started) * 1000,
-            recording_status=final_recording_status,
+            recording_status="stopped" if recording_egress_id else "none",
             recording_key=recording_key,
         )
         await save_post_call_report(sakhi_report, ctx.proc.userdata["patient_repository"])
+
+        # Stop egress in the background if recording was active
+        if recording_egress_id:
+            try:
+                asyncio.create_task(stop_call_recording(recording_egress_id))
+            except Exception:
+                logger.warning("Background stop_call_recording task creation failed", exc_info=True)
     except Exception:
         pipeline_event("worker", "error", "Fatal entrypoint error", "Agent entrypoint crashed", traceback=traceback.format_exc())
         logger.error("Fatal error in agent entrypoint:\n%s", traceback.format_exc())

@@ -31,6 +31,9 @@ from urllib.parse import parse_qs, urlparse
 
 import db_helper
 import voice_catalog
+from sakhi_dashboard_store import get_store
+from sakhi_domain import SymptomSet
+from sakhi_schema import SYMPTOM_COLUMNS
 
 # SSE client registry for real-time log streaming
 _sse_clients: list[queue.Queue] = []
@@ -46,7 +49,17 @@ WORKER_DOWN_RE = re.compile(
     re.IGNORECASE,
 )
 LOG_TS_RE = re.compile(r"(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
-WORKER_READY_MAX_AGE_SECONDS = int(os.getenv("WORKER_READY_MAX_AGE_SECONDS", "86400"))
+# 0 = no age limit (default since 2026-09-28). A healthy worker registers ONCE
+# and then stays connected, so "last registration older than 24 h" said nothing
+# about health - it blocked every call on a worker that had simply been up for
+# more than a day ("Worker not ready yet", 2026-09-27 23:05 onward). Staleness
+# is now judged against THIS process's start instead (_PROCESS_STARTED_AT).
+WORKER_READY_MAX_AGE_SECONDS = int(os.getenv("WORKER_READY_MAX_AGE_SECONDS", "0"))
+# status_server runs inside the worker process: when this module was imported
+# is when the current worker started. A "registered worker" line older than
+# this belongs to a previous run and must not count as ready.
+_PROCESS_STARTED_AT = time.time()
+_START_SKEW_SECONDS = 120
 WORKER_HEALTH_TAIL_LINES = int(os.getenv("WORKER_HEALTH_TAIL_LINES", "100000"))
 
 
@@ -87,8 +100,15 @@ def worker_status() -> dict:
         return {"ready": False, "reason": "worker is reconnecting", "last_error": last_down_line}
     if last_ready_ts:
         try:
-            age_seconds = max(0, time.time() - datetime.strptime(last_ready_ts, "%Y-%m-%d %H:%M:%S").timestamp())
-            if age_seconds > WORKER_READY_MAX_AGE_SECONDS:
+            ready_at = datetime.strptime(last_ready_ts, "%Y-%m-%d %H:%M:%S").timestamp()
+            if ready_at < _PROCESS_STARTED_AT - _START_SKEW_SECONDS:
+                return {
+                    "ready": False,
+                    "reason": "worker has not registered since it restarted",
+                    "last_ready": last_ready_line,
+                }
+            age_seconds = max(0, time.time() - ready_at)
+            if WORKER_READY_MAX_AGE_SECONDS and age_seconds > WORKER_READY_MAX_AGE_SECONDS:
                 return {
                     "ready": False,
                     "reason": "worker registration is stale",
@@ -206,6 +226,7 @@ def provider_summary() -> dict:
     # report "none" when the flag is off, matching how the STT half of this
     # same function already handled its own fallback flag correctly.
     tts_provider = os.getenv("TTS_PROVIDER", "vakyam").strip().lower()
+    sarvam_model = os.getenv("SARVAM_TTS_MODEL", "bulbul:v2").strip()
     sarvam_voice = os.getenv("SARVAM_SPEAKER", "manisha")
     gnani_voice = os.getenv("GNANI_VOICE", "Kaveri")
     vakyam_voice = os.getenv("VAKYAM_VOICE", "Ananya")
@@ -214,9 +235,9 @@ def provider_summary() -> dict:
     tts_fallback_chain = None
     if tts_provider == "gnani":
         tts_primary = {"provider": "gnani", "model": "timbre-v2.5", "voice": gnani_voice}
-        tts_fallback = {"provider": "sarvam", "model": "bulbul:v2", "voice": sarvam_voice}
+        tts_fallback = {"provider": "sarvam", "model": sarvam_model, "voice": sarvam_voice}
     elif tts_provider == "sarvam":
-        tts_primary = {"provider": "sarvam", "model": "bulbul:v2", "voice": sarvam_voice}
+        tts_primary = {"provider": "sarvam", "model": sarvam_model, "voice": sarvam_voice}
         tts_fallback = {"provider": "gnani", "model": "timbre-v2.5", "voice": gnani_voice}
     elif tts_provider == "smallest_ai":
         tts_primary = {"provider": "smallest_ai", "model": "lightning_v3.1_pro", "voice": smallest_tts_voice}
@@ -227,7 +248,7 @@ def provider_summary() -> dict:
         if tts_fallback_enabled:
             tts_fallback_chain = [
                 tts_fallback,
-                {"provider": "sarvam", "model": "bulbul:v2", "voice": sarvam_voice},
+                {"provider": "sarvam", "model": sarvam_model, "voice": sarvam_voice},
             ]
     if not tts_fallback_enabled:
         tts_fallback = {"provider": "none", "model": "-"}
@@ -271,6 +292,23 @@ def provider_summary() -> dict:
     }
 
 
+def _safe_database_error(exc: Exception) -> str:
+    """Return a diagnostic without ever reflecting a database password."""
+    text = str(exc)
+    for name in ("DATABASE_URL", "POSTGRES_URL"):
+        value = os.getenv(name)
+        if value:
+            text = text.replace(value, f"<{name} redacted>")
+    # psycopg normally omits passwords, but adapters and proxies are free to
+    # include the URI in their own exception text. Cover that shape too.
+    text = re.sub(
+        r"(?i)(postgres(?:ql)?://[^:/\s]+:)[^@\s]+@",
+        r"\1<redacted>@",
+        text,
+    )
+    return text[:1000]
+
+
 def maternal_db_status() -> dict:
     """Health of the SAKHI store - the maternal database, not the legacy clinic one.
 
@@ -278,7 +316,16 @@ def maternal_db_status() -> dict:
     a dashboard poll, and a long-lived handle in the HTTP thread would contend
     with the write lock the agent needs during a live call.
     """
-    backend = os.getenv("SAKHI_REPOSITORY", "sqlite").strip().lower()
+    # Keep this endpoint on the exact same backend-selection seam as the
+    # worker and the admin dashboard.  The first Supabase implementation
+    # selected Postgres from DATABASE_URL in agent.build_repository(), but
+    # this health route still read SAKHI_REPOSITORY (defaulting to sqlite).
+    # After cutover it therefore reported a missing/stale local file while
+    # clinical writes were succeeding in Postgres - precisely the misleading
+    # signal an engineering dashboard must never produce during an incident.
+    postgres_dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
+    backend = ("postgres" if postgres_dsn else
+               os.getenv("SAKHI_REPOSITORY", "sqlite").strip().lower())
     if backend == "json":
         path = Path(os.getenv("SIXTYDB_MOCK_PATH", "mock_sixtydb.json"))
         if not path.exists():
@@ -294,6 +341,26 @@ def maternal_db_status() -> dict:
             "counts": {"mothers": len(raw.get("patients", [])),
                        "bp_records": len(raw.get("bp_records", []))},
         }
+
+    if backend == "postgres":
+        try:
+            store = get_store()
+            summary = store.summary()
+            return {
+                "backend": "postgres",
+                "ok": True,
+                "durable": True,
+                # Counts prove that the same schema queried by /dashboard is
+                # reachable; never include the DSN or pool details here.
+                "counts": {
+                    "mothers": int(summary.get("mothers", 0)),
+                    "call_reports": int(summary.get("calls", 0)),
+                    "teleconsults": int(summary.get("escalations", 0)),
+                },
+            }
+        except Exception as exc:
+            return {"backend": "postgres", "ok": False,
+                    "error": _safe_database_error(exc)}
 
     path = Path(os.getenv("SAKHI_DB_PATH", "data/sakhi.sqlite3"))
     if not path.exists():
@@ -395,41 +462,22 @@ def _enrich_recording_status(rows: list[dict]) -> list[dict]:
 
 
 def _mark_recording_available(session_id: str | None) -> None:
-    if not session_id:
-        return
-    path = Path(os.getenv("SAKHI_DB_PATH", "data/sakhi.sqlite3"))
-    if not path.exists():
-        return
-    import sqlite3
-
     try:
-        conn = sqlite3.connect(str(path), timeout=5)
-        conn.execute(
-            "UPDATE call_reports SET recording_status = 'available' WHERE session_id = ?",
-            (session_id,),
-        )
-        conn.commit()
-        conn.close()
+        get_store().mark_recording_available(session_id)
     except Exception:
         pass  # best-effort cache write; the next load just re-checks S3
 
 
 def list_reports(limit: int = 50) -> dict:
-    """Recent call_reports rows, most recent first - feeds the reports page."""
-    path = Path(os.getenv("SAKHI_DB_PATH", "data/sakhi.sqlite3"))
-    if not path.exists():
-        return {"reports": []}
-    import sqlite3
+    """Recent call_reports rows, most recent first - feeds the reports page.
 
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
-    conn.row_factory = sqlite3.Row
-    try:
-        rows = conn.execute(
-            "SELECT * FROM call_reports ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
-    finally:
-        conn.close()
-    return {"reports": _enrich_recording_status([dict(row) for row in rows])}
+    Reads through sakhi_dashboard_store (SQLite or Postgres, same backend as
+    the worker) rather than opening the SQLite file directly - see that
+    module's docstring for the silent-staleness bug this replaced."""
+    store = get_store()
+    if not store.available():
+        return {"reports": []}
+    return {"reports": _enrich_recording_status(store.list_reports(limit))}
 
 
 # MCP (Mother and Child Protection) card / RCH register field mapping
@@ -452,57 +500,27 @@ def mcp_card_for_report(*, report_id: int | None = None, session_id: str | None 
     learn a SQL row id it was never given)."""
     if report_id is None and not session_id:
         return None
-    path = Path(os.getenv("SAKHI_DB_PATH", "data/sakhi.sqlite3"))
-    if not path.exists():
+    store = get_store()
+    if not store.available():
         return None
-    import sqlite3
+    # Never substitutes another recent call when an explicit session id
+    # misses (DashboardStore.find_report) - that once presented the wrong
+    # mother's card after a reconnect.
+    report = store.find_report(report_id=report_id, session_id=session_id)
+    if report is None:
+        return None
+    bundle = store.report_bundle(report)
+    mother = bundle["mother"] or {}
+    bp = bundle["bp"]
+    teleconsult = bundle["teleconsult"]
 
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
-    conn.row_factory = sqlite3.Row
-    try:
-        if report_id is not None:
-            report = conn.execute(
-                "SELECT * FROM call_reports WHERE id = ?", (report_id,)
-            ).fetchone()
-        else:
-            report = conn.execute(
-                "SELECT * FROM call_reports WHERE session_id = ? ORDER BY id DESC LIMIT 1",
-                (session_id,),
-            ).fetchone()
-        if report is None:
-            return None
-        report = dict(report)
-
-        mother = None
-        bp = None
-        teleconsult = None
-        if report.get("patient_id"):
-            row = conn.execute(
-                "SELECT * FROM mothers WHERE patient_id = ?", (report["patient_id"],)
-            ).fetchone()
-            mother = dict(row) if row else None
-            row = conn.execute(
-                "SELECT * FROM bp_records WHERE patient_id = ? ORDER BY id DESC LIMIT 1",
-                (report["patient_id"],),
-            ).fetchone()
-            bp = dict(row) if row else None
-            row = conn.execute(
-                "SELECT * FROM teleconsults WHERE patient_id = ? ORDER BY id DESC LIMIT 1",
-                (report["patient_id"],),
-            ).fetchone()
-            teleconsult = dict(row) if row else None
-    finally:
-        conn.close()
-
-    mother = mother or {}
+    # Every danger sign SymptomSet knows about, not a hand-kept five: this
+    # list previously omitted convulsions, reduced fetal movement and all
+    # seven signs the ANC rewrite added, so a fits- or fever-flagged mother's
+    # card showed no danger sign at all.
     danger_signs = [
-        label for flag, label in (
-            (mother.get("headache"), "Severe headache"),
-            (mother.get("blurry_vision"), "Blurred vision"),
-            (mother.get("swelling"), "Swelling (hands/face/legs)"),
-            (mother.get("vaginal_bleeding"), "Vaginal bleeding"),
-            (mother.get("severe_abdominal_pain"), "Severe abdominal pain / leaking fluid"),
-        ) if flag
+        name[:1].upper() + name[1:]
+        for name in SymptomSet(**{c: bool(mother.get(c)) for c in SYMPTOM_COLUMNS}).present_names
     ]
     return {
         "draft_needs_form_verification": True,
@@ -526,34 +544,89 @@ def set_report_flag(report_id: int, field: str, value: bool, flagged_by: str | N
     """Returns (ok, error). error is None on success, else a short reason string."""
     if field not in REPORT_FLAGGABLE_FIELDS:
         return False, f"not a flaggable field: {field!r}"
-    path = Path(os.getenv("SAKHI_DB_PATH", "data/sakhi.sqlite3"))
-    if not path.exists():
+    store = get_store()
+    if not store.available():
         return False, "database not created yet"
-    import sqlite3
-    from datetime import timezone
+    return store.set_report_flag(report_id, field, value, flagged_by)
 
-    conn = sqlite3.connect(str(path), timeout=5)
-    try:
-        cur = conn.execute(
-            f"UPDATE call_reports SET {field} = ?, flagged_by = ?, flagged_at = ? WHERE id = ?",
-            (int(bool(value)), flagged_by, datetime.now(timezone.utc).isoformat(timespec="seconds"), report_id),
-        )
-        conn.commit()
-        if cur.rowcount == 0:
-            return False, "report not found"
-        return True, None
-    finally:
-        conn.close()
+
+class _LineIndex:
+    """Byte offset of every complete line in an append-only log file.
+
+    The /logs cursor is a line number. Resolving it used to mean reading and
+    splitting the whole file on every poll - O(file) per request, per open
+    console, every 1.2s, on a file that only ever grows. This keeps the start
+    offset of each line and scans only bytes appended since the last call, so
+    a poll costs O(new bytes + lines returned). A file that shrank or was
+    replaced (rotation, manual truncate) is re-indexed from scratch.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._lock = threading.Lock()
+        self._reset(None)
+
+    def _reset(self, identity) -> None:
+        self._identity = identity
+        self._starts: list[int] = []   # byte offset where each complete line begins
+        self._scanned = 0              # bytes indexed; always ends on a newline
+
+    def _refresh(self, handle) -> None:
+        stat = os.fstat(handle.fileno())
+        identity = (stat.st_dev, stat.st_ino)
+        if identity != self._identity or stat.st_size < self._scanned:
+            self._reset(identity)
+        if stat.st_size == self._scanned:
+            return
+        handle.seek(self._scanned)
+        chunk = handle.read(stat.st_size - self._scanned)
+        pos = 0
+        while True:
+            newline = chunk.find(b"\n", pos)
+            if newline < 0:
+                break                  # partial last line: wait for its newline
+            self._starts.append(self._scanned + pos)
+            pos = newline + 1
+        self._scanned += pos
+
+    def line_count(self) -> int:
+        try:
+            with self._lock, self.path.open("rb") as handle:
+                self._refresh(handle)
+                return len(self._starts)
+        except FileNotFoundError:
+            with self._lock:
+                self._reset(None)
+            return 0
+
+    def read(self, since: int, limit: int) -> tuple[list[str], int]:
+        """Lines [since, since+limit) and the total complete-line count."""
+        try:
+            with self._lock, self.path.open("rb") as handle:
+                self._refresh(handle)
+                total = len(self._starts)
+                if since >= total:
+                    return [], total
+                end_line = min(total, since + limit)
+                end_byte = self._starts[end_line] if end_line < total else self._scanned
+                handle.seek(self._starts[since])
+                raw = handle.read(end_byte - self._starts[since])
+        except FileNotFoundError:
+            with self._lock:
+                self._reset(None)
+            return [], 0
+        return raw.decode("utf-8", errors="ignore").splitlines(), total
+
+
+_PIPELINE_LOG_INDEX = _LineIndex(PIPELINE_LOG_PATH)
 
 
 def _read_logs(since: int) -> dict:
-    lines = []
-    if PIPELINE_LOG_PATH.exists():
-        lines = PIPELINE_LOG_PATH.read_text(encoding="utf-8", errors="ignore").splitlines()
+    lines, total = _PIPELINE_LOG_INDEX.read(since, 250)
 
     events = []
-    next_cursor = since
-    for offset, line in enumerate(lines[since : since + 250], start=since):
+    next_cursor = min(since, total)
+    for offset, line in enumerate(lines, start=since):
         next_cursor = offset + 1
         if not line.strip():
             continue
@@ -570,7 +643,7 @@ def _read_logs(since: int) -> dict:
                     "details": {},
                 }
             )
-    return {"next": min(len(lines), next_cursor), "events": events}
+    return {"next": min(total, next_cursor), "events": events}
 
 
 def _broadcast_sse(event: dict) -> None:
@@ -676,12 +749,73 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(card)
             return
 
+        # --- Admin dashboard (2026-09-24) -------------------------------
+        # Database-backed, same backend as the worker (sakhi_dashboard_store).
+        # These return patient health data: they must only ever be reachable
+        # behind the dashboard's authentication (nginx), never publicly.
+        if parsed.path in {"/dashboard/summary", "/api/dashboard/summary"}:
+            store = get_store()
+            self._send_json({**store.summary(), "components": store.component_health()})
+            return
+        if parsed.path in {"/dashboard/health", "/api/dashboard/health"}:
+            self._send_json({"components": get_store().component_health()})
+            return
+        if parsed.path in {"/dashboard/patients", "/api/dashboard/patients"}:
+            params = parse_qs(parsed.query)
+            self._send_json({"patients": get_store().list_patients(
+                search=params.get("q", [None])[0],
+                risk=params.get("risk", [None])[0],
+                limit=params.get("limit", ["50"])[0],
+                offset=params.get("offset", ["0"])[0],
+            )})
+            return
+        if parsed.path in {"/dashboard/patient", "/api/dashboard/patient"}:
+            patient_id = parse_qs(parsed.query).get("id", [""])[0].strip()
+            if not patient_id:
+                self._send_json({"error": "id query param is required"}, status=400)
+                return
+            report = get_store().patient_report(patient_id)
+            if report is None:
+                self._send_json({"error": "patient not found"}, status=404)
+                return
+            self._send_json(report)
+            return
+        if parsed.path in {"/dashboard/turns", "/api/dashboard/turns"}:
+            session_id = parse_qs(parsed.query).get("session_id", [""])[0].strip()
+            if not session_id:
+                self._send_json({"error": "session_id query param is required"}, status=400)
+                return
+            self._send_json({"turns": get_store().call_turns(session_id)})
+            return
+        # --- AWS costs (2026-09-26): real bill from Cost Explorer, cached ---
+        if parsed.path in {"/dashboard/costs", "/api/dashboard/costs"}:
+            import sakhi_aws_costs
+            force = parse_qs(parsed.query).get("refresh", ["0"])[0] == "1"
+            self._send_json(sakhi_aws_costs.overview(force=force))
+            return
+        if parsed.path in {"/dashboard/costs/service", "/api/dashboard/costs/service"}:
+            import sakhi_aws_costs
+            params = parse_qs(parsed.query)
+            self._send_json(sakhi_aws_costs.service_detail(
+                params.get("name", [""])[0],
+                force=params.get("refresh", ["0"])[0] == "1",
+            ))
+            return
+        if parsed.path in {"/dashboard/events", "/api/dashboard/events"}:
+            params = parse_qs(parsed.query)
+            self._send_json(get_store().list_events(
+                after_id=params.get("after", ["0"])[0],
+                limit=params.get("limit", ["200"])[0],
+                session_id=params.get("session_id", [None])[0],
+                status=params.get("status", [None])[0],
+            ))
+            return
+
         if parsed.path in {"/logs", "/api/logs"}:
             params = parse_qs(parsed.query)
             raw_since = params.get("since", ["0"])[0]
             if raw_since == "latest":
-                lines = PIPELINE_LOG_PATH.read_text(encoding="utf-8", errors="ignore").splitlines() if PIPELINE_LOG_PATH.exists() else []
-                self._send_json({"next": len(lines), "events": []})
+                self._send_json({"next": _PIPELINE_LOG_INDEX.line_count(), "events": []})
                 return
             try:
                 since = max(0, int(raw_since))
@@ -738,6 +872,11 @@ class _Handler(BaseHTTPRequestHandler):
                 status = 404 if reason == "report not found" else 400
                 self._send_json({"error": reason}, status=status)
                 return
+            # A successful flag previously fell through to send_error(404)
+            # below: the write had happened, but the dashboard was told it
+            # failed. Respond explicitly.
+            self._send_json({"ok": True, "report_id": report_id, "field": field, "value": value})
+            return
 
         self.send_error(404)
 

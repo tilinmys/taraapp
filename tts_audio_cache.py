@@ -1,4 +1,8 @@
-"""Provider-agnostic disk cache for non-streaming LiveKit TTS providers.
+"""Provider-agnostic disk cache for LiveKit TTS providers.
+
+Non-streaming providers get the disk cache. Streaming providers pass straight
+through: `stream()` goes to the provider untouched (no cache), and
+`synthesize()` still checks the cache before calling the provider.
 
 The cache sits below StreamAdapter, so its input is exactly the clause sent to
 the production REST provider and its output remains LiveKit SynthesizedAudio.
@@ -122,13 +126,17 @@ async def _wait_for_cache_writes() -> None:
 
 
 class CachedTTS(tts.TTS):
-    """Cache a non-streaming provider's PCM as WAV without changing its API."""
+    """Cache a provider's PCM as WAV without changing its API.
+
+    Capabilities mirror the wrapped provider, so a streaming provider stays
+    streaming: AgentSession then calls `stream()`, which bypasses the cache.
+    """
 
     def __init__(self, provider: tts.TTS) -> None:
-        if provider.capabilities.streaming:
-            raise ValueError("CachedTTS only wraps non-streaming TTS providers")
         super().__init__(
-            capabilities=tts.TTSCapabilities(streaming=False),
+            capabilities=tts.TTSCapabilities(
+                streaming=provider.capabilities.streaming,
+            ),
             sample_rate=provider.sample_rate,
             num_channels=provider.num_channels,
         )
@@ -144,6 +152,18 @@ class CachedTTS(tts.TTS):
         self._max_entries = max(
             1, int(os.getenv("TTS_AUDIO_CACHE_MAX_ENTRIES", "2000"))
         )
+        # stream() returns the provider's own SynthesizeStream, which emits its
+        # TTSMetrics on the PROVIDER. tts.FallbackAdapter (and so AgentSession's
+        # turn_latency / TTFA telemetry) only listens on this wrapper, so relay
+        # them - measured 2026-09-25: zero TTS metrics after streaming shipped.
+        # Only streamed metrics: a synthesize() miss already reports its own
+        # metrics on this wrapper via _CachedChunkedStream.
+        if provider.capabilities.streaming:
+            provider.on("metrics_collected", self._relay_stream_metrics)
+
+    def _relay_stream_metrics(self, metrics, *args, **kwargs) -> None:
+        if getattr(metrics, "streamed", False):
+            self.emit("metrics_collected", metrics, *args, **kwargs)
 
     def __getattr__(self, name: str):
         """Delegate provider metadata used by language/voice diagnostics."""
@@ -187,6 +207,20 @@ class CachedTTS(tts.TTS):
             text=text,
             conn_options=conn_options,
         )
+
+    def stream(
+        self,
+        *,
+        conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
+    ) -> tts.SynthesizeStream:
+        # Streamed text arrives token by token, so there is no whole clause to
+        # key the cache on: hand the stream to the provider unchanged.
+        if not self._provider.capabilities.streaming:
+            raise NotImplementedError(
+                "the wrapped TTS provider does not support streaming; "
+                "use synthesize() (e.g. through tts.StreamAdapter)"
+            )
+        return self._provider.stream(conn_options=conn_options)
 
     async def aclose(self) -> None:
         await self._provider.aclose()

@@ -10,7 +10,8 @@ and goodbye - and every greeting opens with that word. It also matched a bare
 import pytest
 
 import agent
-from sakhi_domain import Language
+from sakhi_domain import Language, SakhiCallState
+from sakhi_intake import INTAKE_QUESTIONS
 
 
 # --- the greeting must never read as a goodbye ----------------------------
@@ -63,6 +64,7 @@ class _FakeAgent:
     session = None
 
     _maybe_schedule_farewell_hangup = agent.SakhiAgent._maybe_schedule_farewell_hangup
+    _state = agent.SakhiAgent._state
 
 
 def test_farewell_before_any_user_turn_is_suppressed(monkeypatch):
@@ -84,7 +86,25 @@ def test_farewell_after_a_user_turn_still_hangs_up(monkeypatch):
 
     fake = _FakeAgent()
     fake._user_has_spoken = True
+    state = SakhiCallState()
+    for question in INTAKE_QUESTIONS:
+        state.intake.mark_satisfied(question.id, "answered")
+    fake.session = type("Session", (), {"userdata": state})()
     fake._maybe_schedule_farewell_hangup(agent.goodbye_for(Language.KANNADA))
 
     assert len(called) == 1, "the scripted goodbye no longer ends the call"
     assert fake._farewell_hangup_scheduled
+
+
+def test_farewell_cannot_end_an_incomplete_screening(monkeypatch):
+    """The model saying goodbye early must not bypass the checklist guard."""
+    called = []
+    monkeypatch.setattr(agent, "schedule_hangup_after_playout", lambda s: called.append(s))
+
+    fake = _FakeAgent()
+    fake._user_has_spoken = True
+    fake.session = type("Session", (), {"userdata": SakhiCallState()})()
+    fake._maybe_schedule_farewell_hangup(agent.goodbye_for(Language.KANNADA))
+
+    assert called == []
+    assert not fake._farewell_hangup_scheduled

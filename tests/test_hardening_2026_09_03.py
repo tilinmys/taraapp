@@ -19,6 +19,8 @@ import asyncio
 
 import pytest
 
+from sakhi_intake import accepts_assent
+
 import agent
 from clinical_terms import CLINICAL_KEYWORDS, canonicalise
 from sakhi_domain import Language, SakhiCallState
@@ -33,7 +35,13 @@ def _state_with_armed(vad: str) -> SakhiCallState:
     """A call state with the first question of the given VAD class armed."""
     state = SakhiCallState()
     state.intake.arm_next()
-    while state.intake.pending_id and QUESTIONS_BY_ID[state.intake.pending_id].vad != vad:
+    # FAST fixtures mean a closed yes/no question; q02/q03/q04 are FAST but
+    # ask for a value, and a bare "yes" must not answer those
+    # (sakhi_intake.VALUE_QUESTION_IDS).
+    def _wanted(qid):
+        q = QUESTIONS_BY_ID[qid]
+        return q.vad == vad and (vad != "FAST" or accepts_assent(q))
+    while state.intake.pending_id and not _wanted(state.intake.pending_id):
         state.intake.record_answer("a genuinely substantive answer for this question")
         state.intake.arm_next()
     assert state.intake.pending_id, f"no {vad} question found in the questionnaire"

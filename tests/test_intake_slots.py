@@ -136,11 +136,14 @@ def test_five_months_answers_q02_without_looping():
     closed = state.intake.record_answer("five months")
     assert closed == "q02", "q02 must close on this turn, not stay armed"
 
-    summary_after = "intake=2/{}".format(len(INTAKE_QUESTIONS))
-    assert summary_after in state.prompt_summary()
+    # q03 (last-period date) no longer applies once the months are known.
+    state.intake.sync_applicability(state)
+    assert state.intake.answered.get("q03") == "(not applicable)"
 
     next_q = state.intake.arm_next()
-    assert next_q.id == "q03", "must move on to q03, not re-ask q02"
+    # q04, not q03: the last-period question no longer applies once months
+    # are known (it re-asked what q02 had just covered).
+    assert next_q.id == "q04", "must move on, not re-ask q02 or its q03 duplicate"
     assert state.gestational_weeks == 20
 
 

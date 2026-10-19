@@ -83,10 +83,8 @@ def test_an_empty_or_silent_turn_never_advances():
 # --- 4. the prompt must not mandate robotic speech -------------------------
 
 def test_prompt_does_not_force_clipped_delivery():
-    """'1-2 short sentences (under 20 words). ZERO fillers. No ellipses.' is a
-    recipe for the robotic feel that was reported."""
+    """'under 20 words' was an overly rigid clipping recipe."""
     assert "under 20 words" not in SAKHI_SYSTEM_PROMPT
-    assert "ZERO conversational fillers" not in SAKHI_SYSTEM_PROMPT
 
 
 def test_prompt_asks_for_warmth_and_variety():

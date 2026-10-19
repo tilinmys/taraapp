@@ -117,10 +117,64 @@ def question_text(question: "IntakeQuestion", language: str = "kannada") -> str:
     language - a missing translation degrades to "still asks the right
     clinical question", never to a blank or a crash.
     """
-    lang = str(language or "").strip().lower()
+    # Accepts the Language enum too. str(Language.HINDI) is "Language.HINDI",
+    # which matched nothing, so every caller passing state.language (the
+    # per-turn prompt, the tools) handed Hindi calls the Kannada question.
+    lang = str(getattr(language, "value", language) or "").strip().lower()
     if lang in ("hi", "hindi", "hin") and question.text_hi:
         return question.text_hi
     return question.text
+
+
+_Q01_MISSING = {
+    # (missing field) -> (kannada, hindi)
+    "name": ("ಸರಿ. ತಾಯಿಯ ಹೆಸರು ಏನು?", "ठीक है। माँ का नाम क्या है?"),
+    "age": ("ಸರಿ. ತಾಯಿಯ ವಯಸ್ಸು ಎಷ್ಟು?", "ठीक है। माँ की उम्र कितनी है?"),
+}
+
+
+def armed_question_text(question: "IntakeQuestion", state, language) -> str:
+    """What to say for the armed question, given what is already known.
+
+    q01 asks for name AND age. When one of the two has already been heard
+    (a real call, 2026-09-25: the transcript carried only "... 28 ವರ್ಷ"),
+    repeating the whole question tells the ASHA worker she was not heard at
+    all. Ask only for the part that is missing. Every other question - and
+    q01 with nothing known yet - is spoken exactly as written.
+    """
+    if question.id == "q01" and state is not None:
+        has_name = bool(getattr(state, "name", None))
+        has_age = bool(getattr(state, "age", None))
+        missing = "name" if has_age and not has_name else "age" if has_name and not has_age else None
+        lang = str(getattr(language, "value", language) or "").strip().lower()
+        if missing and lang in ("kn", "kannada", "hi", "hindi", "hin"):
+            kn, hi = _Q01_MISSING[missing]
+            return hi if lang.startswith("hi") else kn
+    return question_text(question, language)
+
+
+def question_for_model(question: "IntakeQuestion", language) -> str:
+    """The next question as handed to the MODEL in a tool result: the
+    written wording where it exists, otherwise the Kannada meaning with an
+    explicit instruction to say it in the call's language - an English call
+    was hearing the Kannada text read out verbatim."""
+    if has_localised_text(question, language):
+        return question_text(question, language)
+    lang = str(getattr(language, "value", language) or "").strip().lower()
+    name = {"en": "English", "english": "English", "hi": "Hindi", "hindi": "Hindi"}.get(lang, "the call language")
+    return f"(say this in {name}, never in Kannada) {question.text}"
+
+
+def has_localised_text(question: "IntakeQuestion", language) -> bool:
+    """Is there written wording for this question in this language? Kannada
+    always; Hindi where text_hi exists; English not yet (the model phrases
+    English questions from the Kannada meaning)."""
+    lang = str(getattr(language, "value", language) or "").strip().lower()
+    if lang in ("kn", "kannada"):
+        return True
+    if lang in ("hi", "hindi", "hin"):
+        return bool(question.text_hi)
+    return False
 
 
 # The 7-stage ANC field protocol (2026-09-02). Replaces the previous
@@ -180,191 +234,117 @@ def _fhr_applicable(state) -> bool:
     return weeks is None or weeks >= 20
 
 
+def _fetal_movement_applicable(state) -> bool:
+    """Fetal movements only apply from 24 weeks gestation.
+    Skip if gestational age is under 24 weeks.
+    Unknown gestation is treated as applicable (ask it).
+    """
+    weeks = getattr(state, "gestational_weeks", None)
+    return weeks is None or weeks >= 24
+
+
 # Declared in the order each stage's content reads most naturally; the actual
 # call/prompt order is never taken from this declaration position - see
 # INTAKE_QUESTIONS below, which sorts by `stage` so a question can be added
 # near the content it belongs with without having to also relocate it inside
-# the tuple by hand. New IDs (q18 and up) were chosen so no existing test or
-# frontend reference to an existing id needed to change.
+# the tuple by hand.
 _RAW_QUESTIONS: tuple[IntakeQuestion, ...] = (
-    # --- Stage 1: Basic Intake (North Kannada vernacular) ----------------
-    # Name and age ONLY. No Thayi card number, no RCH ID, no Aadhaar, no
-    # identity document of any kind: an ASHA worker standing in a doorway
-    # does not have the card in her hand, and gating an ANC screening on a
-    # number she has to go and find is how a call gets abandoned before the
-    # BP is ever taken.
+    # --- Block 1 / Stage 1 & 2: Demographics & Pregnancy History ---------
     IntakeQuestion("q01", SECTION_1,
-        "ತಾಯಿಯ ಹೆಸರು ಮತ್ತು ವಯಸ್ಸು ಹೇಳಿ ಅಕ್ಕಾ", "SLOW", "identity", stage=1,
+        "ತಾಯಿಯ ಹೆಸರು ಮತ್ತು ವಯಸ್ಸು ಎಷ್ಟು?", "SLOW", "identity", stage=1,
         text_hi="माता का नाम और उम्र बताइए दीदी"),
 
-    # --- Stage 2: Obstetric History & Gestation (Bidari dialect) ----------
     IntakeQuestion("q02", SECTION_2,
-        "ಈಗ ಯಾವಟು ತಿಂಗಳು ಗರ್ಭವಿದೆ?", "FAST", "gestational_weeks", stage=2,
-        text_hi="अभी कितने महीने की गर्भवती है?"),
+        "ಕೊನೆಯ ಮುಟ್ಟಿನ ದಿನಾಂಕ ಅಥವಾ ಹೆರಿಗೆಯ ಅಂದಾಜು ದಿನಾಂಕ ಯಾವಾಗ? ಈಗ ಎಷ್ಟು ತಿಂಗಳು ಅಥವಾ ವಾರಗಳು?",
+        "FAST", "gestational_weeks", stage=2,
+        text_hi="आखिरी माहवारी की तारीख या प्रसव की संभावित तारीख कब है? अभी कितने महीने या हफ्ते हैं?"),
+    # Only when q02's answer gave no gestational age. q02 already asks
+    # "LMP or EDD, and how many months or weeks"; asking "when was the last
+    # period?" straight after "six months" is heard as the same question
+    # twice (live-LLM scenarios, 2026-09-24).
     IntakeQuestion("q03", SECTION_2,
-        "ಕೊನೆಯ ಮತ್ತಿನ ದಿನ ಯಾವಾಗ?", "FAST", stage=2,
-        text_hi="आखिरी माहवारी की तारीख कब थी?"),
-    # REVISED (2026-09-10): the source PDF's header field is "Gravida/Para"
-    # (times pregnant AND times delivered) as one combined item, not
-    # pregnancy-count alone. Text updated to ask both in one question rather
-    # than adding a second id for "para" - matches the form's own bundling
-    # and keeps the questionnaire from growing by one more question for a
-    # fact that's naturally answered in the same breath.
-    #
-    # Earlier DRAFT note (2026-09-09) on this id, kept for history: the
-    # source text here had literal Latin "ide" where a Kannada word should be
-    # ("ಗರ್ಭವide?") - not a rendering issue, confirmed byte-for-byte. That
-    # reconstruction is superseded by this revision, not layered under it.
+        "ಕೊನೆಯ ಮುಟ್ಟಿನ ದಿನಾಂಕ ಯಾವಾಗ?", "FAST", stage=2,
+        text_hi="आखिरी माहवारी की तारीख कब थी?",
+        applicable_if=lambda state: not getattr(state, "gestational_weeks", None)),
     IntakeQuestion("q04", SECTION_2,
-        "ಮುಂಚೆ ಎಷ್ಟು ಸಲ ಗರ್ಭ ಆಗಿತ್ತು, ಎಷ್ಟು ಹೆರಿಗೆ ಆಗಿದೆ?", "FAST", stage=2,
-        text_hi="पहले कितनी बार गर्भवती हुई थीं, कितनी बार प्रसव हुआ?"),
-    # REVISED (2026-09-10): broadened from "prior C-section only" to also
-    # cover "or another major pregnancy complication", matching the source
-    # PDF's own header field ("Previous cesarean / major pregnancy
-    # complication: Yes/No") rather than just the surgical-delivery half of it.
+        "ಇದು ಎಷ್ಟನೇ ಗರ್ಭಧಾರಣೆ? ಈ ಮೊದಲು ಎಷ್ಟು ಮಕ್ಕಳು ಜನಿಸಿದ್ದಾರೆ?", "FAST", stage=2,
+        text_hi="यह कौन सा गर्भ है? पहले कितने बच्चे जन्मे हैं?"),
     IntakeQuestion("q05", SECTION_2,
-        "ಮುಂಚೆ ಪ್ರಸವ ಆಪರೇಷನ್ ಆಗಿದೆಯ ಅಥವಾ ಬೇರೆ ಗಂಭೀರ ಸಮಸ್ಯೆ ಆಗಿತ್ತಾ?", "FAST", stage=2,
-        text_hi="पहले ऑपरेशन से प्रसव हुआ था, या कोई और गंभीर समस्या हुई थी?"),
-    # NEW (2026-09-10): the PDF's header also asks conception mode
-    # (spontaneous / IVF) - a quick FAST yes/no, not gated on anything.
+        "ಹಿಂದಿನ ಹೆರಿಗೆಗಳಲ್ಲಿ ಸಿ-ಸೆಕ್ಷನ್, ಅಧಿಕ ರಕ್ತಸ್ರಾವ, ಅಥವಾ ಬೇರೆ ತೊಂದರೆಗಳು ಆಗಿದ್ದವಾ?", "FAST", stage=2,
+        text_hi="पहले के प्रसव में सी-सेक्शन, अधिक रक्तस्राव, या कोई और समस्या हुई थी?"),
     IntakeQuestion("q21", SECTION_2,
-        "ಗರ್ಭ ಸಹಜವಾಗಿ ಆಯ್ತೋ ಅಥವಾ ಟ್ರೀಟ್ಮೆಂಟ್ (ಐ.ವಿ.ಎಫ್) ತಗೊಂಡಿದ್ಯಾ?", "FAST", stage=2,
-        text_hi="गर्भ सामान्य रूप से ठहरा या इलाज (आई.वी.एफ) से?"),
+        "ಇದು ನೈಸರ್ಗಿಕ ಗರ್ಭಧಾರಣೆಯಾ ಅಥವಾ IVF ಚಿಕಿತ್ಸೆ ಪಡೆದಿದ್ದಾರಾ?", "FAST", stage=2,
+        text_hi="यह प्राकृतिक गर्भ है या आई.वी.एफ इलाज करवाया था?"),
 
-    # --- Stage 3: Vitals & Nutrition (Field-friendly phrasing) -----------
+    # --- Block 4 / Stage 3: Clinical Vitals & Labs (CHECK) ---------------
     IntakeQuestion("q06", SECTION_VITALS,
-        "ರಕ್ತದೊತ್ತಡ ಎಷ್ಟು?", "FAST", "blood_pressure", stage=3,
-        text_hi="रक्तचाप कितना है?"),
+        "ತಾಯಿಯ ಇಂದಿನ ಬಿಪಿ ಎಷ್ಟು ದಾಖಲಾಗಿದೆ?", "FAST", "blood_pressure", stage=3,
+        text_hi="आज का रक्तचाप कितना दर्ज हुआ है?"),
     IntakeQuestion("q07", SECTION_VITALS,
-        "ಈಗ ತಾಯಿಯ ತೂಕ ಎಷ್ಟು?", "FAST", stage=3,
-        text_hi="अभी माता का वजन कितना है?"),
-    # DRAFT (2026-09-09): the source text had literal CYRILLIC characters
-    # spliced into a Kannada word ("ತказыва") - confirmed byte-for-byte, not
-    # a display artifact. Reconstructed to "ಕಬ್ಬಿಣಾಂಶ ಗುಳಿಗೆ ತಪ್ಪದೆ
-    # ತಿನ್ನುತ್ತಿದ್ದಾಳಾ?" (is she taking the iron tablets without fail) -
-    # needs native-speaker/clinician confirmation before treating as final.
+        "ತಾಯಿಯ ತೂಕ ಎಷ್ಟು ಕೆಜಿ ಇದೆ?", "FAST", stage=3,
+        text_hi="माता का वजन कितने किलो है?"),
     IntakeQuestion("q08", SECTION_VITALS,
         "ಕಬ್ಬಿಣಾಂಶ ಗುಳಿಗೆ ತಪ್ಪದೆ ತಿನ್ನುತ್ತಿದ್ದಾಳಾ?", "FAST", stage=3,
         text_hi="आयरन की गोली रोज बिना चूके खा रही है क्या?"),
-    # NEW (2026-09-10): PDF CHECK item - pallor / edema. A provider-observed
-    # sign, not a mother-reported danger symptom, so it is recorded via
-    # record_anc_checkpoint (parameter="pallor_edema"), not a SymptomSet
-    # field - see sakhi_tools.py.
     IntakeQuestion("q24", SECTION_VITALS,
-        "ಕಣ್ಣು ಅಥವಾ ಮೈ ಬಿಳಿಚಿಕೊಂಡಂಗ ಕಾಣ್ತಿದ್ಯಾ, ಅಥವಾ ಕಾಲು ಊತ ಇದ್ಯಾ?", "FAST", stage=3,
-        text_hi="आँख या शरीर पीला दिख रहा है, या पैर में सूजन है क्या?"),
-    # NEW (2026-09-10): PDF CHECK item - fetal heart rate. Conditionally
-    # applicable only from 20 weeks (_fhr_applicable) - the one question in
-    # this rewrite that actually uses the new applicable_if mechanism.
-    # Recorded via record_anc_checkpoint(parameter="fetal_heart_rate"), not a
-    # dedicated tool - this is a recorded fact the triage engine does not
-    # branch on.
+        "ಕಣ್ಣು ಅಥವಾ ಉಗುರುಗಳಲ್ಲಿ ರಕ್ತಹೀನತೆ (ಬಿಳುಪು), ಅಥವಾ ಪಾದಗಳಲ್ಲಿ ಊತ ಕಂಡುಬಂದಿದೆಯಾ?", "FAST", stage=3,
+        text_hi="आँख या नाखूनों में खून की कमी, या पैरों में सूजन दिखी है क्या?"),
     IntakeQuestion("q25", SECTION_VITALS,
-        "ಕುಸುವಿನ ಎದೆಬಡಿತ ಪರೀಕ್ಷೆ ಮಾಡಿದ್ಯಾ, ಎಷ್ಟಿತ್ತು?", "FAST", stage=3,
-        text_hi="बच्चे की धड़कन जांची क्या, कितनी थी?",
+        "ಮಗುವಿನ ಹೃದಯ ಬಡಿತ (FHR) ಪರೀಕ್ಷೆ ಮಾಡಲಾಗಿದೆಯಾ? ಎಷ್ಟಿದೆ?", "FAST", stage=3,
+        text_hi="बच्चे की धड़कन (एफ.एच.आर) जांची क्या, कितनी है?",
         applicable_if=_fhr_applicable),
 
-    # --- Stage 4: High-Risk Red-Flag Screening (Pre-eclampsia focus) ------
-    # These mirror the source PDF's own ASK section, in its order: bleeding/
-    # leaking/pain/contractions; fetal movement; headache/vision/swelling/
-    # upper-abdominal-pain; fever/urinary/breathless/palpitations/vomiting;
-    # chronic disease history; medications/allergies. Convulsions (q11) is
-    # kept even though the PDF's ASK section doesn't list it directly (its
-    # own RED FLAGS list does) - dropping an existing, safety-critical Tier-1
-    # screening question because the source form structures it differently
-    # would be a regression, not fidelity to the form.
-    #
-    # REVISED (2026-09-10): was headache/blurred-vision only. Swelling was
-    # previously only ever picked up by passive deterministic detection if
-    # mentioned unprompted - never actually asked. Upper abdominal pain is
-    # new (see sakhi_domain.SymptomSet.upper_abdominal_pain) - clinically
-    # distinct from labor-type abdominal pain (q10), it is the epigastric-
-    # pain signal associated with pre-eclampsia/HELLP.
+    # --- Block 2 & 3 / Stage 4: Symptom Screen & Medical History ---------
     IntakeQuestion("q09", SECTION_REDFLAG,
-        "ತಲೆನೋವು, ಕಣ್ಣು ಮಂಜು, ಊತ ಅಥವಾ ಹೊಟ್ಟೆಯ ಮೇಲ್ಭಾಗದಲ್ಲಿ ನೋವು ಇದೆಯ?",
+        "ತೀವ್ರ ತಲೆನೋವು, ಕಣ್ಣು ಮಂಜಾಗುವುದು, ಅಥವಾ ಮುಖ ಕೈಕಾಲುಗಳಲ್ಲಿ ಊತ ಇದೆಯಾ?",
         "FAST", "symptoms_screened", stage=4,
-        text_hi="सिरदर्द, धुंधला दिखना, सूजन, या पेट के ऊपरी हिस्से में दर्द है क्या?"),
-    # REVISED (2026-09-10): was bleeding/leaking-fluid only. Contractions
-    # added (sakhi_domain.SymptomSet.contractions) and abdominal pain named
-    # explicitly, matching the PDF's first ASK item exactly.
+        text_hi="तेज सिरदर्द, धुंधला दिखना, या चेहरे-हाथ-पैरों में सूजन है क्या?"),
     IntakeQuestion("q10", SECTION_REDFLAG,
-        "ರಕ್ತಸ್ರಾವ, ನೀರು ಹೋಗೋದು, ಹೊಟ್ಟೆ ನೋವು ಅಥವಾ ಸಂಕೋಚನ ಆಗ್ತಿದೆಯ?", "FAST", stage=4,
-        text_hi="खून बहना, पानी जाना, पेट दर्द, या संकुचन हो रहा है क्या?"),
+        "ಈಗ ತಾಯಿಗೆ ಹೊಟ್ಟೆ ನೋವು, ರಕ್ತಸ್ರಾವ, ಅಥವಾ ನೀರಿನಂಶ ಹೋಗುವ ತೊಂದರೆ ಇದೆಯಾ?", "FAST", stage=4,
+        text_hi="अभी पेट दर्द, रक्तस्राव, या पानी जाने की तकलीफ है क्या?"),
     IntakeQuestion("q11", SECTION_REDFLAG,
         "ಫಿಟ್ಸ್ ಅಥವಾ ಸೆಳೆತ ಆಗಿದೆಯ?", "FAST", stage=4,
         text_hi="दौरा या झटके आए हैं क्या?"),
-    # REVISED (2026-09-10): rephrased to the PDF's direct "are movements
-    # normal?" framing. Same field (reduced_fetal_movement); self-negating,
-    # unchanged detection logic.
     IntakeQuestion("q12", SECTION_REDFLAG,
-        "ಕುಸು ಆಟ ಸರಿಯಾಗಿ ಆಡ್ತಿದ್ಯಾ?", "FAST", stage=4,
-        text_hi="बच्चे की हलचल ठीक से हो रही है क्या?"),
-    # NEW (2026-09-10): bundles the PDF's 4th ASK item. Five new SymptomSet
-    # fields - see sakhi_domain.py and sakhi_triage.py for how fever and
-    # breathlessness (Tier-1 per the user's explicit choice) differ from the
-    # other three (which contribute to the existing "symptomatic" bucket
-    # only, same treatment as headache/blurry_vision today).
+        "ಮಗುವಿನ ಚಲನೆ ಸರಿಯಾಗಿ ಗೊತ್ತಾಗುತ್ತಿದೆಯಾ?", "FAST", stage=4,
+        text_hi="बच्चे की हलचल ठीक से महसूस हो रही है क्या?",
+        applicable_if=_fetal_movement_applicable),
     IntakeQuestion("q18", SECTION_REDFLAG,
-        "ಜ್ವರ, ಮೂತ್ರದ ತೊಂದರೆ, ಉಸಿರಾಟದ ತೊಂದರೆ, ಎದೆ ಢವಢವ ಅಥವಾ ವಿಪರೀತ ವಾಂತಿ ಆಗ್ತಿದೆಯ?",
+        "ಜ್ವರ, ತೀವ್ರ ವಾಂತಿ, ಅಥವಾ ಉಸಿರಾಟದ ತೊಂದರೆ ಏನಾದರೂ ಇದೆಯಾ?",
         "FAST", stage=4,
-        text_hi="बुखार, पेशाब में तकलीफ, सांस लेने में तकलीफ, धड़कन तेज होना, या बहुत ज्यादा उल्टी हो रही है क्या?"),
-    # NEW (2026-09-10): known chronic disease history (PDF's 5th ASK item).
-    # SLOW because a real answer names which condition(s), not yes/no.
-    # Recorded via record_anc_checkpoint(parameter="chronic_disease") - a
-    # history fact for the record, deliberately NOT wired into automated
-    # triage in this pass (a real disease-specific risk-modifier ruleset is
-    # a separate, larger clinical-calibration project - see sakhi_triage.py).
+        text_hi="बुखार, तेज उल्टी, या सांस लेने में कोई तकलीफ है क्या?"),
     IntakeQuestion("q19", SECTION_REDFLAG,
-        "ಸಕ್ಕರೆ ಕಾಯಿಲೆ, ರಕ್ತದೊತ್ತಡ, ಥೈರಾಯ್ಡ್, ಫಿಟ್ಸ್ ಕಾಯಿಲೆ, ಹೃದಯ ಅಥವಾ ಬೇರೆ ದೀರ್ಘಕಾಲದ ಕಾಯಿಲೆ ಇದೆಯ?",
+        "ತಾಯಿಗೆ ಮೊದಲಿನಿಂದ ಶುಗರ್, ಬಿಪಿ, ಥೈರಾಯ್ಡ್, ಅಥವಾ ಫಿಟ್ಸ್ ತೊಂದರೆ ಇದೆಯಾ?",
         "SLOW", stage=4,
-        text_hi="शुगर, रक्तचाप, थायरॉइड, मिर्गी, दिल या कोई और पुरानी बीमारी है क्या?"),
-    # NEW (2026-09-10): current medications/supplements/allergies (PDF's 6th
-    # ASK item). Same treatment as q19 - recorded, not triage-wired.
+        text_hi="माता को पहले से शुगर, बीपी, थायरॉइड, या मिर्गी की समस्या है क्या?"),
     IntakeQuestion("q20", SECTION_REDFLAG,
-        "ಈಗ ಯಾವುದಾದ್ರೂ ಔಷಧಿ, ಪೂರಕ ಗುಳಿಗೆ ತಗೊಳ್ತಿದ್ದಾಳಾ, ಅಥವಾ ಯಾವುದಾದ್ರೂ ಔಷಧಿಗೆ ಅಲರ್ಜಿ ಇದೆಯ?",
+        "ಈಗ ಯಾವುದಾದರೂ ಮಾತ್ರೆಗಳನ್ನು ತೆಗೆದುಕೊಳ್ಳುತ್ತಿದ್ದಾರಾ? ಯಾವುದಾದರೂ ಔಷಧಿಯಿಂದ ಅಲರ್ಜಿ ಇದೆಯಾ?",
         "SLOW", stage=4,
-        text_hi="अभी कोई दवा, सप्लीमेंट ले रही है, या किसी दवा से एलर्जी है क्या?"),
+        text_hi="अभी कोई दवाइयां ले रही हैं? किसी दवाई से एलर्जी है क्या?"),
 
-    # --- Stage 5: Scans & Tetanus (Local facility references) ------------
+    # --- Stage 5: Scans & Labs -------------------------------------------
     IntakeQuestion("q13", SECTION_SCANS,
-        "ಸ್ಕ್ಯಾನ್ ಮಾಡಿದೆಯ? (ಬಿ.ಆರ್.ಆಯ.ಎಂ.ಎಸ್/ತಾಲುಕ ಆಸ್ಪತ್ರೆ)", "FAST", stage=5,
-        text_hi="स्कैन करवाया है क्या? (बी.आर.आई.एम.एस/तालुक अस्पताल में)"),
+        "ಸ್ಕ್ಯಾನ್ ಮಾಡಿದೆಯ? (ಬಿ.ಆರ್.ಐ.ಎಂ.ಎಸ್ ಅಥವಾ ತಾಲೂಕು ಆಸ್ಪತ್ರೆ)", "FAST", stage=5,
+        text_hi="स्कैन करवाया है क्या? (बी.आर.आई.एम.एस या तालुक अस्पताल में)"),
     IntakeQuestion("q14", SECTION_SCANS,
         "ಎರಡು ಧನುರ್ವಾತ ಚುಚ್ಚುಮದ್ದು ತೆಗೆದೆಯ?", "FAST", stage=5,
         text_hi="धनुर्वात के दोनों इंजेक्शन लगवाए हैं क्या?"),
-    # NEW (2026-09-10): PDF CHECK item - review of latest Hb/blood-group/
-    # glucose/ultrasound results. SLOW and phrased so "report not available
-    # yet" is a complete, valid answer, not a failure - an ASHA worker in the
-    # field frequently does not have the paper report in hand.
     IntakeQuestion("q26", SECTION_SCANS,
-        "ಹಿಮೋಗ್ಲೋಬಿನ್, ಬ್ಲಡ್ ಗ್ರೂಪ್, ಸಕ್ಕರೆ ಪರೀಕ್ಷೆ ವರದಿ ಕೈಲಿದ್ಯಾ? ಇದ್ರೆ ಹೇಳಿ.", "SLOW", stage=5,
-        text_hi="हीमोग्लोबिन, ब्लड ग्रुप, शुगर टेस्ट की रिपोर्ट हाथ में है क्या? हो तो बताइए।"),
+        "ಇತ್ತೀಚಿನ ರಕ್ತ ಪರೀಕ್ಷೆಯಲ್ಲಿ ಹಿಮೋಗ್ಲೋಬಿನ್ (Hb) ಮತ್ತು ಶುಗರ್ ವರದಿ ಎಷ್ಟಿದೆ?", "SLOW", stage=5,
+        text_hi="हाल की जांच में हीमोग्लोबिन और शुगर की रिपोर्ट कितनी है?"),
 
-    # --- Stage 6: Birth Preparedness (Bidar context) ---------------------
-    # DRAFT (2026-09-09): "ನರ್ಸowę?" had a literal Polish-looking suffix
-    # spliced in - confirmed byte-for-byte. Reconstructed to "ಪ್ರಸವಕ್ಕೆ
-    # ಆಸ್ಪತ್ರೆಯಲ್ಲಿ ಡಾಕ್ಟರ್ ನರ್ಸ್ ಇದ್ದಾರಾ?" (for the delivery, is a doctor/
-    # nurse available at the hospital) - needs native-speaker/clinician
-    # confirmation before treating as final.
+    # --- Stage 6: Birth Preparedness -------------------------------------
     IntakeQuestion("q15", SECTION_BIRTHPREP,
         "ಪ್ರಸವಕ್ಕೆ ಆಸ್ಪತ್ರೆಯಲ್ಲಿ ಡಾಕ್ಟರ್ ನರ್ಸ್ ಇದ್ದಾರಾ?", "SLOW", stage=6,
         text_hi="प्रसव के लिए अस्पताल में डॉक्टर नर्स मौजूद हैं क्या?"),
-    # DRAFT (2026-09-09): "ಮಾಡbildung" had literal GERMAN spliced in -
-    # confirmed byte-for-byte. Reconstructed to "ನೂರನೆಂಟು (108) ಗಾಡಿ ಕರೆ
-    # ಮಾಡುವ ವ್ಯವಸ್ಥೆ ಇದೆಯ?" (is there an arrangement to call the 108
-    # ambulance) - needs native-speaker/clinician confirmation.
     IntakeQuestion("q16", SECTION_BIRTHPREP,
         "ನೂರನೆಂಟು (108) ಗಾಡಿ ಕರೆ ಮಾಡುವ ವ್ಯವಸ್ಥೆ ಇದೆಯ?", "FAST", stage=6,
         text_hi="एक सौ आठ (108) गाड़ी बुलाने की व्यवस्था है क्या?"),
 
-    # --- Stage 7: Confirmation & Close -----------------------------------
-    # DRAFT (2026-09-09): "nàoದ್ದು" had a literal Vietnamese word spliced
-    # in - confirmed byte-for-byte. Reconstructed to "ತಾಯಿ ಬಗ್ಗೆ ಇನ್ನೇನಾದ್ರೂ
-    # ಹೇಳಬೇಕಾದ್ರು?" (anything else to say about the mother) - needs native-
-    # speaker/clinician confirmation before treating as final.
+    # --- Block 5 / Stage 7: Closing & Summary ----------------------------
     IntakeQuestion("q17", SECTION_CLOSE,
-        "ತಾಯಿ ಬಗ್ಗೆ ಇನ್ನೇನಾದ್ರೂ ಹೇಳಬೇಕಾದ್ರು?", "SLOW", stage=7,
-        text_hi="माता के बारे में और कुछ बताना है क्या?"),
+        "ಧನ್ಯವಾದಗಳು. ಎಲ್ಲಾ ವಿವರಗಳನ್ನು ಯಶಸ್ವಿಯಾಗಿ ದಾಖಲಿಸಲಾಗಿದೆ. ನಾನು ಈ ಮಾಹಿತಿಯನ್ನು ಪ್ರಾಥಮಿಕ ಆರೋಗ್ಯ ಕೇಂದ್ರದ ವೈದ್ಯರಿಗೆ ಕಳುಹಿಸುತ್ತಿದ್ದೇನೆ.", "SLOW", stage=7,
+        text_hi="धन्यवाद। सभी विवरण सफलतापूर्वक दर्ज कर लिए गए हैं। मैं यह जानकारी डॉक्टर को भेज रही हूँ।"),
 )
 
 # Runtime order is sorted by stage, NOT by declaration position above -
@@ -382,28 +362,38 @@ QUESTIONS_BY_ID = {q.id: q for q in INTAKE_QUESTIONS}
 assert len(QUESTIONS_BY_ID) == len(INTAKE_QUESTIONS), "duplicate intake question id"
 
 
-def render_inventory(language: str = "kannada") -> str:
+def render_inventory(language: str = "kannada", stage: int | None = None) -> str:
     """The prompt's question list, generated from the questionnaire itself.
 
-    The prompt used to carry its own hand-typed copy of these lines. Two
-    copies of a clinical protocol drift, and the one the model reads is not
-    the one the code tracks. Grouped by ANC stage (2026-09-02) so the model
-    reads the protocol in the same 7-stage shape the state block reports its
-    position in.
-
-    `language` (2026-09-10) selects which per-question text column is
-    rendered - see `question_text()`. Defaults to Kannada so every existing
-    call site that never passed a language keeps behaving exactly as before.
+    If stage is specified (1-7), renders only the questions for that active stage,
+    reducing token count from ~1,200 tokens to <150 tokens.
     """
     lines: list[str] = []
     current_stage = None
-    for index, question in enumerate(INTAKE_QUESTIONS, start=1):
+    questions = [q for q in INTAKE_QUESTIONS if stage is None or q.stage == stage]
+    for index, question in enumerate(questions, start=1):
         if question.stage != current_stage:
             current_stage = question.stage
             lines.append(f"## {stage_name(current_stage)}")
         text = question_text(question, language)
         lines.append(f'{index}. "{text}" [VAD: {question.vad}]')
     return "\n".join(lines)
+
+
+# FAST questions that ask for a VALUE (name, months, a date, a count, a
+# reading) rather than yes/no. FAST only says "short answer expected"; a bare
+# "ಹೂಂ" / "yes" is not a date. Live-LLM scenario 2026-09-24: "ಹೂಂ" closed q03
+# (last-period date) and the checklist moved on with nothing recorded.
+VALUE_QUESTION_IDS = frozenset({"q01", "q02", "q03", "q04", "q06", "q07", "q26"})
+
+
+def accepts_assent(question: "IntakeQuestion | None") -> bool:
+    """Can a one-word yes/no answer this question?"""
+    return (
+        question is not None
+        and question.vad.upper() == "FAST"
+        and question.id not in VALUE_QUESTION_IDS
+    )
 
 
 def is_assent(text: str) -> bool:
@@ -472,6 +462,9 @@ class IntakeProgress:
         # the only things that can satisfy these.
         if getattr(state, "gestational_weeks", None):
             self.mark_satisfied("q02", f"~{state.gestational_weeks} weeks")
+        checkpoints = getattr(state, "anc_checkpoints", {}) or {}
+        if "gravida" in checkpoints:
+            self.mark_satisfied("q04", f"ಗರ್ಭಧಾರಣೆ {checkpoints['gravida']}")
         if getattr(state, "blood_pressure", None):
             self.mark_satisfied("q06", str(state.blood_pressure))
         if getattr(state, "symptoms_screened", False):
@@ -606,36 +599,158 @@ class IntakeProgress:
         re.IGNORECASE,
     )
 
+    # --- Typed answer schemas (2026-09-25) ------------------------------
+    # Turn 6: "I am the network protocols right now" closed a clinical
+    # question. Each question type now needs evidence of an answer; a reject
+    # still feeds record_answer()'s stall-escape, so a question is re-asked
+    # at most STALL_LIMIT times - never forever.
+    #
+    # q01/q02/q04 are owned by typed detectors (agent._pending_answer_matches).
+    _TYPED_DETECTOR_IDS = frozenset({"q01", "q02", "q04"})
+    # BP and weight: need a number or an explicit "not measured / not known".
+    # (q03 dates and q26 lab reports arrive in too many shapes - "since
+    # Monday", "report not come yet" - and stay on the general rule.)
+    _QUANTITATIVE_IDS = frozenset({"q06", "q07"})
+
+    # Indic address/filler words - stripped only AFTER polarity is checked,
+    # because "ಇಲ್ಲ ಅಕ್ಕ" (no, sister) is the commonest real answer there is.
+    _INDIC_FILLER_WORDS = frozenset({
+        "ಅಕ್ಕ", "ಅಕ್ಕಾ", "ಅಂದರೆ", "ಅದೇ", "ಹ್ಮ್", "ಹೂಂ", "ಹೌದು", "ಇಲ್ಲ",
+        "ನಮಸ್ಕಾರ", "ನಮಸ್ತೆ", "ಹಲೋ", "नमस्ते", "नमस्कार", "दीदी", "जी",
+        # Bare "ಎಲ್ಲಾ" (all) is how STT has written a spoken "ಇಲ್ಲ" (no) - live
+        # call 2026-09-28, closing two danger-screening questions (q10, q18)
+        # on an answer that means nothing. Alone it is re-asked; "ಎಲ್ಲಾ ಸರಿ"
+        # (all fine) still answers through the polarity check.
+        "ಎಲ್ಲಾ", "ಎಲ್ಲ",
+    })
+    # Words, not \w runs: \w stops at Kannada/Devanagari vowel signs, so
+    # "ಅಕ್ಕ" came out as fragments and never matched a filler.
+    _WORD_RE = re.compile(r"[\w'ಀ-೿ऀ-ॿ]+", re.UNICODE)
+
+    # Yes/no evidence: the words, and Kannada/Hindi finite-verb endings
+    # ("ತಿನ್ನುತ್ತಿದ್ದಾಳೆ", "ಮಾಡಿಸಿದ್ದಾರೆ", "ಆಗಿಲ್ಲ", "हुआ है").
+    _POLARITY_RE = re.compile(
+        r"ಹೌದು|ಇಲ್ಲ|ಹೂಂ|ಹಾಂ|ಹೂ(?![ಀ-೿])|ಇದೆ|ಇತ್ತು|ಆಗಿದೆ|ಆಗಿತ್ತು|ಆಯ್ತು|ಆಯಿತು|ಸರಿ"
+        r"|(?:ದ್ದಾರೆ|ದ್ದಾಳೆ|ದ್ದೇನೆ|ತ್ತಾರೆ|ತ್ತಾಳೆ|ತ್ತಿದೆ|ತಿದ್ದಾಳೆ|ತಿದ್ದಾರೆ|ಿಲ್ಲ|ಿದೆ|ಿತ್ತು|ಾಳೆ|ಾರೆ|ತು)(?![ಀ-೿])"
+        r"|हाँ|हां|जी|नहीं|नही|है|हैं|था|थी|हुआ|हुई|चुकी|चुका"
+        r"|(?<![a-z])(?:yes|no|not|done|normal|never)(?![a-z])",
+        re.IGNORECASE,
+    )
+    _NUMBER_RE = re.compile(
+        r"\d"
+        r"|(?<![ಀ-೿])(?:ಒಂದು|ಎರಡು|ಮೂರು|ನಾಲ್ಕು|ಐದು|ಆರು|ಏಳು|ಎಂಟು|ಒಂಬತ್ತು|ಹತ್ತ|ಇಪ್ಪತ್"
+        # tens as stems: spoken "ಐವತ್ನಾಲ್ಕು" (54) drops the ತ್ತ of "ಐವತ್ತು"
+        r"|ಮೂವತ್|ನಲವತ್|ನಲ್ವತ್|ಐವತ್|ಅರವತ್|ಎಪ್ಪತ್|ಎಂಬತ್|ತೊಂಬತ್|ನೂರ|ಇನ್ನೂರ)"
+        # a unit is itself a reading: "ಐವತ್ನಾಲ್ಕು ಕೆಜಿ", "ಸುಮಾರು ಕಿಲೋ"
+        r"|ಕೆಜಿ|ಕಿಲೋ|किलो|केजी|(?<![a-z])kgs?(?![a-z])"
+        r"|ಜನವರಿ|ಫೆಬ್ರವರಿ|ಮಾರ್ಚ್|ಏಪ್ರಿಲ್|ಜೂನ್|ಜುಲೈ|ಆಗಸ್ಟ್|ಸೆಪ್ಟೆಂಬರ್|ಅಕ್ಟೋಬರ್|ನವೆಂಬರ್|ಡಿಸೆಂಬರ್|ತಾರೀಖು"
+        r"|(?<![ऀ-ॿ])(?:एक|दो|तीन|चार|पांच|पाँच|छह|सात|आठ|नौ|दस|बीस|तीस|चालीस|पचास|साठ|सत्तर|अस्सी|नब्बे|सौ)(?![ऀ-ॿ])"
+        r"|(?<![a-z])(?:one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|hundred"
+        r"|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)",
+        re.IGNORECASE,
+    )
+    # "BP not taken", "report not come yet", "don't know" are complete answers.
+    _NOT_AVAILABLE_RE = re.compile(
+        r"ಗೊತ್ತಿಲ್ಲ|ಮಾಡಿಲ್ಲ|ಮಾಡಿಸಿಲ್ಲ|ಬಂದಿಲ್ಲ|ಆಗಿಲ್ಲ|ನೋಡಿಲ್ಲ|ಇನ್ನೂ"
+        r"|पता नहीं|नहीं पता|नहीं हुआ|नहीं किया|अभी नहीं|नहीं आई|नहीं आया"
+        r"|not (?:done|taken|known|available|yet)|don'?t know|unknown",
+        re.IGNORECASE,
+    )
+    # Clinical English that may legitimately arrive in Latin script.
+    _ENGLISH_DOMAIN_RE = re.compile(
+        r"(?<![a-z])(?:yes|no|not|none|normal|done|never|bp|pressure|sugar|diabetes|thyroid|fits|"
+        r"scan|report|tablets?|iron|calcium|folic|td|tt|injection|dose|vaccine|bleeding|pain|"
+        r"headache|fever|swelling|vomiting|baby|movement|weeks?|months?|kg|hb|hospital|"
+        r"doctor|nurse|ivf|natural|ambulance|108|allergy|medicine|since|ago|last|"
+        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+        # romanised Kannada/Hindi, as a transliterating STT writes it
+        r"houdu|haudu|illa|illa|aayitu|aaytu|aagide|ide|beku|herige|garbha|tingalu|"
+        r"vara|maatre|gulige|novu|jwara|haan|nahi|nahin|hai|bacha|dard|bukhar)(?![a-z])",
+        re.IGNORECASE,
+    )
+
     def _is_assent(self, text: str) -> bool:
         """One-word yes/no, in any of the three call languages."""
         return is_assent(text)
 
-    def _is_substantive(self, text: str, *, vad: str = "SLOW") -> bool:
+    def _echoes_question(self, text: str, question_id: str | None) -> bool:
+        """The answer reuses a word of the question ("ತಾಲೂಕು ಆಸ್ಪತ್ರೆಯಲ್ಲಿ" to
+        "scan at BRIMS or taluk hospital?", "ನೈಸರ್ಗಿಕ" to "natural or IVF?")."""
+        question = QUESTIONS_BY_ID.get(question_id or "")
+        if question is None:
+            return False
+        stems = {w[:5] for w in self._WORD_RE.findall(question.text) if len(w) >= 4}
+        return any(w[:5] in stems for w in self._WORD_RE.findall(text) if len(w) >= 4)
+
+    def _mentions_symptom(self, text: str) -> bool:
+        from sakhi_domain import detect_symptoms   # sakhi_domain imports this module
+        try:
+            return detect_symptoms(text).any_present
+        except Exception:
+            return False
+
+    def validate_answer(self, text: str, *, vad: str = "SLOW", question_id: str | None = None) -> tuple[bool, str]:
         """Does this turn actually answer the question that was asked?
 
-        Deliberately permissive - a wrong "yes" is recoverable, a question the
-        worker never gets asked is not. It only rejects turns that carry no
-        information *for the kind of question that was pending*.
+        Returns (is_valid: bool, reason: str). Deliberately permissive - a wrong
+        "yes" is recoverable, a question the worker never gets asked is not. It only
+        rejects turns that carry no information for the kind of question that was pending.
         """
         stripped = text.strip().strip(".,!?ಣ।")
         if not stripped:
-            return False
-        # A FAST question is a closed question: one syllable answers it.
-        if vad.upper() == "FAST" and self._is_assent(stripped):
-            return True
+            return False, "empty_or_whitespace"
+        # A bare reading ("140", "58") is a complete answer, however short.
+        if question_id is not None and re.fullmatch(r"\d{2,3}(?:\s*[/ ]\s*\d{2,3})?", stripped):
+            return True, "valid_number"
+        # A FAST yes/no question: one syllable answers it. Not a value one.
+        if self._is_assent(stripped):
+            if question_id in VALUE_QUESTION_IDS:
+                return False, "assent_to_value_question"
+            if vad.upper() == "FAST":
+                return True, "valid_assent"
         if len(stripped) < self.MIN_ANSWER_CHARS:
-            return False
+            return False, f"too_short (length {len(stripped)} < {self.MIN_ANSWER_CHARS})"
         if stripped.casefold() in self._NON_ANSWERS:
-            return False
+            return False, f"non_answer_phrase ({stripped.casefold()!r})"
         if self._PRESENCE_CHECK_RE.match(stripped):
-            return False
+            return False, "presence_check_phrase"
+
+        typed = question_id is not None and question_id not in self._TYPED_DETECTOR_IDS
+        has_indic = bool(re.search(r"[ಀ-೿ऀ-ॿ]", stripped))
+        # Out of domain: Latin-only text with no number and no clinical word
+        # on a Kannada/Hindi call ("I am the network protocols right now").
+        if typed and not has_indic and not re.search(r"\d", stripped) \
+                and not self._ENGLISH_DOMAIN_RE.search(stripped):
+            return False, "out_of_domain"
+
+        if typed and question_id in self._QUANTITATIVE_IDS:
+            if self._NUMBER_RE.search(stripped) or self._NOT_AVAILABLE_RE.search(stripped):
+                return True, "valid_quantity"
+            return False, "quantitative_without_value"
+
+        # Direct evidence of an answer: yes/no, a number, a symptom, or the
+        # question's own words ("ತಾಲೂಕು ಆಸ್ಪತ್ರೆಯಲ್ಲಿ" to the scan question).
+        # Checked BEFORE filler stripping - "ಇಲ್ಲ ಅಕ್ಕ" is all "filler" words.
+        if typed and (self._POLARITY_RE.search(stripped) or re.search(r"\d", stripped)
+                      or self._mentions_symptom(stripped)
+                      or self._echoes_question(stripped, question_id)):
+            return True, "valid_answer_evidence"
+
         # Strip filler words and require at least one real word of its own -
         # see _FILLER_WORDS above for why a whole-phrase blocklist alone
         # isn't enough. Words rather than characters, so a real short answer
         # ("sixth month") isn't penalised for being brief.
-        words = re.findall(r"[\w']+", stripped, flags=re.UNICODE)
-        content_words = [w for w in words if w.casefold() not in self._FILLER_WORDS]
-        return len(content_words) > 0
+        words = self._WORD_RE.findall(stripped)
+        fillers = self._FILLER_WORDS | self._INDIC_FILLER_WORDS if typed else self._FILLER_WORDS
+        content_words = [w for w in words if w.casefold() not in fillers]
+        if not content_words:
+            return False, "only_filler_words"
+        return True, "valid_content"
+
+    def _is_substantive(self, text: str, *, vad: str = "SLOW", question_id: str | None = None) -> bool:
+        """Does this turn actually answer the question that was asked?"""
+        valid, _ = self.validate_answer(text, vad=vad, question_id=question_id)
+        return valid
 
     def record_answer(self, text: str) -> str | None:
         """Attribute this user turn to the question that was pending.
@@ -656,7 +771,7 @@ class IntakeProgress:
             return None
         pending_id = self.pending_id
         pending = QUESTIONS_BY_ID.get(pending_id)
-        if self._is_substantive(text, vad=pending.vad if pending else "SLOW"):
+        if self._is_substantive(text, vad=pending.vad if pending else "SLOW", question_id=pending_id):
             self._stall_counts.pop(pending_id, None)
             closed = pending_id
             self.answered[closed] = text[:120]

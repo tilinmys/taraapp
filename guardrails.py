@@ -63,16 +63,19 @@ _SCRIPTS_BY_LANG = {
         "en": "Thank you for telling me... please call the Tele-MANAS helpline "
               "now on one four four one six. It is free and always open.",
     },
+    # These two are statements on purpose (2026-09-24). They used to end in
+    # their own question ("shall we talk about her blood pressure?"), which
+    # jumped the checklist; agent.py now follows them with the armed intake
+    # question, word for word.
     "jailbreak": {
-        "kn": "ನಾನು ಸಖಿ, ತಾಯಿಯ ಆರೋಗ್ಯಕ್ಕಾಗಿ ಇದ್ದೇನೆ... ತಾಯಿಯ ರಕ್ತದೊತ್ತಡದ ಬಗ್ಗೆ ಮಾತನಾಡೋಣವೇ?",
-        "hi": "मैं सखी हूँ, माँ के स्वास्थ्य के लिए... क्या हम माँ के रक्तचाप की बात करें?",
-        "en": "I am Sakhi, here for the mother's health. Shall we talk about "
-              "her blood pressure?",
+        "kn": "ನಾನು ಸಖಿ, ತಾಯಿಯ ಆರೋಗ್ಯಕ್ಕಾಗಿ ಇದ್ದೇನೆ.",
+        "hi": "मैं सखी हूँ, माँ के स्वास्थ्य के लिए।",
+        "en": "I am Sakhi, here for the mother's health.",
     },
     "abuse_warning": {
-        "kn": "ನಿಮ್ಮ ಕಷ್ಟ ಅರ್ಥವಾಗುತ್ತದೆ ಅಕ್ಕಾರ... ತಾಯಿಯ ಆರೋಗ್ಯಕ್ಕಾಗಿ ಮುಂದುವರಿಸೋಣವೇ?",
-        "hi": "मैं समझती हूँ दीदी... क्या हम माँ के स्वास्थ्य पर आगे बढ़ें?",
-        "en": "I understand. Shall we continue with the mother's health?",
+        "kn": "ನಿಮ್ಮ ಕಷ್ಟ ಅರ್ಥವಾಗುತ್ತದೆ ಅಕ್ಕಾರ. ತಾಯಿಯ ಆರೋಗ್ಯಕ್ಕಾಗಿ ಮುಂದುವರಿಸೋಣ.",
+        "hi": "मैं समझती हूँ दीदी। माँ के स्वास्थ्य के लिए आगे बढ़ते हैं।",
+        "en": "I understand. Let us continue with the mother's health.",
     },
     "abuse_goodbye": {
         "kn": "ಕ್ಷಮಿಸಿ, ನಾನು ಈಗ ಕರೆಯನ್ನು ಮುಗಿಸಬೇಕು... ಯಾವಾಗ ಬೇಕಾದರೂ ಮತ್ತೆ ಕರೆ ಮಾಡಿ. ನಮಸ್ಕಾರ.",
@@ -143,9 +146,14 @@ _DRUG_WORDS_RE = re.compile(
     r"|painkillers?|folic\s+acid|iron\s+tablets?)\b",
     re.IGNORECASE,
 )
+# Bare "take/stop/start/skip" are NOT advice cues (2026-09-28): "I take only
+# iron tablets and calcium tablets" - the answer to the medicines question -
+# was refused as a medication request. Only the modal/question forms ask.
 _ADVICE_VERBS_RE = re.compile(
     r"\b(?:should\s+i|can\s+i|shall\s+i|safe\s+to|how\s+many|how\s+much"
-    r"|what\s+dose|dosage|suggest|recommend|prescribe|take|stop|start|skip)\b",
+    r"|what\s+dose|dosage|suggest|recommend|prescribe"
+    r"|(?:should|can|shall|may)\s+(?:i|we|she|he|they)\s+"
+    r"(?:take|stop|start|skip|increase|reduce|decrease|continue))\b",
     re.IGNORECASE,
 )
 
@@ -163,10 +171,20 @@ _MEDICINE_NOUNS_RE = re.compile(
 
 _MEDICAL_ADVICE_PATTERNS = [
     # "what/which medicine should I..." / "suggest me a tablet..."
+    # ("any" removed 2026-09-28: "not taking any other medicines" is a report.
+    # The questioning uses of "any" are the two patterns right below.)
     re.compile(
-        r"\b(?:what|which|suggest|recommend|give\s+me|tell\s+me\s+about|any)"
+        r"\b(?:what|which|suggest|recommend|give\s+me|tell\s+me\s+about)"
         r"[\w\s,']{0,30}\b(?:medicines?|medications?|tablets?|drugs?|antibiotics?"
         r"|syrups?|dose|dosage|painkillers?|remedy|remedies|injections?)\b",
+        re.IGNORECASE,
+    ),
+    # "is there any medicine for ..." / "any tablet for the fever?"
+    re.compile(
+        r"\b(?:is|are)\s+there\s+any\b[\w\s,']{0,30}\b(?:medicines?|medications?|tablets?"
+        r"|drugs?|syrups?|remedy|remedies|injections?)\b"
+        r"|\bany\s+(?:medicines?|medications?|tablets?|drugs?|syrups?|remedy|remedies)"
+        r"\s+(?:for|to)\b",
         re.IGNORECASE,
     ),
     # "is it safe/ok to take/use/eat/drink ..."
@@ -192,6 +210,27 @@ _PROFANITY_RE = re.compile(
 )
 
 
+# Negation directly before an emergency phrase, in the same clause (2026-09-28:
+# "BP 120 by 80, no severe pain" played the emergency script after a normal
+# reading). The clause cut keeps "No, she is bleeding heavily" an emergency.
+_EMERGENCY_NEGATION_RE = re.compile(
+    r"\b(?:no|not|never|without|denies|denied|nor|none)\b|n't\b", re.IGNORECASE
+)
+_CLAUSE_BREAK_RE = re.compile(r"[,.;:!?।]|\b(?:but|however)\b", re.IGNORECASE)
+
+
+def _emergency_affirmed(text: str) -> bool:
+    """True when at least one emergency phrase is stated, not denied."""
+    for match in _EMERGENCY_RE.finditer(text):
+        before = text[max(0, match.start() - 30):match.start()]
+        breaks = list(_CLAUSE_BREAK_RE.finditer(before))
+        if breaks:
+            before = before[breaks[-1].end():]
+        if not _EMERGENCY_NEGATION_RE.search(before):
+            return True
+    return False
+
+
 def classify_turn(text: str) -> str | None:
     """Classify one caller turn. Returns one of:
     'emergency' | 'self_harm' | 'jailbreak' | 'medical_advice' | 'abuse' | None.
@@ -204,7 +243,7 @@ def classify_turn(text: str) -> str | None:
     t = (text or "").strip()
     if not t:
         return None
-    if _EMERGENCY_RE.search(t):
+    if _emergency_affirmed(t):
         return "emergency"
     if _SELF_HARM_RE.search(t):
         return "self_harm"
@@ -330,6 +369,72 @@ _MEDICATION_INDIC_RE = re.compile(
     r"|ಟ್ಯಾಬ್ಲೆಟ್|ಮೆಡಿಸಿನ್|ಇಂಜೆಕ್ಷನ್"
 )
 
+# A medicine NOUN alone is not a request (2026-09-25, Turns 14 & 25): "ಎರಡು
+# ಡೋಸ್ ಪಡೆದಿದ್ದೇನೆ" / "ಎರಡು ಧನುರ್ವಾತ ಚುಚ್ಚುಮದ್ದು ಪಡೆದಿದ್ದೇನೆ" answer the Td
+# question and were refused as medical advice. A Kannada/Hindi turn is a
+# request only when the noun comes with an advice/question form.
+# Deliberately broader than the modal verbs alone: "ಯಾವ ಮಾತ್ರೆ ಕೊಡಲಿ?"
+# (which tablet shall I give?) must stay guarded.
+_MEDICATION_ADVICE_VERBS_INDIC = re.compile(
+    # Kannada, by grammatical ending rather than a word list:
+    #   ...ಬಹುದಾ/ಬಹುದೇ  can (I/she) ...?      ...ಬೇಕಾ/ಬೇಕೇ/ಬೇಕು  should ...?
+    #   ...ಲಾ/ಲೇ/ಲಿ after give/take/apply     shall I ...?
+    #   ಕೊಡಿ/ಕೊಡು/ಹೇಳಿ/ತಿಳಿಸಿ as a whole word  give / tell (imperative)
+    r"ಬಹುದ[ಾೇ]|ಬೇಕ[ಾೇು]"
+    r"|(?:ಕೊಡ|ತಗೊಳ್ಳ|ತಗೋಳ್ಳ|ತೆಗೆದುಕೊಳ್ಳ|ಹಾಕ|ಮಾಡ)ಲ[ಾೇಿ]"
+    r"|(?:ಕೊಡಿ|ಕೊಡು|ಹೇಳಿ|ತಿಳಿಸಿ)(?![ಀ-೿])"
+    r"|ಸೂಕ್ತವೇ|ಸರಿಯಾ|ಯಾವ|ಎಷ್ಟು|ಸಲಹೆ"
+    # Hindi: should give/take, can eat/give/take, shall I give, what should
+    # I do, tell me, which, how much, advice
+    r"|देना चाहिए|लेना चाहिए|खा सकते|खा सकती|दे सकते|दे सकती|ले सकते|ले सकती"
+    r"|दूँ|दूं|क्या करूँ|क्या करूं|बताइए|बताइये|बताओ|बताएं|कौन सी|कौन सा"
+    r"|कितनी|कितना|सलाह"
+)
+
+# Past/ongoing delivery - the dose was already received: a factual answer to
+# an intake question (Td doses, iron/calcium tablets), not a request.
+_MEDICATION_DISCLOSURE_INDIC = re.compile(
+    r"ಪಡೆದಿದ್ದೇನೆ|ಪಡೆದಿದ್ದಾರೆ|ಪಡೆದಿದ್ದಾಳೆ|ತಗೊಂಡಿದ್ದೇನೆ|ತಗೊಂಡಿದ್ದಾರೆ|ತಗೊಂಡಿದ್ದಾಳೆ"
+    r"|ಹಾಕಿಸಿಕೊಂಡಿದ್ದೇನೆ|ಹಾಕಿಸಿಕೊಂಡಿದ್ದಾರೆ|ಹಾಕಿಸಿಕೊಂಡಿದ್ದಾಳೆ|ಹೋಗಿದೆ"
+    r"|ले लिया|ले ली|लगवा लिया|लगवाया|लगवाए|मिल गया|मिल गई"
+)
+
+
+def indic_medication_advice_requested(text: str) -> bool:
+    """Kannada/Hindi: a medicine noun AND an advice/question form.
+
+    A pure disclosure ("ಎರಡು ಡೋಸ್ ಪಡೆದಿದ್ದೇನೆ") is never a request. A turn
+    with a disclosure AND a question ("ಎರಡು ಡೋಸ್ ಪಡೆದಿದ್ದೇನೆ, ಮೂರನೆಯದು
+    ಕೊಡಬೇಕಾ?") is still a request - the question outranks the disclosure.
+    """
+    if not text or not _MEDICATION_INDIC_RE.search(text):
+        return False
+    for match in _MEDICATION_ADVICE_VERBS_INDIC.finditer(text):
+        if match.group().startswith(_WEAK_INDIC_ADVICE_CUES):
+            # "which/how much" followed by a negation in the same clause is a
+            # report: "ಬೇರೆ ಯಾವ ಔಷಧಿಯೂ ಇಲ್ಲ" = no OTHER medicine (2026-09-28).
+            after = re.split(r"[,.;!?।]", text[match.end():match.end() + 40], maxsplit=1)[0]
+            if _INDIC_NEGATION_RE.search(after):
+                continue
+        return True
+    return False
+
+
+# Question words that only ask when not negated ("ಬೇರೆ ಯಾವ ಔಷಧಿಯೂ ಇಲ್ಲ" is the
+# ANSWER "no other medicine"); modal forms (ಕೊಡಬೇಕಾ, ಕೊಡಲಿ, दूँ) always ask.
+_WEAK_INDIC_ADVICE_CUES = ("ಯಾವ", "ಎಷ್ಟು", "कौन", "कितन")
+_INDIC_NEGATION_RE = re.compile(r"ಇಲ್ಲ|ನಹಿ|नहीं|नही")
+
+
+def indic_medication_disclosure(text: str) -> bool:
+    """A Kannada/Hindi report that a dose was already received."""
+    return bool(
+        text
+        and _MEDICATION_INDIC_RE.search(text)
+        and _MEDICATION_DISCLOSURE_INDIC.search(text)
+        and not _MEDICATION_ADVICE_VERBS_INDIC.search(text)
+    )
+
 # A number next to a dose unit, in any of the three scripts.
 _DOSAGE_RE = re.compile(
     r"\b\d+\s*(?:mg|ml|mcg|gm|grams?|tablets?|pills?|doses?)\b"
@@ -430,8 +535,11 @@ def medication_requested(text: str) -> bool:
     if not text:
         return False
     return bool(
-        _MEDICATION_INDIC_RE.search(text)
-        or _DOSAGE_RE.search(text)
+        indic_medication_advice_requested(text)
+        # "ದಿನಕ್ಕೆ 1 ಮಾತ್ರೆ ತಗೊಂಡಿದ್ದಾರೆ" (takes 1 tablet a day) is the iron
+        # answer, not a dose question. Named drugs and English stay guarded
+        # below regardless.
+        or (_DOSAGE_RE.search(text) and not indic_medication_disclosure(text))
         or _DRUG_NAMES_RE.search(text)
         or _TRANSLITERATED_DRUGS_RE.search(text)
         # English requests were reaching the LLM entirely unguarded: there was

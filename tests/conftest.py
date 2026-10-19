@@ -15,7 +15,20 @@ RuntimeError outside a job context on a clean interpreter with no project
 code imported at all.
 """
 
+import asyncio
+import os
+import sys
+
 import pytest
+
+# psycopg's async mode cannot run on asyncio's ProactorEventLoop, Windows'
+# default. The production worker runs on Linux (selector loop) and is
+# unaffected, but it meant the live-Postgres tests (SAKHI_TEST_POSTGRES_DSN)
+# had never actually been able to run on a Windows dev box - every one
+# errored in load(). Scoped to exactly that case so the default suite keeps
+# running on the platform's normal loop.
+if sys.platform == "win32" and os.getenv("SAKHI_TEST_POSTGRES_DSN"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 class _FakeJobContext:

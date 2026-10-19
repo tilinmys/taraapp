@@ -355,6 +355,21 @@ class PatientRepository(abc.ABC):
         """Flush anything buffered. Safe to call more than once."""
         return None
 
+    async def record_telemetry(
+        self,
+        events: list[dict[str, Any]],
+        turns: list[dict[str, Any]],
+        health: list[dict[str, Any]],
+    ) -> None:
+        """Persist one batch of pipeline events, conversation turns and
+        component-health upserts (see sakhi_telemetry.TelemetryWriter).
+
+        Not abstract: a backend with no telemetry tables (the JSON demo mock)
+        simply discards them, and the JSONL pipeline log remains the record.
+        The SQL repositories override this with a single batched write.
+        """
+        return None
+
 
 class MockSixtyDBRepository(PatientRepository):
     """In-memory SixtyDB stand-in with write-behind persistence.

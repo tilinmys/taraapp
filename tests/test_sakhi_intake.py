@@ -9,6 +9,8 @@ questions when it lost the thread.
 
 import pytest
 
+from sakhi_intake import accepts_assent
+
 from sakhi_domain import SakhiCallState
 from sakhi_intake import (
     INTAKE_QUESTIONS,
@@ -147,7 +149,7 @@ def test_theek_hai_is_an_assent_for_a_closed_question_but_not_an_open_one():
     question, but must not be allowed to close a SLOW (open) one - a filler
     closing an open question is the same "wrong fact, wrong slot" failure
     this file already guards against."""
-    fast_q = next(q for q in INTAKE_QUESTIONS if q.vad == "FAST")
+    fast_q = next(q for q in INTAKE_QUESTIONS if accepts_assent(q))  # a yes/no one
     slow_q = next(q for q in INTAKE_QUESTIONS if q.vad == "SLOW")
 
     p = IntakeProgress()
@@ -177,7 +179,10 @@ def test_walks_every_question_then_reports_complete():
     for _ in range(len(INTAKE_QUESTIONS)):
         q = p.arm_next()
         seen.append(q.id)
-        p.record_answer("an answer")
+        # A real-shaped reply (yes + a number) that every typed schema accepts.
+        # The old placeholder "an answer" is Latin text with no clinical
+        # content - exactly what validate_answer now rejects as out of domain.
+        p.record_answer("ಹೌದು, 2 ಇದೆ")
     assert seen == [q.id for q in INTAKE_QUESTIONS], "questions were skipped or reordered"
     assert p.complete
     assert p.arm_next() is None

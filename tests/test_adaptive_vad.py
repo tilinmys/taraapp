@@ -66,7 +66,8 @@ c.fragment_recovery()
 check("fragment -> FRAGMENT_RECOVERY", c.state == "FRAGMENT_RECOVERY")
 check(
     "fragment delay applied",
-    session.update_options.call_args.kwargs["endpointing_opts"]["min_delay"] == 1.3,
+    session.update_options.call_args.kwargs["endpointing_opts"]["min_delay"]
+    == c._delays["FRAGMENT_RECOVERY"],
 )
 
 c.on_user_turn()

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sqlite3
 import sys
 import threading
@@ -46,10 +47,14 @@ from sakhi_schema import (
     POSTGRES,
     SQLITE,
     SQLITE_PRAGMAS,
+    SYMPTOM_COLUMNS,
     call_reports_migration_statements,
     danger_sign_columns_migration_statements,
     recording_columns_migration_statements,
     schema_statements,
+    symptom_insert_sql,
+    symptom_merge_update_sql,
+    telemetry_migration_statements,
     teleconsults_migration_statements,
 )
 
@@ -69,10 +74,86 @@ except ImportError:
 
 logger = logging.getLogger("sakhi.sql")
 
+# Tables reported by stats() for the dashboard's database health panel.
+STATS_TABLES = ("mothers", "bp_records", "symptom_records", "teleconsults",
+                "call_reports", "call_turns", "pipeline_events", "component_health")
+
 
 def _utc_now() -> str:
     """ISO-8601 UTC. Stored as TEXT so it ports to timestamptz in one cast."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _symptoms_from_row(row: Any) -> SymptomSet:
+    """Row -> SymptomSet, driven by SYMPTOM_COLUMNS for both backends.
+
+    Works for sqlite3.Row and psycopg dict rows alike. A column absent from
+    the row (a database mid-migration) reads as False rather than raising.
+    """
+    keys = set(row.keys())
+    return SymptomSet(**{col: bool(row[col]) if col in keys else False for col in SYMPTOM_COLUMNS})
+
+
+def _symptom_values(symptoms: SymptomSet) -> tuple[int, ...]:
+    """One 0/1 per SYMPTOM_COLUMNS, in column order."""
+    return tuple(int(bool(getattr(symptoms, col))) for col in SYMPTOM_COLUMNS)
+
+
+def _history_entry(row: Any) -> dict[str, Any]:
+    return {"date": row["recorded_at"], "bp": f"{row['systolic']}/{row['diastolic']}",
+            "risk": row["risk_level"]}
+
+
+# --- Telemetry SQL (2026-09-24), shared by both backends ------------------
+# Neutral `?` placeholders, rendered per dialect. All three are written as
+# BATCHES via executemany by sakhi_telemetry.TelemetryWriter - one round trip
+# per flush, never one per event.
+_EVENT_INSERT = (
+    "INSERT INTO pipeline_events (session_id, ts, stage, status, label, "
+    "message, event, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+)
+_TURN_INSERT = (
+    "INSERT INTO call_turns (session_id, turn_no, speaker, text, language, ts) "
+    "VALUES (?, ?, ?, ?, ?, ?)"
+)
+# Upsert. Both SQLite (>=3.24) and Postgres support ON CONFLICT ... DO
+# UPDATE with `excluded`. An error keeps its last_error/_at; an ok row only
+# advances last_ok_at, so the dashboard can show "recovered 2 min ago after
+# an error at 10:41" rather than a bare green light.
+_HEALTH_UPSERT = (
+    "INSERT INTO component_health (component, last_status, last_label, "
+    "last_message, last_session, last_error, last_error_at, last_error_session, "
+    "last_ok_at, error_count, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+    "ON CONFLICT (component) DO UPDATE SET "
+    "last_status = excluded.last_status, "
+    "last_label = excluded.last_label, "
+    "last_message = excluded.last_message, "
+    "last_session = excluded.last_session, "
+    "last_error = COALESCE(excluded.last_error, component_health.last_error), "
+    "last_error_at = COALESCE(excluded.last_error_at, component_health.last_error_at), "
+    "last_error_session = CASE WHEN excluded.last_error_at IS NOT NULL "
+    "THEN excluded.last_error_session ELSE component_health.last_error_session END, "
+    "last_ok_at = COALESCE(excluded.last_ok_at, component_health.last_ok_at), "
+    "error_count = component_health.error_count + excluded.error_count, "
+    "updated_at = excluded.updated_at"
+)
+
+
+def _event_params(e: dict[str, Any]) -> tuple:
+    return (e.get("session_id"), e["ts"], e["stage"], e["status"], e["label"],
+            e.get("message"), e.get("event"), e.get("details"))
+
+
+def _turn_params(t: dict[str, Any]) -> tuple:
+    return (t["session_id"], int(t["turn_no"]), t["speaker"], t["text"],
+            t.get("language"), t["ts"])
+
+
+def _health_params(h: dict[str, Any]) -> tuple:
+    return (h["component"], h["last_status"], h.get("last_label"),
+            h.get("last_message"), h.get("last_session"), h.get("last_error"),
+            h.get("last_error_at"), h.get("last_error_session"), h.get("last_ok_at"),
+            int(h.get("error_count") or 0), h["updated_at"])
 
 
 class SQLitePatientRepository(PatientRepository):
@@ -127,8 +208,10 @@ class SQLitePatientRepository(PatientRepository):
                 if "duplicate column name" not in str(exc):
                     raise
         # Same poor-man's migration for call_reports' recording_status/
-        # recording_key columns (2026-09-02, LiveKit egress-to-S3 wiring).
-        for statement in recording_columns_migration_statements(self._dialect):
+        # recording_key columns (2026-09-02, LiveKit egress-to-S3 wiring),
+        # and for telemetry tables created by an earlier build (2026-09-24).
+        for statement in (recording_columns_migration_statements(self._dialect)
+                          + telemetry_migration_statements(self._dialect)):
             try:
                 conn.execute(statement)
             except sqlite3.OperationalError as exc:
@@ -188,18 +271,7 @@ class SQLitePatientRepository(PatientRepository):
             phone=row["phone"],
             gestational_weeks=row["gestational_weeks"],
             risk_status=RiskLevel(row["risk_status"]) if row["risk_status"] else RiskLevel.ROUTINE,
-            symptoms=SymptomSet(
-                headache=bool(row["headache"]),
-                blurry_vision=bool(row["blurry_vision"]),
-                swelling=bool(row["swelling"]),
-                # keys() guard: rows from a DB that hasn't run the 2026-08-30
-                # migration yet (only possible mid-restart, before _connect()
-                # has run) would KeyError on these two without it.
-                vaginal_bleeding=bool(row["vaginal_bleeding"]) if "vaginal_bleeding" in row.keys() else False,
-                severe_abdominal_pain=bool(row["severe_abdominal_pain"]) if "severe_abdominal_pain" in row.keys() else False,
-                convulsions=bool(row["convulsions"]) if "convulsions" in row.keys() else False,
-                reduced_fetal_movement=bool(row["reduced_fetal_movement"]) if "reduced_fetal_movement" in row.keys() else False,
-            ),
+            symptoms=_symptoms_from_row(row),
             history=history or [],
         )
 
@@ -209,11 +281,28 @@ class SQLitePatientRepository(PatientRepository):
             "WHERE patient_id = ? ORDER BY id",
             (patient_id,),
         )
-        return [
-            {"date": r["recorded_at"], "bp": f"{r['systolic']}/{r['diastolic']}",
-             "risk": r["risk_level"]}
-            for r in rows
-        ]
+        return [_history_entry(r) for r in rows]
+
+    def _history_batch(self, patient_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+        """All matches' BP history in ONE query instead of one per match.
+
+        find_patients() used to call _history() per matching row - an N+1
+        pattern: a name search matching 12 mothers ran 13 queries, on the
+        voice hot path. One IN (...) query plus a single O(rows) grouping
+        pass replaces them, same as PostgresPatientRepository already did.
+        """
+        if not patient_ids:
+            return {}
+        placeholders = ",".join(["?"] * len(patient_ids))
+        rows = self._query(
+            "SELECT patient_id, systolic, diastolic, risk_level, recorded_at "
+            f"FROM bp_records WHERE patient_id IN ({placeholders}) ORDER BY id",
+            tuple(patient_ids),
+        )
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for r in rows:
+            grouped.setdefault(r["patient_id"], []).append(_history_entry(r))
+        return grouped
 
     def _next_patient_id(self) -> str:
         """Human-readable M-NNN ids, matching the existing dataset.
@@ -240,16 +329,17 @@ class SQLitePatientRepository(PatientRepository):
             if phone:
                 normalised = normalize_phone(phone)
                 rows = self._query("SELECT * FROM mothers WHERE phone = ?", (normalised,))
-                return [self._to_record(r, self._history(r["patient_id"])) for r in rows]
-            if not name or not name.strip():
-                return []
-            # Parameterised LIKE: the pattern is bound, never concatenated, so
-            # a spoken name containing a quote or a wildcard is data, not SQL.
-            rows = self._query(
-                "SELECT * FROM mothers WHERE name LIKE ? COLLATE NOCASE ORDER BY name",
-                (f"%{name.strip()}%",),
-            )
-            return [self._to_record(r, self._history(r["patient_id"])) for r in rows]
+            else:
+                if not name or not name.strip():
+                    return []
+                # Parameterised LIKE: the pattern is bound, never concatenated,
+                # so a spoken name containing a quote or a wildcard is data.
+                rows = self._query(
+                    "SELECT * FROM mothers WHERE name LIKE ? COLLATE NOCASE ORDER BY name",
+                    (f"%{name.strip()}%",),
+                )
+            histories = self._history_batch([r["patient_id"] for r in rows])
+            return [self._to_record(r, histories.get(r["patient_id"], [])) for r in rows]
 
         return await asyncio.to_thread(_find)
 
@@ -331,35 +421,14 @@ class SQLitePatientRepository(PatientRepository):
     async def record_symptoms(self, patient_id: str, symptoms: SymptomSet) -> None:
         def _record() -> None:
             now = _utc_now()
+            values = _symptom_values(symptoms)
             with self._lock:
                 conn = self._require()
-                conn.execute(
-                    "INSERT INTO symptom_records (patient_id, headache, blurry_vision, "
-                    "swelling, vaginal_bleeding, severe_abdominal_pain, convulsions, "
-                    "reduced_fetal_movement, recorded_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (patient_id, int(symptoms.headache), int(symptoms.blurry_vision),
-                     int(symptoms.swelling), int(symptoms.vaginal_bleeding),
-                     int(symptoms.severe_abdominal_pain), int(symptoms.convulsions),
-                     int(symptoms.reduced_fetal_movement), now),
-                )
+                conn.execute(symptom_insert_sql(), (patient_id, *values, now))
                 # Symptoms only ever accumulate (OR), never clear: a later
                 # "no headache" must not erase a headache the mother reported
                 # earlier in the same call.
-                conn.execute(
-                    "UPDATE mothers SET headache = CASE WHEN headache = 1 OR ? = 1 THEN 1 ELSE 0 END, "
-                    "blurry_vision = CASE WHEN blurry_vision = 1 OR ? = 1 THEN 1 ELSE 0 END, "
-                    "swelling = CASE WHEN swelling = 1 OR ? = 1 THEN 1 ELSE 0 END, "
-                    "vaginal_bleeding = CASE WHEN vaginal_bleeding = 1 OR ? = 1 THEN 1 ELSE 0 END, "
-                    "severe_abdominal_pain = CASE WHEN severe_abdominal_pain = 1 OR ? = 1 THEN 1 ELSE 0 END, "
-                    "convulsions = CASE WHEN convulsions = 1 OR ? = 1 THEN 1 ELSE 0 END, "
-                    "reduced_fetal_movement = CASE WHEN reduced_fetal_movement = 1 OR ? = 1 THEN 1 ELSE 0 END, "
-                    "updated_at = ? WHERE patient_id = ?",
-                    (int(symptoms.headache), int(symptoms.blurry_vision),
-                     int(symptoms.swelling), int(symptoms.vaginal_bleeding),
-                     int(symptoms.severe_abdominal_pain), int(symptoms.convulsions),
-                     int(symptoms.reduced_fetal_movement), now, patient_id),
-                )
+                conn.execute(symptom_merge_update_sql(), (*values, now, patient_id))
                 conn.commit()
 
         await asyncio.to_thread(_record)
@@ -469,13 +538,34 @@ class SQLitePatientRepository(PatientRepository):
         """Counts for the dashboard's database health panel."""
         def _stats() -> dict[str, Any]:
             out: dict[str, Any] = {"backend": "sqlite", "path": str(self._path)}
-            for table in ("mothers", "bp_records", "symptom_records",
-                          "teleconsults", "call_reports"):
+            for table in STATS_TABLES:
                 rows = self._query(f"SELECT COUNT(*) AS n FROM {table}")
                 out[table] = int(rows[0]["n"]) if rows else 0
             return out
 
         return await asyncio.to_thread(_stats)
+
+    # --- telemetry (written in batches by sakhi_telemetry) --------------
+
+    async def record_telemetry(
+        self,
+        events: list[dict[str, Any]],
+        turns: list[dict[str, Any]],
+        health: list[dict[str, Any]],
+    ) -> None:
+        """One flush = one lock acquisition and one commit, whatever the mix."""
+        def _write() -> None:
+            with self._lock:
+                conn = self._require()
+                if events:
+                    conn.executemany(_EVENT_INSERT, [_event_params(e) for e in events])
+                if turns:
+                    conn.executemany(_TURN_INSERT, [_turn_params(t) for t in turns])
+                if health:
+                    conn.executemany(_HEALTH_UPSERT, [_health_params(h) for h in health])
+                conn.commit()
+
+        await asyncio.to_thread(_write)
 
 
 class PostgresPatientRepository(PatientRepository):
@@ -716,7 +806,22 @@ class PostgresPatientRepository(PatientRepository):
             # statements later in this file land together or not at all -
             # setting autocommit=True here would commit each statement the
             # instant it runs and silently drop that guarantee.
-            kwargs={"row_factory": dict_row},
+            #
+            # prepare_threshold=None (2026-09-24): psycopg auto-PREPAREs a
+            # statement after 5 executions. Supabase's Supavisor pooler in
+            # transaction mode (port 6543) does not support prepared
+            # statements - connections are shared between clients, so a
+            # statement prepared on one backend is missing (or already
+            # exists) on the next, failing writes intermittently with
+            # "prepared statement ... already exists". Session mode (5432,
+            # the recommended mode for this persistent worker) tolerates
+            # them, but disabling prepares keeps the repository correct
+            # whichever pooler port DATABASE_URL points at; at this call
+            # volume the parse-cost saving was never measurable.
+            # connect_timeout bounds a dead network so startup fails fast
+            # instead of hanging the worker boot.
+            kwargs={"row_factory": dict_row, "prepare_threshold": None,
+                    "connect_timeout": int(os.getenv("DATABASE_CONNECT_TIMEOUT", "10"))},
             open=False,
         )
         await pool.open(wait=True, timeout=15)
@@ -743,6 +848,7 @@ class PostgresPatientRepository(PatientRepository):
                 teleconsults_migration_statements(self._dialect),
                 danger_sign_columns_migration_statements(self._dialect),
                 recording_columns_migration_statements(self._dialect),
+                telemetry_migration_statements(self._dialect),
             ):
                 for statement in statement_group:
                     try:
@@ -811,15 +917,7 @@ class PostgresPatientRepository(PatientRepository):
             phone=row["phone"],
             gestational_weeks=row["gestational_weeks"],
             risk_status=RiskLevel(row["risk_status"]) if row["risk_status"] else RiskLevel.ROUTINE,
-            symptoms=SymptomSet(
-                headache=bool(row["headache"]),
-                blurry_vision=bool(row["blurry_vision"]),
-                swelling=bool(row["swelling"]),
-                vaginal_bleeding=bool(row.get("vaginal_bleeding", 0)),
-                severe_abdominal_pain=bool(row.get("severe_abdominal_pain", 0)),
-                convulsions=bool(row.get("convulsions", 0)),
-                reduced_fetal_movement=bool(row.get("reduced_fetal_movement", 0)),
-            ),
+            symptoms=_symptoms_from_row(row),
             history=history or [],
         )
 
@@ -970,36 +1068,15 @@ class PostgresPatientRepository(PatientRepository):
     async def record_symptoms(self, patient_id: str, symptoms: SymptomSet) -> None:
         pool = await self._ensure_pool()
         now = _utc_now()
+        values = _symptom_values(symptoms)
         async with pool.connection() as conn:
             await conn.execute(
-                self._dialect.render(
-                    "INSERT INTO symptom_records (patient_id, headache, blurry_vision, "
-                    "swelling, vaginal_bleeding, severe_abdominal_pain, convulsions, "
-                    "reduced_fetal_movement, recorded_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                ),
-                (patient_id, int(symptoms.headache), int(symptoms.blurry_vision),
-                 int(symptoms.swelling), int(symptoms.vaginal_bleeding),
-                 int(symptoms.severe_abdominal_pain), int(symptoms.convulsions),
-                 int(symptoms.reduced_fetal_movement), now),
+                self._dialect.render(symptom_insert_sql()), (patient_id, *values, now)
             )
             # Symptoms only ever accumulate (OR), never clear - see
             # SQLitePatientRepository.record_symptoms for why.
             await conn.execute(
-                self._dialect.render(
-                    "UPDATE mothers SET headache = CASE WHEN headache = 1 OR ? = 1 THEN 1 ELSE 0 END, "
-                    "blurry_vision = CASE WHEN blurry_vision = 1 OR ? = 1 THEN 1 ELSE 0 END, "
-                    "swelling = CASE WHEN swelling = 1 OR ? = 1 THEN 1 ELSE 0 END, "
-                    "vaginal_bleeding = CASE WHEN vaginal_bleeding = 1 OR ? = 1 THEN 1 ELSE 0 END, "
-                    "severe_abdominal_pain = CASE WHEN severe_abdominal_pain = 1 OR ? = 1 THEN 1 ELSE 0 END, "
-                    "convulsions = CASE WHEN convulsions = 1 OR ? = 1 THEN 1 ELSE 0 END, "
-                    "reduced_fetal_movement = CASE WHEN reduced_fetal_movement = 1 OR ? = 1 THEN 1 ELSE 0 END, "
-                    "updated_at = ? WHERE patient_id = ?"
-                ),
-                (int(symptoms.headache), int(symptoms.blurry_vision),
-                 int(symptoms.swelling), int(symptoms.vaginal_bleeding),
-                 int(symptoms.severe_abdominal_pain), int(symptoms.convulsions),
-                 int(symptoms.reduced_fetal_movement), now, patient_id),
+                self._dialect.render(symptom_merge_update_sql()), (*values, now, patient_id)
             )
 
     async def log_teleconsult(
@@ -1093,9 +1170,30 @@ class PostgresPatientRepository(PatientRepository):
         pool = await self._ensure_pool()
         out: dict[str, Any] = {"backend": "postgres"}
         async with pool.connection() as conn:
-            for table in ("mothers", "bp_records", "symptom_records",
-                          "teleconsults", "call_reports"):
+            for table in STATS_TABLES:
                 cur = await conn.execute(f"SELECT COUNT(*) AS n FROM {table}")
                 row = await cur.fetchone()
                 out[table] = int(row["n"]) if row else 0
         return out
+
+    async def record_telemetry(
+        self,
+        events: list[dict[str, Any]],
+        turns: list[dict[str, Any]],
+        health: list[dict[str, Any]],
+    ) -> None:
+        """One flush = one pooled connection, one transaction. psycopg 3's
+        executemany pipelines the rows, so a batch of 200 events is a single
+        network round trip rather than 200."""
+        if not (events or turns or health):
+            return
+        pool = await self._ensure_pool()
+        render = self._dialect.render
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                if events:
+                    await cur.executemany(render(_EVENT_INSERT), [_event_params(e) for e in events])
+                if turns:
+                    await cur.executemany(render(_TURN_INSERT), [_turn_params(t) for t in turns])
+                if health:
+                    await cur.executemany(render(_HEALTH_UPSERT), [_health_params(h) for h in health])

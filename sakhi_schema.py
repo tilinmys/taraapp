@@ -80,6 +80,53 @@ POSTGRES = Dialect(
 )
 
 
+# Every symptom column, in SymptomSet field order. THE single source of truth
+# for symptom persistence (2026-09-24): the DDL, the ADD COLUMN migration, the
+# INSERT/UPDATE statements and the row->SymptomSet mapping in
+# sakhi_sql_repository.py are all generated from this tuple.
+#
+# Why it exists: the column list used to be hand-typed in six places, and the
+# 2026-09-10 ANC rewrite added seven SymptomSet fields (fever, breathlessness,
+# contractions, ...) that triage acted on but that none of those six places
+# ever received - a mother escalated for fever had no record of the fever.
+# Kept as a literal here rather than imported from sakhi_domain so this module
+# stays dependency-free; tests/test_symptom_persistence.py asserts it equals
+# SymptomSet's own fields, so the two can never silently diverge again.
+SYMPTOM_COLUMNS: tuple[str, ...] = (
+    "headache", "blurry_vision", "swelling",
+    "vaginal_bleeding", "severe_abdominal_pain",
+    "convulsions", "reduced_fetal_movement",
+    "contractions", "upper_abdominal_pain", "fever", "urinary_symptoms",
+    "breathlessness", "palpitations", "severe_vomiting",
+)
+
+
+def _symptom_column_ddl(dialect: Dialect) -> str:
+    return ",\n            ".join(
+        f"{col} {dialect.boolean} NOT NULL DEFAULT 0" for col in SYMPTOM_COLUMNS
+    )
+
+
+def symptom_insert_sql() -> str:
+    """Neutral-placeholder INSERT for one symptom_records row. Params:
+    (patient_id, *one int per SYMPTOM_COLUMNS, recorded_at)."""
+    cols = ", ".join(SYMPTOM_COLUMNS)
+    marks = ", ".join([PARAM] * (len(SYMPTOM_COLUMNS) + 2))
+    return f"INSERT INTO symptom_records (patient_id, {cols}, recorded_at) VALUES ({marks})"
+
+
+def symptom_merge_update_sql() -> str:
+    """OR-merge the mother's running symptom picture (a later "no" never
+    erases an earlier "yes"). Written as an idempotent CASE expression rather
+    than read-modify-write so two concurrent writers cannot lose each other's
+    symptom. Params: (*one int per SYMPTOM_COLUMNS, updated_at, patient_id)."""
+    sets = ", ".join(
+        f"{col} = CASE WHEN {col} = 1 OR {PARAM} = 1 THEN 1 ELSE 0 END"
+        for col in SYMPTOM_COLUMNS
+    )
+    return f"UPDATE mothers SET {sets}, updated_at = {PARAM} WHERE patient_id = {PARAM}"
+
+
 def schema_statements(dialect: Dialect) -> list[str]:
     """DDL for a fresh database, in dependency order."""
     return [
@@ -92,13 +139,7 @@ def schema_statements(dialect: Dialect) -> list[str]:
             phone             {dialect.text},
             gestational_weeks INTEGER,
             risk_status       {dialect.text} NOT NULL DEFAULT 'ROUTINE',
-            headache          {dialect.boolean} NOT NULL DEFAULT 0,
-            blurry_vision     {dialect.boolean} NOT NULL DEFAULT 0,
-            swelling          {dialect.boolean} NOT NULL DEFAULT 0,
-            vaginal_bleeding       {dialect.boolean} NOT NULL DEFAULT 0,
-            severe_abdominal_pain  {dialect.boolean} NOT NULL DEFAULT 0,
-            convulsions            {dialect.boolean} NOT NULL DEFAULT 0,
-            reduced_fetal_movement {dialect.boolean} NOT NULL DEFAULT 0,
+            {_symptom_column_ddl(dialect)},
             created_at        {dialect.text} NOT NULL,
             updated_at        {dialect.text} NOT NULL
         )
@@ -120,13 +161,7 @@ def schema_statements(dialect: Dialect) -> list[str]:
         CREATE TABLE IF NOT EXISTS symptom_records (
             id            {dialect.identity_pk},
             patient_id    {dialect.text} NOT NULL REFERENCES mothers(patient_id),
-            headache      {dialect.boolean} NOT NULL DEFAULT 0,
-            blurry_vision {dialect.boolean} NOT NULL DEFAULT 0,
-            swelling      {dialect.boolean} NOT NULL DEFAULT 0,
-            vaginal_bleeding       {dialect.boolean} NOT NULL DEFAULT 0,
-            severe_abdominal_pain  {dialect.boolean} NOT NULL DEFAULT 0,
-            convulsions            {dialect.boolean} NOT NULL DEFAULT 0,
-            reduced_fetal_movement {dialect.boolean} NOT NULL DEFAULT 0,
+            {_symptom_column_ddl(dialect)},
             recorded_at   {dialect.text} NOT NULL
         )
         """,
@@ -161,6 +196,64 @@ def schema_statements(dialect: Dialect) -> list[str]:
             created_at        {dialect.text} NOT NULL
         )
         """,
+        # --- Observability (2026-09-24) -----------------------------------
+        # What the admin dashboard is built on. Written ONLY by
+        # sakhi_telemetry.TelemetryWriter, in batches, off the voice path -
+        # never by a tool or a turn handler directly, so a slow database can
+        # never add latency to a spoken reply.
+        #
+        # Every structured pipeline event, tagged with the call it belongs to.
+        # session_id is what the JSONL log never had, and why the latency
+        # audit found 53 overlapping call boundaries it could not attribute.
+        # `details` is JSON text (portable); jsonb on Supabase.
+        f"""
+        CREATE TABLE IF NOT EXISTS pipeline_events (
+            id          {dialect.identity_pk},
+            session_id  {dialect.text},
+            ts          {dialect.text} NOT NULL,
+            stage       {dialect.text} NOT NULL,
+            status      {dialect.text} NOT NULL,
+            label       {dialect.text} NOT NULL,
+            message     {dialect.text},
+            event       {dialect.text},
+            details     {dialect.text}
+        )
+        """,
+        # The ASHA <-> Sakhi conversation, one row per final utterance, in
+        # order. Text is PII-redacted upstream (guardrails.redact_pii) before
+        # it ever reaches a pipeline event, so nothing here needs redacting.
+        f"""
+        CREATE TABLE IF NOT EXISTS call_turns (
+            id          {dialect.identity_pk},
+            session_id  {dialect.text} NOT NULL,
+            turn_no     INTEGER NOT NULL,
+            speaker     {dialect.text} NOT NULL,
+            text        {dialect.text} NOT NULL,
+            language    {dialect.text},
+            ts          {dialect.text} NOT NULL
+        )
+        """,
+        # One row per pipeline component (stt/llm/tts/...), upserted on
+        # change. The dashboard's red/amber/green board reads only this table:
+        # O(components) per refresh, however many millions of events exist.
+        f"""
+        CREATE TABLE IF NOT EXISTS component_health (
+            component     {dialect.text} PRIMARY KEY,
+            last_status   {dialect.text} NOT NULL,
+            last_label    {dialect.text},
+            last_message  {dialect.text},
+            last_session  {dialect.text},
+            last_error    {dialect.text},
+            last_error_at {dialect.text},
+            -- The call the last ERROR happened on. Distinct from
+            -- last_session (the latest event of any status), so an error
+            -- on call A is never blamed on call B that succeeded after it.
+            last_error_session {dialect.text},
+            last_ok_at    {dialect.text},
+            error_count   INTEGER NOT NULL DEFAULT 0,
+            updated_at    {dialect.text} NOT NULL
+        )
+        """,
         # Lookup paths used on every call. Without these, `find_patients` is a
         # full scan - fine at 6 rows, not at 60,000 mothers in Bidar district.
         "CREATE INDEX IF NOT EXISTS idx_mothers_phone ON mothers(phone)",
@@ -168,6 +261,14 @@ def schema_statements(dialect: Dialect) -> list[str]:
         "CREATE INDEX IF NOT EXISTS idx_bp_patient ON bp_records(patient_id)",
         "CREATE INDEX IF NOT EXISTS idx_symptoms_patient ON symptom_records(patient_id)",
         "CREATE INDEX IF NOT EXISTS idx_teleconsults_patient ON teleconsults(patient_id)",
+        # Report-card and dashboard read paths. Composite (key, id) indexes so
+        # "this session's events in order" and "latest errors" are index range
+        # scans, not a sort over the whole table.
+        "CREATE INDEX IF NOT EXISTS idx_reports_session ON call_reports(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_reports_patient ON call_reports(patient_id)",
+        "CREATE INDEX IF NOT EXISTS idx_events_session ON pipeline_events(session_id, id)",
+        "CREATE INDEX IF NOT EXISTS idx_events_status ON pipeline_events(status, id)",
+        "CREATE INDEX IF NOT EXISTS idx_turns_session ON call_turns(session_id, turn_no)",
     ]
 
 
@@ -211,17 +312,25 @@ def danger_sign_columns_migration_statements(dialect: Dialect) -> list[str]:
     clinically urgent symptoms in the whole system - because SQLite has no
     such columns to write into. Same poor-man's-migration reasoning as
     `call_reports_migration_statements` above."""
+    # Generated from SYMPTOM_COLUMNS (2026-09-24) instead of hand-listed, so
+    # every symptom SymptomSet has - including the seven the 2026-09-10 ANC
+    # rewrite added and this list never got - is widened into an existing
+    # database on the next startup. The three original columns are skipped:
+    # they have been in the CREATE TABLE since day one.
     return [
-        f"ALTER TABLE mothers ADD COLUMN vaginal_bleeding {dialect.boolean} NOT NULL DEFAULT 0",
-        f"ALTER TABLE mothers ADD COLUMN severe_abdominal_pain {dialect.boolean} NOT NULL DEFAULT 0",
-        f"ALTER TABLE symptom_records ADD COLUMN vaginal_bleeding {dialect.boolean} NOT NULL DEFAULT 0",
-        f"ALTER TABLE symptom_records ADD COLUMN severe_abdominal_pain {dialect.boolean} NOT NULL DEFAULT 0",
-        # 2026-09-02 ANC red-flag additions - same idempotent
-        # attempt-and-swallow-duplicate pattern as everything above.
-        f"ALTER TABLE mothers ADD COLUMN convulsions {dialect.boolean} NOT NULL DEFAULT 0",
-        f"ALTER TABLE mothers ADD COLUMN reduced_fetal_movement {dialect.boolean} NOT NULL DEFAULT 0",
-        f"ALTER TABLE symptom_records ADD COLUMN convulsions {dialect.boolean} NOT NULL DEFAULT 0",
-        f"ALTER TABLE symptom_records ADD COLUMN reduced_fetal_movement {dialect.boolean} NOT NULL DEFAULT 0",
+        f"ALTER TABLE {table} ADD COLUMN {col} {dialect.boolean} NOT NULL DEFAULT 0"
+        for table in ("mothers", "symptom_records")
+        for col in SYMPTOM_COLUMNS[3:]
+    ]
+
+
+def telemetry_migration_statements(dialect: Dialect) -> list[str]:
+    """ADD COLUMN for telemetry tables created by an earlier build. Same
+    attempt-and-swallow-duplicate pattern as every migration here - found
+    necessary on day one, when a component_health table created minutes
+    earlier lacked last_error_session and every health upsert failed."""
+    return [
+        f"ALTER TABLE component_health ADD COLUMN last_error_session {dialect.text}",
     ]
 
 
@@ -247,6 +356,9 @@ SQLITE_PRAGMAS = (
     # commit. FULL would put a disk sync in the middle of a voice turn.
     "PRAGMA synchronous = NORMAL",
     "PRAGMA busy_timeout = 5000",
+    "PRAGMA cache_size = -64000",
+    "PRAGMA temp_store = MEMORY",
+    "PRAGMA mmap_size = 268435456",
 )
 
 # CONCURRENCY MODEL - stated explicitly because the 2026-09-02 ANC brief asked
