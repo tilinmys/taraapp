@@ -62,7 +62,21 @@ def load(path):
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 k, v = line.split("=", 1)
-                vals[k.strip()] = v.strip()
+                v = v.strip()
+                # Strip a trailing inline comment the way python-dotenv does
+                # when agent.py loads the real .env locally - confirmed live
+                # 2026-09-09 this was NOT happening here: a real .env line
+                # ("GROQ_ATTEMPT_TIMEOUT=1.5        # groq max observed
+                # 1113ms") got pushed to Secrets Manager with the comment
+                # still attached, and float(os.getenv(...)) on the deployed
+                # instance crashed LLM prewarm outright the moment
+                # GROQ_ATTEMPT_TIMEOUT/OPENROUTER_ATTEMPT_TIMEOUT/
+                # LLM_GROUP_TIMEOUT were added to KEEP below. Simple rule,
+                # not full dotenv-quote-string parsing: an unquoted value's
+                # inline comment starts at whitespace followed by '#'.
+                if not (v.startswith('"') or v.startswith("'")):
+                    v = re.split(r"\s+#", v, maxsplit=1)[0].strip()
+                vals[k.strip()] = v
     except FileNotFoundError:
         pass
     return vals
@@ -74,24 +88,76 @@ merged.update(project)   # project .env wins, matching load_dotenv(override=Fals
 
 # Only the keys the deployed instance actually needs - see
 # provision_infra.sh's secret schema for the full list and rationale.
+#
+# UPDATED 2026-09-09: this list, and the fixed overrides below, had drifted
+# from the actual, live-validated pilot configuration - confirmed directly
+# against the real local .env before this deploy ran, not assumed. Vakyam
+# TTS is out of credits (confirmed live: "Your account has 7 credits
+# remaining but this request requires 60") and Deepgram-only STT was
+# superseded by Gnani days earlier - deploying the old values here would
+# have shipped a non-functional TTS provider and skipped the tuned STT
+# pairing. The VAD/pacing/LLM tuning vars below were entirely absent from
+# this list before, meaning the deployed instance silently fell back to
+# code defaults for all of them regardless of what was tuned locally.
 KEEP = [
     "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
     "DEEPGRAM_API_KEY", "VAKYAM_API_KEY", "GNANI_API_KEY", "SARVAM_API_KEY",
     "GROQ_API_KEYS", "GROQ_API_KEY", "GROQ_API_KEY_1", "GROQ_API_KEY_2",
     "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL",
     "OPENROUTER_LLM_MODEL", "OPENROUTER_BACKUP_MODEL", "GROQ_LLM_MODEL",
+    # OPENAI_API_KEY was missing from this list entirely (confirmed live,
+    # 2026-09-09): this script predates OpenAI becoming the LLM primary, so
+    # the deployed instance's build_llm() silently fell through to
+    # groq+openrouter only - not a reordering, OpenAI's tier was never
+    # constructed at all for lack of a key. OPENAI_LLM_MODEL is optional -
+    # build_llm() defaults it to "gpt-4o-mini" (agent.py) if unset.
+    "OPENAI_API_KEY", "OPENAI_LLM_MODEL",
+    # PostgreSQL/Supabase cutover.  Kept in Secrets Manager and hydrated into
+    # /etc/sakhi.env like the provider credentials; never printed by this
+    # script.  When absent, the current SQLite pilot behavior is unchanged.
+    "DATABASE_URL", "POSTGRES_URL", "DATABASE_CONNECT_TIMEOUT",
+    # Sarvam TTS/STT tuning (active provider pair as of 2026-09-08/09).
+    "SARVAM_TTS_MODEL", "SARVAM_SPEAKER", "SARVAM_TTS_HTTP_TIMEOUT",
+    "SARVAM_STT_MODEL", "SARVAM_STT_MODE",
+    "GNANI_VOICE",
+    # VAD / turn-pacing tuning - each value here is a live-call-verified
+    # correction documented in .env's own comment history; omitting them
+    # silently reverts the deployed instance to code defaults, which do not
+    # match what was actually field-tested. NOISE_CANCELLATION deliberately
+    # NOT in this list - it is its own fixed override below (bvc/webrtc are
+    # synonyms in _noise_filter(), so listing it here too would just write
+    # the same setting under both names into the same secret string).
+    "VAD_ACTIVATION_THRESHOLD", "VAD_MIN_SILENCE",
+    "MIN_ENDPOINTING_DELAY", "VAD_ENDPOINT_SLOW_S", "TTS_EAGER_MIN_CHUNK_CHARS",
+    "LATENT_FILLER_DELAY",
+    # LLM tuning (OpenAI-primary-with-fallback, 2026-09-09).
+    "LLM_PROVIDER_ORDER", "SAKHI_LLM_HEDGE", "LLM_MAX_RETRY_PER_PROVIDER",
+    "LLM_TEMPERATURE", "LLM_MAX_COMPLETION_TOKENS", "LLM_TOP_P",
+    "LLM_CONTEXT_MAX_ITEMS", "GROQ_ATTEMPT_TIMEOUT", "OPENROUTER_ATTEMPT_TIMEOUT",
+    "LLM_GROUP_TIMEOUT", "SIXTYDB_NAME_MATCH_THRESHOLD",
 ]
 with open(out_path, "w", encoding="utf-8") as f:
     # Fixed production overrides, always written regardless of local .env -
     # these are pilot decisions (single-provider, no fallback for STT/TTS;
     # this worker's own distinct agent name), not values to inherit from
     # whatever a local dev session happened to have set.
+    #
+    # STT_PRIMARY/TTS_PROVIDER corrected 2026-09-09 (were deepgram/vakyam -
+    # stale relative to the actual, currently-working pilot pairing; see the
+    # KEEP list comment above for why). SAKHI_SCOPED_TOOLS added the same
+    # day, explicitly enabled per the user's own choice: the duplicate-
+    # function-name bug that motivated disabling it (18 Aug 2026) is fixed
+    # and covered by tests/test_scoped_tools.py's rescoping-merge test as of
+    # this deployment - shipping it disabled would silently drop the
+    # register_mother-duplicate-record guard and the pre-triage
+    # connect_smfmi_specialist gate in production.
     f.write("LIVEKIT_AGENT_NAME=sakhi-maternal-care\n")
     f.write("LIVEKIT_EXPLICIT_DISPATCH=true\n")
-    f.write("STT_PRIMARY=deepgram\n")
-    f.write("VOICE_STT_FALLBACK_ENABLED=false\n")
-    f.write("TTS_PROVIDER=vakyam\n")
+    f.write("STT_PRIMARY=gnani\n")
+    f.write("VOICE_STT_FALLBACK_ENABLED=true\n")
+    f.write("TTS_PROVIDER=sarvam\n")
     f.write("VOICE_TTS_FALLBACK_ENABLED=false\n")
+    f.write("SAKHI_SCOPED_TOOLS=true\n")
     f.write("SAKHI_AVATAR=none\n")
     # bvc, not the SIP-trunk "telephony" default: agent.py's own
     # _noise_filter() docstring is explicit that BVCTelephony expects
@@ -118,12 +184,25 @@ with open(out_path, "w", encoding="utf-8") as f:
             f.write(f"{k}={merged[k]}\n")
 
 missing = [k for k in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
-                        "DEEPGRAM_API_KEY", "VAKYAM_API_KEY") if k not in merged or not merged.get(k)]
+                        "SARVAM_API_KEY", "GNANI_API_KEY")
+           if k not in merged or not merged.get(k)]
 if missing:
     print(f"WARNING: these required keys were not found locally: {', '.join(missing)}", file=sys.stderr)
 PYEOF
 
 # --- Preserve the dashboard password already in the secret (do not clobber) -
+# Explicit override (2026-09-09): set SAKHI_DASHBOARD_USER/
+# SAKHI_DASHBOARD_PASSWORD in the environment to force specific credentials
+# for one push, e.g. `SAKHI_DASHBOARD_USER=sakhi SAKHI_DASHBOARD_PASSWORD=...
+# ./push_secrets.sh`. Deliberately an env override, not a value hardcoded
+# into this script - a plaintext password belongs in nobody's source
+# control, and the default preserve-or-random behavior below stays intact
+# for every normal run that doesn't set these.
+if [ -n "${SAKHI_DASHBOARD_USER:-}" ] && [ -n "${SAKHI_DASHBOARD_PASSWORD:-}" ]; then
+  echo "DASHBOARD_USER=${SAKHI_DASHBOARD_USER}" >> "${TMP_MERGED}"
+  echo "DASHBOARD_PASSWORD=${SAKHI_DASHBOARD_PASSWORD}" >> "${TMP_MERGED}"
+  echo ">>> Dashboard credentials set from SAKHI_DASHBOARD_USER/SAKHI_DASHBOARD_PASSWORD override."
+else
 EXISTING_DASH=$(aws secretsmanager get-secret-value --secret-id sakhi/api-keys \
   --region "${AWS_REGION}" --query SecretString --output text 2>/dev/null \
   | grep -E "^DASHBOARD_(USER|PASSWORD)=" || true)
@@ -134,6 +213,7 @@ else
   DASHBOARD_PASSWORD=$(openssl rand -base64 18 | tr -d '=+/' | cut -c1-20)
   echo "DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}" >> "${TMP_MERGED}"
   echo ">>> No existing dashboard password found - generated a new one: ${DASHBOARD_PASSWORD}"
+fi
 fi
 
 # --- Preserve (or mint) the egress-recording S3 credentials, same pattern -

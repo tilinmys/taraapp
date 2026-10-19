@@ -82,13 +82,20 @@ aws s3api put-bucket-lifecycle-configuration \
 # --- 2. Secrets Manager: schema only, no real values here -------------------
 #
 # Matches exactly what agent.py / sakhi_tools.py / *_wrappers.py read via
-# os.getenv() (confirmed 2026-09-02) plus the config knobs this session
-# tuned and pinned as the pilot's chosen single-provider/fallback shape:
+# os.getenv(). This is a placeholder schema only - push_secrets.sh fully
+# REPLACES this secret's value (put-secret-value, not a merge) with the
+# real, live-validated pilot configuration, so the exact values below don't
+# matter functionally; they're written for readability of what this secret
+# is FOR before push_secrets.sh has ever run. Updated 2026-09-09 to name the
+# actually-current provider pair rather than an earlier, since-superseded
+# one (Vakyam TTS ran out of credits; Deepgram-only STT was replaced by
+# Gnani - see .env's own comment history for the full timeline):
 #
-#   STT: Deepgram only (VOICE_STT_FALLBACK_ENABLED=false - Sarvam is
-#        credit-exhausted, confirmed live; see .env's own comment history)
-#   TTS: Vakyam only  (VOICE_TTS_FALLBACK_ENABLED=false)
-#   LLM: Groq hedged against OpenRouter (kept as a fallback chain)
+#   STT: Gnani primary, Deepgram fallback (VOICE_STT_FALLBACK_ENABLED=true)
+#   TTS: Sarvam only  (VOICE_TTS_FALLBACK_ENABLED=false - Vakyam is
+#        credit-exhausted, confirmed live; kept configured, not deleted, as
+#        the fastest-measured provider to flip back to once topped up)
+#   LLM: OpenAI primary, Groq/OpenRouter as real fallback tiers (not raced)
 DASHBOARD_PASSWORD=$(openssl rand -base64 18 | tr -d '=+/' | cut -c1-20)
 
 echo "Creating Secrets Manager secret: sakhi/api-keys (schema only)..."
@@ -103,16 +110,15 @@ LIVEKIT_AGENT_NAME=sakhi-maternal-care
 LIVEKIT_EXPLICIT_DISPATCH=true
 
 DEEPGRAM_API_KEY=
-STT_PRIMARY=deepgram
-VOICE_STT_FALLBACK_ENABLED=false
+GNANI_API_KEY=
+STT_PRIMARY=gnani
+VOICE_STT_FALLBACK_ENABLED=true
 
 VAKYAM_API_KEY=
-TTS_PROVIDER=vakyam
-VOICE_TTS_FALLBACK_ENABLED=false
-# Kept configured but inactive - re-enabling the fallback chain (flip the
-# flag above) needs these present, not re-integrated from scratch.
-GNANI_API_KEY=
 SARVAM_API_KEY=
+TTS_PROVIDER=sarvam
+VOICE_TTS_FALLBACK_ENABLED=false
+SAKHI_SCOPED_TOOLS=true
 
 GROQ_API_KEYS=
 OPENROUTER_API_KEY=

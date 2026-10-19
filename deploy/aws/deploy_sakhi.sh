@@ -50,25 +50,61 @@ echo "Staging application code to s3://${DEPLOY_BUCKET}/..."
 # Every runtime Python module this app actually imports at startup or
 # on a call - not test_*.py, not scripts/ (SIP trunk setup, one-off
 # benchmarks), not the throwaway dev-preview scaffolding.
+# Exactly the modules reachable from agent.py/status_server.py (2026-09-25:
+# faq_cache, gnani_wrappers, mock_sixtydb, murf_wrappers, vercel_common were
+# never imported and were removed from the server; Gnani STT comes from the
+# livekit plugin). tests/test_deploy_manifest.py fails if one goes missing.
 PY_FILES=(
-  agent.py db_helper.py faq_cache.py gemini_wrappers.py gnani_wrappers.py
-  guardrails.py kitten_tts_provider.py llm_hedge.py mock_sixtydb.py
-  murf_wrappers.py rumik_wrappers.py sakhi_avatar.py sakhi_domain.py
-  sakhi_intake.py sakhi_kannada.py sakhi_pacing.py sakhi_prompts.py
-  sakhi_repository.py sakhi_schema.py sakhi_sql_repository.py sakhi_tools.py
-  sakhi_triage.py sarvam_wrappers.py sixtydb_wrappers.py skillies_wrappers.py
-  smallest_wrappers.py status_server.py vakyam_wrappers.py vercel_common.py
-  voice_catalog.py
+  agent.py clinical_terms.py db_helper.py gemini_wrappers.py
+  guardrails.py kitten_tts_provider.py llm_hedge.py
+  rumik_wrappers.py sakhi_avatar.py
+  sakhi_aws_costs.py sakhi_dashboard_store.py sakhi_domain.py sakhi_intake.py sakhi_kannada.py
+  sakhi_normalizer.py sakhi_pacing.py sakhi_question_lock.py
+  sakhi_prompts.py sakhi_repository.py sakhi_schema.py sakhi_sql_repository.py
+  sakhi_telemetry.py sakhi_tools.py sakhi_triage.py sarvam_wrappers.py sixtydb_wrappers.py
+  skillies_wrappers.py smallest_wrappers.py status_server.py tts_audio_cache.py
+  vakyam_wrappers.py voice_catalog.py
 )
+# tests/test_deploy_manifest.py walks agent.py's real import graph and fails
+# if a reachable local module is missing here. It caught tts_audio_cache.py
+# on its first run (2026-09-24): present on the live server only because it
+# had been copied there by hand, so a clean deploy would have crashed at import.
+# clinical_terms.py added 2026-09-09: agent.py imports it
+# (CLINICAL_KEYWORDS, canonicalise) and this hand-maintained list had not
+# been updated since that module was added earlier this session - confirmed
+# by diffing agent.py's actual `from X import` statements against this list
+# before this deploy ran, not assumed. Missing it would have crashed
+# sakhi-agent.service at import time on every deploy.
 for f in "${PY_FILES[@]}"; do
   [ -f "$f" ] && aws s3 cp "$f" "s3://${DEPLOY_BUCKET}/app/$f" --only-show-errors
 done
 aws s3 cp requirements.txt "s3://${DEPLOY_BUCKET}/app/requirements.txt" --only-show-errors
 [ -f mock_sixtydb.json ] && aws s3 cp mock_sixtydb.json "s3://${DEPLOY_BUCKET}/app/mock_sixtydb.json" --only-show-errors
 
+# Ship only the production operational scripts. Broad-syncing scripts/ would
+# place ad-hoc benchmarks and live provider probes on the server. The
+# migration remains dry-run unless --apply is supplied; the keepalive writes
+# only its isolated, explicitly test-only maintenance row.
+OPERATIONAL_SCRIPTS=(
+  scripts/migrate_sakhi_sqlite_to_postgres.py
+  scripts/supabase_keepalive.py
+)
+for f in "${OPERATIONAL_SCRIPTS[@]}"; do
+  aws s3 cp "$f" "s3://${DEPLOY_BUCKET}/app/$f" --only-show-errors
+done
+
+SYSTEMD_FILES=(
+  deploy/aws/sakhi-supabase-keepalive.service
+  deploy/aws/sakhi-supabase-keepalive.timer
+)
+for f in "${SYSTEMD_FILES[@]}"; do
+  aws s3 cp "$f" "s3://${DEPLOY_BUCKET}/app/$f" --only-show-errors
+done
+
 echo "Syncing frontend source (excluding node_modules/.next)..."
 aws s3 sync frontend/ "s3://${DEPLOY_BUCKET}/app/frontend/" \
-  --exclude "node_modules/*" --exclude ".next/*" --exclude ".env.local" \
+  --exclude "node_modules/*" --exclude ".next*" --exclude ".next*/*" \
+  --exclude ".env.local" \
   --delete --only-show-errors
 
 echo "Deploying to ${INSTANCE_ID} via SSM (this runs npm ci && npm run build - can take a few minutes)..."
@@ -81,15 +117,27 @@ COMMAND_ID=$(aws ssm send-command \
     \"set -e\",
     \"DEPLOY_BUCKET=${DEPLOY_BUCKET}\",
     \"aws s3 sync s3://\$DEPLOY_BUCKET/app/ /opt/sakhi/ --exclude 'frontend/*'\",
-    \"aws s3 sync s3://\$DEPLOY_BUCKET/app/frontend/ /opt/sakhi/frontend/ --delete --exclude 'node_modules/*' --exclude '.next/*'\",
+    \"aws s3 sync s3://\$DEPLOY_BUCKET/app/frontend/ /opt/sakhi/frontend/ --delete --exclude 'node_modules/*' --exclude '.next*' --exclude '.next*/*'\",
     \"/opt/sakhi/venv/bin/pip install -q -r /opt/sakhi/requirements.txt\",
     \"/opt/sakhi/venv/bin/python3 -m py_compile /opt/sakhi/agent.py /opt/sakhi/sakhi_domain.py /opt/sakhi/sakhi_tools.py /opt/sakhi/sakhi_triage.py /opt/sakhi/sakhi_intake.py /opt/sakhi/sakhi_prompts.py /opt/sakhi/status_server.py\",
-    \"cd /opt/sakhi/frontend && npm ci && npm run build\",
+    # Keep these as separate simple commands.  During the 2026-09-24
+    # Supabase cutover, `npm ci` failed because package-lock.json was stale,
+    # but Bash's `set -e` exception for commands inside an `&&` list allowed
+    # the SSM script to continue.  The old .next directory was then served and
+    # /admin returned 404 while the deploy falsely reported success.  Simple
+    # commands make any install/build failure terminate the remote script.
+    \"cd /opt/sakhi/frontend\",
+    \"npm ci --no-audit --no-fund\",
+    \"npm run build\",
     \"chown -R sakhi:sakhi /opt/sakhi\",
+    \"install -o root -g root -m 0644 /opt/sakhi/deploy/aws/sakhi-supabase-keepalive.service /etc/systemd/system/sakhi-supabase-keepalive.service\",
+    \"install -o root -g root -m 0644 /opt/sakhi/deploy/aws/sakhi-supabase-keepalive.timer /etc/systemd/system/sakhi-supabase-keepalive.timer\",
+    \"systemctl daemon-reload\",
     \"systemctl stop sakhi-agent.service\",
     \"sudo -u sakhi HOME=/opt/sakhi /opt/sakhi/venv/bin/python3 /opt/sakhi/agent.py download-files\",
     \"systemctl start sakhi-agent.service\",
     \"systemctl restart sakhi-frontend.service\",
+    \"if grep -Eq '^(DATABASE_URL|POSTGRES_URL)=' /etc/sakhi.env; then systemctl enable --now sakhi-supabase-keepalive.timer; else systemctl disable --now sakhi-supabase-keepalive.timer 2>/dev/null || true; fi\",
     \"sleep 3\",
     \"systemctl is-active sakhi-agent.service\",
     \"systemctl is-active sakhi-frontend.service\"

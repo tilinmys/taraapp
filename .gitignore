@@ -27,14 +27,25 @@ frontend/.env.local
 # credential that must never reach git history.
 deploy/aws/.deploy-state/
 
-# Database
+# Database - local SQLite is test/mock data only; production is Supabase.
 data/
+tests/data/
+*.sqlite
 *.sqlite3
 *.db
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.db-wal
+*.db-shm
+*.db-journal
 
 # Auto-generated per-voice greeting cache - regenerated on first use,
 # hash-keyed to GREETING_TEXT so it never goes stale. Not source.
 assets/audio/greetings/
+# Same for the per-clause TTS cache (tts_audio_cache.CachedTTS).
+assets/audio/tts_cache/
 
 # Logs
 *.log
@@ -58,3 +69,14 @@ desktop.ini
 
 # pytest cache
 .pytest_cache/
+
+# Local-only tooling and scratch output (2026-10-19) - never committed
+.mcp.json
+run_ssm.py
+scratch/
+docs_scratch/
+latency_audit_raw/
+session_source.txt
+test_ec2_tts.py
+# Per-fix patch files are redundant with the commits themselves
+docs/*.patch

@@ -1,0 +1,17 @@
+[Unit]
+Description=Sakhi Supabase keepalive (non-clinical test row)
+After=network-online.target sakhi-hydrate-env.service
+Wants=network-online.target sakhi-hydrate-env.service
+
+[Service]
+Type=oneshot
+User=sakhi
+Group=sakhi
+WorkingDirectory=/opt/sakhi
+EnvironmentFile=/etc/sakhi.env
+ExecStart=/opt/sakhi/venv/bin/python3 /opt/sakhi/scripts/supabase_keepalive.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+

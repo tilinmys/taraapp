@@ -13,6 +13,19 @@
       "runtimeArgs": ["agent.py", "dev"],
       "port": 8080,
       "url": "http://localhost:8080"
+    },
+    {
+      "name": "dashboard-demo-api",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["scripts/dashboard_demo_server.py"],
+      "port": 8095,
+      "url": "http://localhost:8095"
+    },
+    {
+      "name": "dashboard-demo-ui",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "set WORKER_STATUS_URL=http://127.0.0.1:8095&& npm --prefix frontend run build && npm --prefix frontend run start -- --port 3105"],
+      "port": 3105
     }
   ]
 }

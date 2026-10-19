@@ -5,10 +5,12 @@
 #
 # What's actually deployed here, and why it differs from that guide:
 #
-#   - The Python worker IS agent.py (this repo's real, ~4900-line
-#     implementation: triage engine, guardrails, 7-stage ANC protocol,
-#     language latch, Vakyam TTS + Deepgram STT + Groq/OpenRouter LLM
-#     fallback) - not a stub using livekit.agents.voice_assistant.
+#   - The Python worker IS agent.py (this repo's real, ~6000-line
+#     implementation: triage engine, guardrails, ANC protocol, language
+#     latch, Sarvam TTS + Gnani STT (Deepgram fallback) + OpenAI-primary/
+#     Groq/OpenRouter LLM fallback - see sakhi/api-keys in Secrets Manager
+#     for the exact active pairing, not this comment, which only describes
+#     shape) - not a stub using livekit.agents.voice_assistant.
 #     VoiceAssistant, which does not exist in the installed livekit-agents.
 #   - status_server.py is NOT a separate service. agent.py's own __main__
 #     block already starts it internally (ENABLE_STATUS_SERVER=true) on
@@ -190,13 +192,41 @@ server {
 }
 EOF
 
+# The HTTP-only block above is only a BOOTSTRAP (it is what lets certbot's
+# HTTP challenge run on a brand-new instance). Once a TLS certificate exists,
+# the repo's deploy/aws/sakhi.nginx.conf (HTTPS, auth-gated /status/) is the
+# real config. Before 2026-09-24 that file was installed by hand and nothing
+# here knew about it, so re-running this script silently replaced the live
+# HTTPS config with HTTP-only - and browsers refuse the microphone over
+# plain HTTP, which would have made every field tablet mute.
+if [ -f /tmp/sakhi.nginx.conf ]; then
+  CERT_PATH=$(grep -oP 'ssl_certificate\s+\K[^;]+' /tmp/sakhi.nginx.conf | head -1)
+  if [ -n "${CERT_PATH}" ] && [ -f "${CERT_PATH}" ]; then
+    cp /tmp/sakhi.nginx.conf /etc/nginx/sites-available/sakhi
+    echo "Installed HTTPS nginx config (certificate present: ${CERT_PATH})."
+  else
+    echo "WARNING: TLS certificate ${CERT_PATH:-<none>} not found - keeping HTTP bootstrap config. Run certbot, then re-run this script."
+  fi
+fi
+
 ln -sf /etc/nginx/sites-available/sakhi /etc/nginx/sites-enabled/default
 nginx -t
 
 # --- 7. Enable services (hydrate first, htpasswd depends on it) ------------
 systemctl daemon-reload
 systemctl enable sakhi-hydrate-env.service
-systemctl start sakhi-hydrate-env.service
+# `restart`, not `start` (confirmed live, 2026-09-09): sakhi-hydrate-env is
+# Type=oneshot with RemainAfterExit=yes, so once it has run once (e.g. from
+# an earlier provisioning of this same instance), systemd considers it
+# already "active" and `systemctl start` on an already-active unit is a
+# documented no-op - it does NOT re-run ExecStart. That silently meant a
+# later push_secrets.sh update never reached /etc/sakhi.env on a re-run of
+# this script against an existing instance: the secret in Secrets Manager
+# was correct, but the file this service writes was not refreshed, and the
+# app kept running whatever was hydrated the first time this instance was
+# ever set up. `restart` forces ExecStart to run again regardless of the
+# unit's current state.
+systemctl restart sakhi-hydrate-env.service
 systemctl reload nginx
 systemctl enable sakhi-agent.service
 systemctl enable sakhi-frontend.service

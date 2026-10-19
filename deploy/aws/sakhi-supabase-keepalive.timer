@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Sakhi Supabase keepalive every five hours
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=5h
+AccuracySec=1min
+Persistent=true
+Unit=sakhi-supabase-keepalive.service
+
+[Install]
+WantedBy=timers.target
+

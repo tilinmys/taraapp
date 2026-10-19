@@ -37,6 +37,7 @@ fi
 
 echo "Staging setup files to s3://${DEPLOY_BUCKET}/..."
 aws s3 cp setup_instance.sh "s3://${DEPLOY_BUCKET}/setup_instance.sh"
+aws s3 cp sakhi.nginx.conf "s3://${DEPLOY_BUCKET}/sakhi.nginx.conf"
 aws s3 cp ../../requirements.txt "s3://${DEPLOY_BUCKET}/requirements.txt"
 
 echo "Running setup on ${INSTANCE_ID} via SSM..."
@@ -51,6 +52,7 @@ COMMAND_ID=$(aws ssm send-command \
     \"command -v aws >/dev/null 2>&1 || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unzip curl && curl -s https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip && unzip -q -o /tmp/awscliv2.zip -d /tmp && /tmp/aws/install && rm -rf /tmp/awscliv2.zip /tmp/aws)\",
     \"aws s3 cp s3://${DEPLOY_BUCKET}/requirements.txt /opt/sakhi/requirements.txt\",
     \"aws s3 cp s3://${DEPLOY_BUCKET}/setup_instance.sh /tmp/setup_instance.sh\",
+    \"aws s3 cp s3://${DEPLOY_BUCKET}/sakhi.nginx.conf /tmp/sakhi.nginx.conf\",
     \"chmod +x /tmp/setup_instance.sh\",
     \"/tmp/setup_instance.sh\"
   ]" \
