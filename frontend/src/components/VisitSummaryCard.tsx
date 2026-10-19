@@ -47,31 +47,108 @@ export function VisitSummaryCard({ sessionId, onClose }: { sessionId: string; on
   const [card, setCard] = useState<McpCard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [savingNotice, setSavingNotice] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  // Field teams need a durable hand-off after the voice call, not only a
+  // transient modal. Keep this entirely client-side: the summary has already
+  // passed through the existing authenticated report API, and generating a
+  // UTF-8 text file adds no server endpoint, dependency, or patient-data copy.
+  // The BOM preserves Kannada/Hindi text when the file is opened in common
+  // Windows tools used by ASHA programme staff.
+  const downloadReport = () => {
+    if (!card) return;
+    const line = (label: string, value: unknown) =>
+      `${label}: ${value === null || value === undefined || value === "" ? "—" : String(value)}`;
+    const report = [
+      "Sakhi Maternal Health Visit Summary",
+      "===================================",
+      line("Session ID", sessionId),
+      line("Mother's name", card.mother_name),
+      line("Age", card.age),
+      line("Village", card.village),
+      line("Phone", card.phone),
+      line("Gestational age", card.gestational_weeks ? `${card.gestational_weeks} weeks` : null),
+      line("Blood pressure", card.blood_pressure),
+      line("Danger signs", card.danger_signs.length ? card.danger_signs.join(", ") : "None reported"),
+      line("Risk category", card.risk_category),
+      line("Referral", card.referral_status),
+      line("Referral reason", card.referral_trigger),
+      line("Questions answered", card.questions_answered),
+      line("Visit date", card.visit_date),
+      line("Language", card.language),
+      "",
+      "Draft MCP/RCH-style summary — verify against the printed register before filing.",
+    ].join("\n");
+    const blob = new Blob(["\uFEFF", report], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `sakhi-visit-${sessionId.replace(/[^a-zA-Z0-9_-]/g, "-")}.txt`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  };
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    let timer: any = null;
+
+    const fetchCard = async (retryIndex: number) => {
       try {
+        setLoading(true);
+        setError(null);
+        if (retryIndex > 0) {
+          setSavingNotice("Saving visit summary… retrying automatically.");
+        }
         const res = await fetch(`/api/reports/mcp-card?session_id=${encodeURIComponent(sessionId)}`, {
           cache: "no-store",
         });
         const data = await res.json();
         if (cancelled) return;
-        if (!res.ok) {
-          setError(data?.error === "report not found"
-            ? "Visit summary is still being saved - please try again in a few seconds."
-            : (data?.error || "Could not load the visit summary."));
-        } else {
+
+        if (res.ok) {
           setCard(data);
+          setError(null);
+          setSavingNotice(null);
+          setLoading(false);
+          return;
         }
+
+        // If report is not found yet, auto-retry up to 8 times with 1.5s interval
+        if (data?.error === "report not found" && retryIndex < 8) {
+          setSavingNotice("Saving visit summary… retrying automatically.");
+          timer = setTimeout(() => {
+            if (!cancelled) fetchCard(retryIndex + 1);
+          }, 1500);
+          return;
+        }
+
+        // Exceeded retries or other error
+        setSavingNotice(null);
+        setError(
+          data?.error === "report not found"
+            ? "Visit summary is still being saved - please click Try Again in a moment."
+            : (data?.error || "Could not load the visit summary.")
+        );
+        setLoading(false);
       } catch (e: any) {
-        if (!cancelled) setError(e?.message || "Could not load the visit summary.");
-      } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setSavingNotice(null);
+          setError(e?.message || "Could not load the visit summary.");
+          setLoading(false);
+        }
       }
-    })();
-    return () => { cancelled = true; };
-  }, [sessionId]);
+    };
+
+    fetchCard(0);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [sessionId, attempt]);
 
   return (
     <div
@@ -107,8 +184,42 @@ export function VisitSummaryCard({ sessionId, onClose }: { sessionId: string; on
           Draft MCP/RCH-style card — verify against the printed register before filing.
         </p>
 
-        {loading && <p style={{ fontSize: 14, color: "#475569" }}>Loading…</p>}
-        {error && !loading && <p style={{ fontSize: 14, color: "#b91c1c" }}>{error}</p>}
+        {loading && (
+          <div style={{ padding: "12px 0" }}>
+            <p style={{ fontSize: 14, color: "#475569", margin: "0 0 6px" }}>Loading…</p>
+            {savingNotice && (
+              <p style={{ fontSize: 13, color: "#0f766e", fontStyle: "italic", margin: 0 }}>
+                ⏳ {savingNotice}
+              </p>
+            )}
+          </div>
+        )}
+
+        {error && !loading && (
+          <div style={{ marginTop: 8, marginBottom: 12 }}>
+            <p style={{ fontSize: 14, color: "#b91c1c", marginBottom: 10 }}>{error}</p>
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setAttempt((a) => a + 1);
+              }}
+              style={{
+                width: "100%",
+                padding: "9px 12px",
+                borderRadius: 8,
+                border: "1px solid #cbd5e1",
+                background: "#f1f5f9",
+                color: "#1e293b",
+                fontWeight: 600,
+                fontSize: 14,
+                cursor: "pointer",
+              }}
+            >
+              🔄 Try Again
+            </button>
+          </div>
+        )}
 
         {card && !loading && !error && (
           <div>
@@ -127,6 +238,25 @@ export function VisitSummaryCard({ sessionId, onClose }: { sessionId: string; on
             {card.referral_trigger && <Row label="Referral reason" value={card.referral_trigger} />}
             <Row label="Questions answered" value={card.questions_answered} />
             <Row label="Visit date" value={card.visit_date} />
+
+            <button
+              type="button"
+              onClick={downloadReport}
+              style={{
+                marginTop: 18,
+                width: "100%",
+                padding: "12px 10px",
+                borderRadius: 10,
+                border: "1px solid #0f766e",
+                background: "white",
+                color: "#0f766e",
+                fontWeight: 700,
+                fontSize: 15,
+                cursor: "pointer",
+              }}
+            >
+              Download report
+            </button>
           </div>
         )}
 

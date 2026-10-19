@@ -29,12 +29,21 @@ import { useLocalParticipant, useTrackVolume, useVoiceAssistant } from "@livekit
 import type { LocalAudioTrack, RemoteAudioTrack } from "livekit-client";
 import type { AgentVoiceState } from "./SakhiVideoAvatar";
 
+// Every state livekit's useVoiceAssistant can report. The fallback used to
+// be "Speak anytime", so while Sakhi had not yet joined ("connecting",
+// "initializing", "disconnected" were missing here) the screen told the ASHA
+// worker to talk to no one.
+const JOINING = "ಸಖಿ ಬರುತ್ತಿದ್ದಾಳೆ... (Sakhi is joining)";
 const STATE_LABEL: Record<string, string> = {
   listening: "ಕೇಳಿಸಿಕೊಳ್ಳುತ್ತಿದ್ದೇನೆ... (Listening)",
   thinking: "ಪರಿಶೀಲಿಸಲಾಗುತ್ತಿದೆ... (Processing)",
   speaking: "ಸಖಿ ಮಾತನಾಡುತ್ತಿದ್ದಾಳೆ (Speaking)",
   idle: "ಮಾತನಾಡಿ (Speak anytime)",
-  connecting: "ಸಂಪರ್ಕಿಸುತ್ತಿದೆ... (Connecting)",
+  connecting: JOINING,
+  initializing: JOINING,
+  "pre-connect-buffering": JOINING,
+  disconnected: JOINING,
+  failed: "ಸಂಪರ್ಕ ತಪ್ಪಿದೆ (Connection lost)",
 };
 
 export function AshaVoiceReactor({ agentState }: { agentState: AgentVoiceState }) {
@@ -54,7 +63,7 @@ export function AshaVoiceReactor({ agentState }: { agentState: AgentVoiceState }
     <section
       className="flex h-[20dvh] min-h-32 w-full shrink-0 flex-col items-center justify-center gap-3"
       role="img"
-      aria-label={STATE_LABEL[agentState] || STATE_LABEL.idle}
+      aria-label={STATE_LABEL[agentState] || JOINING}
     >
       {/* Saffron accent (2026-09-04 palette): this column is the one
           element on screen whose whole job is "the call is alive and
@@ -70,7 +79,7 @@ export function AshaVoiceReactor({ agentState }: { agentState: AgentVoiceState }
       />
 
       <p className="text-center text-sm font-semibold text-forest sm:text-base">
-        {STATE_LABEL[agentState] || STATE_LABEL.idle}
+        {STATE_LABEL[agentState] || JOINING}
       </p>
     </section>
   );

@@ -31,7 +31,7 @@ import {
   RoomAudioRenderer,
   useRoomContext,
 } from "@livekit/components-react";
-import { Room, RoomEvent } from "livekit-client";
+import { Room, RoomEvent, ConnectionState } from "livekit-client";
 import "@livekit/components-styles";
 import styles from "./page.module.css";
 import { VisitSummaryCard } from "../components/VisitSummaryCard";
@@ -123,12 +123,14 @@ const COPY = {
     idleTitle: "Ready to Assist",
     idleSub: "Press the green button below to start your call",
     connecting: "Connecting to Sakhi...",
-    connectingSub: "Establishing WebRTC voice session",
+    connectingSub: "Please wait a moment",
     start: "Start Conversation",
     end: "End Call",
     hint: "After pressing start, speak naturally. Sakhi is listening.",
     chooseLang: "Select Language",
     micNote: "Please allow microphone access when prompted",
+    startFailed: "Sakhi could not be reached. Please wait a moment and press Start again.",
+    micBlocked: "The microphone is blocked. Allow the microphone for this site, then press Start again.",
   },
   kannada: {
     tagline: "Maternal Health Voice Assistant",
@@ -142,6 +144,8 @@ const COPY = {
     hint: "After pressing, just speak normally. Sakhi is listening.",
     chooseLang: "Select Language / ಭಾಷೆ ಆಯ್ಕೆ ಮಾಡಿ",
     micNote: "Please allow microphone access (ಮೈಕ್ರೊಫೋನ್ ಅನುಮತಿ ನೀಡಿ)",
+    startFailed: "ಸಖಿ ಸಂಪರ್ಕ ಸಿಗಲಿಲ್ಲ. ಸ್ವಲ್ಪ ಹೊತ್ತು ಕಾದು ಮತ್ತೆ ಒತ್ತಿರಿ. (Sakhi could not be reached - wait a moment and press again.)",
+    micBlocked: "ಮೈಕ್ರೊಫೋನ್ ತಡೆಯಲಾಗಿದೆ. ಅನುಮತಿ ನೀಡಿ ಮತ್ತೆ ಒತ್ತಿರಿ. (Microphone blocked - allow it and press again.)",
   },
   hindi: {
     tagline: "Maternal Health Voice Assistant",
@@ -155,6 +159,8 @@ const COPY = {
     hint: "After pressing, just speak normally. Sakhi is listening.",
     chooseLang: "Select Language / भाषा चुनें",
     micNote: "Please allow microphone access (माइक्रोफ़ोन की अनुमति दें)",
+    startFailed: "सखी से संपर्क नहीं हुआ। थोड़ा रुककर फिर से दबाएँ। (Sakhi could not be reached - wait a moment and press again.)",
+    micBlocked: "माइक्रोफ़ोन बंद है। अनुमति दें और फिर से दबाएँ। (Microphone blocked - allow it and press again.)",
   },
 } as const;
 
@@ -201,22 +207,31 @@ function RoomLogger({ onLog }: { onLog: (text: string, kind?: LogMessage["kind"]
 
   useEffect(() => {
     if (!room) return;
-    const onJoin = (p: any) => onLog(`Participant joined: ${p.identity}`, "ok");
-    const onLeave = (p: any) => onLog(`Participant left: ${p.identity}`, "warn");
-    const onTrack = (_t: any, _pub: any, p: any) => onLog(`Track subscribed from ${p.identity}`, "ok");
-    const onDisc = () => onLog("Room disconnected", "warn");
+    // Plain wording: this rail is for a supervisor looking over the ASHA
+    // worker's shoulder, not a WebRTC engineer. Agent participants are the
+    // only remote identities in a Sakhi room.
+    const onJoin = () => onLog("Sakhi joined the call", "ok");
+    const onLeave = () => onLog("Sakhi left the call", "warn");
+    const onTrack = () => onLog("Sakhi's voice connected", "ok");
+    const onDisc = () => onLog("Call disconnected", "warn");
+    const onConn = () => onLog("Call connected", "ok");
 
     room.on(RoomEvent.ParticipantConnected, onJoin);
     room.on(RoomEvent.ParticipantDisconnected, onLeave);
     room.on(RoomEvent.TrackSubscribed, onTrack);
     room.on(RoomEvent.Disconnected, onDisc);
-    onLog("WebRTC connection established", "ok");
+    room.on(RoomEvent.Connected, onConn);
+
+    if (room.state === ConnectionState.Connected) {
+      onLog("Call connected", "ok");
+    }
 
     return () => {
       room.off(RoomEvent.ParticipantConnected, onJoin);
       room.off(RoomEvent.ParticipantDisconnected, onLeave);
       room.off(RoomEvent.TrackSubscribed, onTrack);
       room.off(RoomEvent.Disconnected, onDisc);
+      room.off(RoomEvent.Connected, onConn);
     };
   }, [room, onLog]);
 
@@ -228,8 +243,9 @@ function RoomLogger({ onLog }: { onLog: (text: string, kind?: LogMessage["kind"]
 export default function Home() {
   const [token, setToken] = useState<string | null>(null);
   const [url, setUrl] = useState<string | null>(null);
-  const [workerUrl, setWorkerUrl] = useState<string | null>(null);
-  const [lang, setLang] = useState<LangKey>("english");
+  // Kannada first; English is not offered in the pilot (the worker also
+  // refuses to speak it - see spoken_language() in agent.py).
+  const [lang, setLang] = useState<LangKey>("kannada");
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [room, setRoom] = useState<Room | null>(null);
@@ -254,6 +270,14 @@ export default function Home() {
   // when they need it - only the DEFAULT was wrong, the mechanism was fine.
   const [logsOpen, setLogsOpen] = useState(false);
   const roomRef = useRef<Room | null>(null);
+  const connectingRef = useRef(false);
+  const isEndingRef = useRef(false);
+  // Set by LiveKitRoom's onMediaDeviceFailure; shown on the call screen.
+  const [micBlocked, setMicBlocked] = useState(false);
+  // "Try again" from the call screen: end this call without offering its
+  // (empty) visit summary, then start a fresh one.
+  const retryingRef = useRef(false);
+  const startCallRef = useRef<() => void>(() => {});
 
   const [logs, setLogs] = useState<LogMessage[]>([]);
   const logsCursorRef = useRef<number>(-1);
@@ -300,6 +324,7 @@ export default function Home() {
   // "View visit summary" (Module C, 2026-08-30): shown ~10s after end_call,
   // matching the time save_call_report's async DB write needs to land.
   const [endedSessionId, setEndedSessionId] = useState<string | null>(null);
+  const lastSessionIdRef = useRef<string | null>(null);
   const [showSummaryPrompt, setShowSummaryPrompt] = useState(false);
   const [showSummaryCard, setShowSummaryCard] = useState(false);
 
@@ -311,193 +336,124 @@ export default function Home() {
     setLogs((prev) => [...prev.slice(-399), { id: logIdRef.current++, time, text, kind }]);
   }, []);
 
+  // One worker event -> log row + the call-screen state it drives (risk
+  // pill, mother's name, identity box, live form). Shared by every batch the
+  // poll loop receives, so there is exactly one place that interprets labels.
+  const applyWorkerEvents = useCallback((events: any[]) => {
+    if (!events.length) return;
+    const entries: LogMessage[] = events.map((ev: any) => {
+      const time = ev.ts
+        ? new Date(ev.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+        : new Date().toLocaleTimeString();
+      const status = String(ev.status || "info");
+      const details =
+        ev.details && typeof ev.details === "object" && Object.keys(ev.details).length
+          ? (ev.details as Record<string, unknown>)
+          : undefined;
+      return {
+        id: logIdRef.current++,
+        time,
+        text: `[${ev.stage || "worker"}] ${ev.label || ""} ${ev.message ? "— " + ev.message : ""}`,
+        kind: (["ok", "warn", "error"].includes(status) ? status : "info") as LogMessage["kind"],
+        details,
+        stage: ev.stage ? String(ev.stage) : undefined,
+      };
+    });
+    setLogs((prev) => [...prev.slice(-Math.max(0, 400 - entries.length)), ...entries.slice(-400)]);
+
+    for (const ev of events) {
+      const label = String(ev.label || "");
+      const match = label.match(/^Triage:\s*(HIGH_RISK|MODERATE|OBSERVATION|ROUTINE)/);
+      if (match) setRisk(match[1] as RiskLevel);
+
+      if (
+        label === "Patient found" ||
+        label === "Mother registered" ||
+        label === "Identity resolved via frontend"
+      ) {
+        const d = ev.details || {};
+        if (typeof d.name === "string" && d.name) setMotherName(d.name);
+        if (typeof d.age === "number") setMotherAge(d.age);
+      }
+
+      if (label === "Identity fallback: show text box") setShowIdentityBox(true);
+      if (label === "Identity resolved via frontend") setShowIdentityBox(false);
+
+      if (label === "Live form sync") {
+        const d = ev.details || {};
+        const symptoms = d.symptoms || {};
+        setLiveForm({
+          systolic: typeof d.systolic === "number" ? d.systolic : null,
+          diastolic: typeof d.diastolic === "number" ? d.diastolic : null,
+          gestational_weeks: typeof d.gestational_weeks === "number" ? d.gestational_weeks : null,
+          symptoms: {
+            headache: Boolean(symptoms.headache),
+            blurry_vision: Boolean(symptoms.blurry_vision),
+            swelling: Boolean(symptoms.swelling),
+            vaginal_bleeding: Boolean(symptoms.vaginal_bleeding),
+            severe_abdominal_pain: Boolean(symptoms.severe_abdominal_pain),
+          },
+        });
+      }
+    }
+  }, []);
+
+  // Worker log stream: cursor polling of /api/logs (status_server's /logs).
+  //
+  // This is the ONLY live channel. The EventSource to /status/events that
+  // used to run alongside it could never deliver in production: calls run in
+  // livekit's per-job child process, and the SSE client list lives in the
+  // parent process that hosts status_server, so pipeline_event()'s
+  // broadcast always found zero clients. Where it did work (a dev setup
+  // with in-process jobs) every event arrived twice.
+  //
+  // Cursor rules, each one a past "logs stopped appearing" cause:
+  // - the cursor is only ever taken from a successful response. A 502
+  //   during a worker restart used to hand back next=0 and replay three
+  //   weeks of history 250 lines at a time before reaching the live call;
+  // - until the "latest" bootstrap succeeds, polling retries the bootstrap
+  //   rather than guessing a cursor;
+  // - a cursor that moves backwards is accepted as-is (file truncated or
+  //   rotated on the server), never treated as an error.
   useEffect(() => {
     let cancelled = false;
     let inFlight = false;
 
-    const bootstrap = async () => {
-      try {
-        const res = await fetch("/api/logs?since=latest");
-        const data = await res.json();
-        logsCursorRef.current = typeof data.next === "number" ? data.next : 0;
-      } catch {
-        logsCursorRef.current = 0;
+    const fetchLogs = async (since: string) => {
+      const res = await fetch(`/api/logs?since=${since}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`logs ${res.status}`);
+      const data = await res.json();
+      if (!data || typeof data.next !== "number" || !Array.isArray(data.events)) {
+        throw new Error("logs: unexpected payload");
       }
+      return data as { next: number; events: any[] };
     };
 
-    const poll = async () => {
-      if (logsCursorRef.current < 0 || inFlight) return;
+    const tick = async () => {
+      if (inFlight || cancelled) return;
       inFlight = true;
       try {
-        const res = await fetch(`/api/logs?since=${logsCursorRef.current}`, { cache: "no-store" });
-        const data = await res.json();
-        if (cancelled || !data || !Array.isArray(data.events)) return;
-        logsCursorRef.current = typeof data.next === "number" ? data.next : logsCursorRef.current;
-        if (!data.events.length) return;
-
-        const entries: LogMessage[] = data.events.map((ev: any) => {
-          const time = ev.ts
-            ? new Date(ev.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-            : new Date().toLocaleTimeString();
-          const status = String(ev.status || "info");
-          const details =
-            ev.details && typeof ev.details === "object" && Object.keys(ev.details).length
-              ? (ev.details as Record<string, unknown>)
-              : undefined;
-          return {
-            id: logIdRef.current++,
-            time,
-            text: `[${ev.stage || "worker"}] ${ev.label || ""} ${ev.message ? "— " + ev.message : ""}`,
-            kind: (["ok", "warn", "error"].includes(status) ? status : "info") as LogMessage["kind"],
-            details,
-            stage: ev.stage ? String(ev.stage) : undefined,
-          };
-        });
-        setLogs((prev) => [...prev.slice(-(400 - entries.length)), ...entries]);
-
-        for (const ev of data.events) {
-          const label = String(ev.label || "");
-          const match = label.match(/^Triage:\s*(HIGH_RISK|MODERATE|OBSERVATION|ROUTINE)/);
-          if (match) setRisk(match[1] as RiskLevel);
-
-          if (
-            label === "Patient found" ||
-            label === "Mother registered" ||
-            label === "Identity resolved via frontend"
-          ) {
-            const d = ev.details || {};
-            if (typeof d.name === "string" && d.name) setMotherName(d.name);
-            if (typeof d.age === "number") setMotherAge(d.age);
-          }
-
-          if (label === "Identity fallback: show text box") setShowIdentityBox(true);
-          if (label === "Identity resolved via frontend") setShowIdentityBox(false);
-
-          if (label === "Live form sync") {
-            const d = ev.details || {};
-            const symptoms = d.symptoms || {};
-            setLiveForm({
-              systolic: typeof d.systolic === "number" ? d.systolic : null,
-              diastolic: typeof d.diastolic === "number" ? d.diastolic : null,
-              gestational_weeks: typeof d.gestational_weeks === "number" ? d.gestational_weeks : null,
-              symptoms: {
-                headache: Boolean(symptoms.headache),
-                blurry_vision: Boolean(symptoms.blurry_vision),
-                swelling: Boolean(symptoms.swelling),
-                vaginal_bleeding: Boolean(symptoms.vaginal_bleeding),
-                severe_abdominal_pain: Boolean(symptoms.severe_abdominal_pain),
-              },
-            });
-          }
+        if (logsCursorRef.current < 0) {
+          const data = await fetchLogs("latest");
+          if (!cancelled) logsCursorRef.current = data.next;
+          return;
         }
+        const data = await fetchLogs(String(logsCursorRef.current));
+        if (cancelled) return;
+        logsCursorRef.current = data.next;
+        applyWorkerEvents(data.events);
       } catch {
-        /* transient poll failure */
+        /* worker restarting or network blip - the next tick retries */
       } finally {
         inFlight = false;
       }
     };
 
     logsCursorRef.current = -1;
-    bootstrap().then(() => { if (!cancelled) poll(); });
-    const interval = setInterval(poll, 1200);
+    tick();
+    const interval = setInterval(tick, 1000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, []);
-
-  // SSE for real-time log streaming (replaces polling when connected)
-  useEffect(() => {
-    if (!workerUrl || !connected) return;
-    let eventSource: EventSource | null = null;
-    let cancelled = false;
-
-    const connectSSE = () => {
-      try {
-        eventSource = new EventSource(`${workerUrl}/events`);
-        eventSource.onmessage = (event) => {
-          if (cancelled) return;
-          try {
-            const ev = JSON.parse(event.data);
-            // Skip heartbeat comments
-            if (ev.type === "connected") return;
-
-            const time = ev.ts
-              ? new Date(ev.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-              : new Date().toLocaleTimeString();
-            const status = String(ev.status || "info");
-            const details =
-              ev.details && typeof ev.details === "object" && Object.keys(ev.details).length
-                ? (ev.details as Record<string, unknown>)
-                : undefined;
-            const entry: LogMessage = {
-              id: logIdRef.current++,
-              time,
-              text: `[${ev.stage || "worker"}] ${ev.label || ""} ${ev.message ? "— " + ev.message : ""}`,
-              kind: (["ok", "warn", "error"].includes(status) ? status : "info") as LogMessage["kind"],
-              details,
-              stage: ev.stage ? String(ev.stage) : undefined,
-            };
-            setLogs((prev) => [...prev.slice(-399), entry]);
-
-            // Handle special events
-            const label = String(ev.label || "");
-            const match = label.match(/^Triage:\s*(HIGH_RISK|MODERATE|OBSERVATION|ROUTINE)/);
-            if (match) setRisk(match[1] as RiskLevel);
-
-            if (
-              label === "Patient found" ||
-              label === "Mother registered" ||
-              label === "Identity resolved via frontend"
-            ) {
-              const d = ev.details || {};
-              if (typeof d.name === "string" && d.name) setMotherName(d.name);
-              if (typeof d.age === "number") setMotherAge(d.age);
-            }
-
-            if (label === "Identity fallback: show text box") setShowIdentityBox(true);
-            if (label === "Identity resolved via frontend") setShowIdentityBox(false);
-
-            if (label === "Live form sync") {
-              const d = ev.details || {};
-              const symptoms = d.symptoms || {};
-              setLiveForm({
-                systolic: typeof d.systolic === "number" ? d.systolic : null,
-                diastolic: typeof d.diastolic === "number" ? d.diastolic : null,
-                gestational_weeks: typeof d.gestational_weeks === "number" ? d.gestational_weeks : null,
-                symptoms: {
-                  headache: Boolean(symptoms.headache),
-                  blurry_vision: Boolean(symptoms.blurry_vision),
-                  swelling: Boolean(symptoms.swelling),
-                  vaginal_bleeding: Boolean(symptoms.vaginal_bleeding),
-                  severe_abdominal_pain: Boolean(symptoms.severe_abdominal_pain),
-                },
-              });
-            }
-          } catch (e) {
-            console.warn("Failed to parse SSE event:", e);
-          }
-        };
-
-        eventSource.onerror = () => {
-          if (!cancelled) {
-            // Reconnect after 2s
-            setTimeout(() => {
-              if (!cancelled && eventSource) {
-                eventSource.close();
-                connectSSE();
-              }
-            }, 2000);
-          }
-        };
-      } catch (e) {
-        console.warn("SSE connection failed:", e);
-      }
-    };
-
-    connectSSE();
-    return () => {
-      cancelled = true;
-      if (eventSource) eventSource.close();
-    };
-  }, [workerUrl, connected]);
+  }, [applyWorkerEvents]);
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -523,7 +479,8 @@ export default function Home() {
   };
 
   const startCall = async () => {
-    if (connecting || roomRef.current) return;
+    if (connectingRef.current || connecting || roomRef.current) return;
+    connectingRef.current = true;
     setConnecting(true);
     setError(null);
     setRisk(null);
@@ -533,45 +490,50 @@ export default function Home() {
     setShowSummaryPrompt(false);
     setShowSummaryCard(false);
     setEndedSessionId(null);
-    // The debug log rail auto-collapses on every call start: it is a
-    // supervisor/dev tool, not part of the redesigned ASHA-facing screen,
-    // and on a narrow phone its mobile layout stacks BELOW the live session
-    // rather than beside it - left open, its own height would push the
-    // single-screen, no-scroll live session below the fold. Still
-    // reachable via the "Logs ›" tab if a supervisor needs it mid-call.
-    setLogsOpen(false);
-    addLog("Requesting token from /api/token…", "info");
+    setMicBlocked(false);
+    addLog("Starting call…", "info");
 
     try {
-      // No provider/voice params - see the comment above. The backend's
-      // TTS_PROVIDER env var decides, so a provider change never again
-      // requires a matching frontend edit to actually take effect.
       const params = new URLSearchParams({ language: lang });
       const res = await fetch(`/api/token?${params.toString()}`);
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
       if (data.error) throw new Error(data.error);
 
-      addLog(`Token issued for ${data.participant}`, "ok");
+      addLog("Call ready, joining…", "ok");
+      if (data.room) {
+        lastSessionIdRef.current = data.room;
+        setEndedSessionId(data.room);
+      }
+
       const active = new Room();
       roomRef.current = active;
       setRoom(active);
-      setToken(data.token);
       setUrl(data.url);
-      if (data.worker_url) setWorkerUrl(data.worker_url);
+      setToken(data.token);
     } catch (e: any) {
-      addLog(`Connection failed: ${e.message}`, "error");
-      setError(e.message);
+      // Technical reason to the log rail; plain words on screen.
+      addLog(`Could not start the call: ${e.message}`, "error");
+      setError(t.startFailed);
       setConnecting(false);
+      connectingRef.current = false;
+      roomRef.current = null;
+      setRoom(null);
     }
   };
 
   const endCall = useCallback(() => {
-    // Captured before disconnect/null-out below: save_call_report (agent.py)
-    // keys the persisted row by this LiveKit room name, and the "View visit
-    // summary" button (Module C, 2026-08-30) needs it to fetch the MCP card
-    // afterwards - see /api/reports/mcp-card.
-    const sessionId = roomRef.current?.name || null;
-    roomRef.current?.disconnect();
+    if (isEndingRef.current) return;
+    isEndingRef.current = true;
+    connectingRef.current = false;
+
+    const sessionId = roomRef.current?.name || lastSessionIdRef.current || endedSessionId;
+    if (sessionId && !retryingRef.current) {
+      setEndedSessionId(sessionId);
+      lastSessionIdRef.current = sessionId;
+      window.setTimeout(() => setShowSummaryPrompt(true), 1500);
+    }
+
+    const currentRoom = roomRef.current;
     roomRef.current = null;
     setRoom(null);
     setToken(null);
@@ -579,16 +541,34 @@ export default function Home() {
     setConnecting(false);
     setRisk(null);
     setLiveForm(null);
-    addLog("Call ended by user", "info");
 
-    if (sessionId) {
-      setEndedSessionId(sessionId);
-      // 10s: the time save_call_report's async DB write (agent.py, call
-      // teardown) needs to land before the card is fetchable - matches the
-      // plan's timing ask.
-      window.setTimeout(() => setShowSummaryPrompt(true), 10_000);
+    if (currentRoom && currentRoom.state !== ConnectionState.Disconnected) {
+      try {
+        currentRoom.disconnect();
+      } catch (err) {
+        console.warn("Error disconnecting room:", err);
+      }
     }
+    addLog("Call ended", "info");
+
+    setTimeout(() => {
+      isEndingRef.current = false;
+    }, 500);
   }, [addLog]);
+
+  startCallRef.current = startCall;
+
+  const retryCall = useCallback(() => {
+    if (retryingRef.current) return;
+    retryingRef.current = true;
+    addLog("Retrying the call", "warn");
+    endCall();
+    // After endCall's 500ms re-entry guard has cleared.
+    window.setTimeout(() => {
+      retryingRef.current = false;
+      startCallRef.current();
+    }, 700);
+  }, [addLog, endCall]);
 
   return (
     <div className={styles.shell} data-logs={logsOpen ? "open" : "closed"}>
@@ -683,12 +663,28 @@ export default function Home() {
             room={room}
             token={token!}
             serverUrl={url!}
-            connect
-            audio
+            connect={true}
+            audio={true}
             video={false}
-            onConnected={() => { setConnecting(false); addLog("Connected to Sakhi voice session", "ok"); }}
+            onConnected={() => {
+              connectingRef.current = false;
+              setConnecting(false);
+              addLog("Connected, waiting for Sakhi", "ok");
+            }}
             onDisconnected={endCall}
-            onError={(e) => { addLog(`Room error: ${e.message}`, "error"); setError(e.message); }}
+            onMediaDeviceFailure={(failure) => {
+              // Shown INSIDE the call screen (SakhiLiveSession's notice) -
+              // `error` below is only rendered on the start screen, so this
+              // used to be set and never seen while the call looked live.
+              addLog(`Microphone permission or device failure: ${failure}`, "error");
+              setMicBlocked(true);
+            }}
+            onError={(e) => {
+              connectingRef.current = false;
+              addLog(`Call error: ${e.message}`, "error");
+              setError(t.startFailed);
+              setConnecting(false);
+            }}
             style={{ width: "100%", height: "100%" }}
           >
             <RoomAudioRenderer />
@@ -728,6 +724,9 @@ export default function Home() {
               }}
               onNameSubmit={() => setShowIdentityBox(false)}
               onEndCall={endCall}
+              micBlocked={micBlocked}
+              onRetry={retryCall}
+              onHealthIssue={(issue) => addLog(`Call check: ${issue}`, "error")}
             />
           </LiveKitRoom>
         ) : (
@@ -779,7 +778,7 @@ export default function Home() {
 
               <p className="mt-2 text-xs font-bold uppercase tracking-wide text-forest/60">{t.chooseLang}</p>
               <div className="flex w-full flex-wrap justify-center gap-2">
-                {(["english", "kannada", "hindi"] as const).map((key) => (
+                {(["kannada", "hindi"] as const).map((key) => (
                   <button
                     key={key}
                     onClick={() => setLang(key)}
@@ -791,7 +790,7 @@ export default function Home() {
                         : "border-sand bg-white/70 text-forest"
                     }`}
                   >
-                    {key === "english" ? "English" : key === "kannada" ? "ಕನ್ನಡ (Kannada)" : "हिंदी (Hindi)"}
+                    {key === "kannada" ? "ಕನ್ನಡ (Kannada)" : "हिंदी (Hindi)"}
                   </button>
                 ))}
               </div>

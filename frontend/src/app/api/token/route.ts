@@ -102,20 +102,17 @@ export async function GET(req: NextRequest) {
       token,
       url: wsUrl,
       participant,
+      room,
       provider: provider || "smallest",
       voice: voice || "default",
       dispatch_id: dispatchId,
       worker: status,
       // page.tsx reads this to open a direct EventSource to the worker's
       // /events SSE stream (status_server.py's _handle_sse) once connected -
-      // that effect has always guarded on `!workerUrl` and this field was
-      // never actually returned, so the live-event-stream path silently
-      // never ran; every session fell back to /api/logs polling with no
-      // visible error. Same-origin-reachable address the BROWSER can open
-      // directly, not just the Next.js server - matches WORKER_STATUS_URL's
-      // existing use for the server-side proxy routes in this same file.
-      worker_url: WORKER_STATUS_URL,
+      // Same-origin proxied path via Nginx /status/ to avoid Private Network Access / CORS issues.
+      worker_url: "/status",
     });
+
   } catch (error: any) {
     return NextResponse.json(
       { error: `Failed to generate token: ${error.message}` },

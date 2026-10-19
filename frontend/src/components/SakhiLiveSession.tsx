@@ -35,6 +35,7 @@ import { SakhiAvatarStage } from "./SakhiAvatarStage";
 import { LiveIntakeDrawer, type IntakeSlotData, type SymptomFlags } from "./LiveIntakeDrawer";
 import { AshaVoiceReactor } from "./AshaVoiceReactor";
 import { CorrectionKeypad } from "./CorrectionKeypad";
+import { CallHealthNotice } from "./CallHealthNotice";
 
 export type { LangKey };
 export type AgentState = "idle" | "listening" | "thinking" | "speaking" | "connecting";
@@ -75,6 +76,12 @@ export interface SakhiSessionProps {
   onManualSlotEdit: (slot: string, value: number | boolean) => void;
   onNameSubmit: (name: string, age: number) => void;
   onEndCall: () => void;
+  /** Microphone permission/device failure reported by LiveKitRoom. */
+  micBlocked?: boolean;
+  /** End this call and start a fresh one (CallHealthNotice's button). */
+  onRetry?: () => void;
+  /** A call problem CallHealthNotice detected, for the supervisor log. */
+  onHealthIssue?: (issue: string) => void;
 }
 
 export function SakhiLiveSession({
@@ -90,6 +97,9 @@ export function SakhiLiveSession({
   onManualSlotEdit,
   onNameSubmit,
   onEndCall,
+  micBlocked = false,
+  onRetry,
+  onHealthIssue,
 }: SakhiSessionProps) {
   const { state: liveAgentState, agentTranscriptions } = useVoiceAssistant();
   const agentState = agentStateOverride ?? liveAgentState;
@@ -120,6 +130,15 @@ export function SakhiLiveSession({
       >
         <X size={18} />
       </button>
+
+      <CallHealthNotice
+        language={language}
+        agentState={agentState}
+        micBlocked={micBlocked}
+        onRetry={onRetry ?? onEndCall}
+        onEndCall={onEndCall}
+        onIssue={onHealthIssue}
+      />
 
       <SakhiHeader
         language={language}
