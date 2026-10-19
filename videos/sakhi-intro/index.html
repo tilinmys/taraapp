@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=1920, height=1080">
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #fdfaf6;
+      }
+      body {
+        font-family: "Montserrat", sans-serif;
+      }
+
+      :root {
+        --bg: #fdfaf6;
+        --surface: #ffffff;
+        --ink: #1f2937;
+        --ink-soft: #52606d;
+        --teal: #0f766e;
+        --teal-soft: #ccfbf1;
+        --mint: #dcfce7;
+        --line: #e7e2db;
+      }
+
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        background: var(--bg);
+        overflow: hidden;
+      }
+
+      /* ---------- background decorative layer ---------- */
+      .bg-glow {
+        position: absolute;
+        border-radius: 50%;
+        filter: blur(90px);
+        will-change: transform;
+      }
+      .glow-1 {
+        width: 1000px;
+        height: 1000px;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        background: radial-gradient(circle, var(--teal-soft) 0%, transparent 70%);
+        opacity: 0.55;
+      }
+      .glow-2 {
+        width: 620px;
+        height: 620px;
+        left: 8%;
+        top: 12%;
+        background: radial-gradient(circle, var(--mint) 0%, transparent 70%);
+        opacity: 0.45;
+      }
+      .glow-3 {
+        width: 560px;
+        height: 560px;
+        right: 6%;
+        bottom: 8%;
+        background: radial-gradient(circle, var(--teal-soft) 0%, transparent 70%);
+        opacity: 0.4;
+      }
+      .hairline {
+        position: absolute;
+        height: 1px;
+        width: 640px;
+        background: linear-gradient(90deg, transparent, var(--line), transparent);
+        opacity: 0.9;
+      }
+      .hairline-1 {
+        left: 60px;
+        top: 220px;
+      }
+      .hairline-2 {
+        right: 60px;
+        bottom: 240px;
+      }
+
+      /* ---------- avatar stage ---------- */
+      .avatar-stage {
+        position: absolute;
+        left: 50%;
+        top: 46%;
+        transform: translate(-50%, -50%);
+        width: 640px;
+        height: 640px;
+      }
+      .avatar-card {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        border-radius: 44px;
+        overflow: hidden;
+        /* matches the real app's video-layer fallback tone (sampled from the
+           clips' own background) - never a stark white gap if a frame is late. */
+        background: linear-gradient(160deg, #8a876e 0%, #9c987e 100%);
+        box-shadow:
+          0 10px 40px rgba(15, 118, 110, 0.2),
+          0 28px 70px rgba(31, 41, 55, 0.12);
+        border: 1px solid var(--line);
+      }
+      .avatar-clip {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        opacity: 1;
+      }
+
+      /* ---------- small caption tags ---------- */
+      /* .tag-caption is the clip (timed, framework-owned visibility, opacity
+         always 1) - purely a positioning wrapper. The actual fade lives on
+         .tag-caption-inner, a plain non-clip div, so a hard tl.set kill at
+         the clip boundary has something safe to target. */
+      .tag-caption {
+        position: absolute;
+        left: 50%;
+        bottom: 108px;
+        transform: translateX(-50%);
+      }
+      .tag-caption-inner {
+        padding: 16px 32px;
+        border-radius: 999px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        color: var(--teal);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 27px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        opacity: 0;
+        white-space: nowrap;
+        box-shadow: 0 6px 20px rgba(31, 41, 55, 0.1);
+      }
+
+      /* ---------- trust title card (Never guesses. Always escalates.) ---------- */
+      .trust-scrim {
+        position: absolute;
+        inset: 0;
+        background: rgba(15, 23, 42, 0);
+      }
+      .trust-card {
+        position: absolute;
+        left: 50%;
+        top: 84%;
+        transform: translate(-50%, -50%);
+        text-align: center;
+        width: 1400px;
+      }
+      .trust-card-inner {
+        opacity: 0;
+      }
+      .trust-card-inner .line {
+        font-family: "Montserrat", sans-serif;
+        font-weight: 800;
+        font-size: 64px;
+        line-height: 1.25;
+        color: var(--ink);
+      }
+      .trust-card .line .accent {
+        color: var(--teal);
+      }
+
+      /* ---------- closing title card ---------- */
+      .close-scrim {
+        position: absolute;
+        inset: 0;
+        background: var(--bg);
+        opacity: 0;
+      }
+      .close-card {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        text-align: center;
+        opacity: 0;
+        width: 1500px;
+      }
+      .close-card .brand {
+        font-family: "Montserrat", sans-serif;
+        font-weight: 900;
+        font-size: 128px;
+        color: var(--teal);
+        letter-spacing: -0.01em;
+      }
+      .close-card .tagline {
+        margin-top: 22px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 600;
+        font-size: 42px;
+        color: var(--ink-soft);
+      }
+      .close-card .langs {
+        margin-top: 40px;
+        display: inline-block;
+        padding: 14px 30px;
+        border-radius: 999px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        color: var(--teal);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        box-shadow: 0 6px 20px rgba(31, 41, 55, 0.08);
+      }
+    </style>
+  </head>
+  <body>
+    <div data-hf-id="hf-38rt" id="root" data-composition-id="main" data-start="0" data-duration="58" data-width="1920" data-height="1080">
+      <!-- background -->
+      <div data-hf-id="hf-i5iw" class="bg-glow glow-1" id="glow1"></div>
+      <div data-hf-id="hf-b95m" class="bg-glow glow-2" id="glow2"></div>
+      <div data-hf-id="hf-73r8" class="bg-glow glow-3" id="glow3"></div>
+      <div data-hf-id="hf-wqux" class="hairline hairline-1" id="hl1"></div>
+      <div data-hf-id="hf-i1b7" class="hairline hairline-2" id="hl2"></div>
+
+      <!-- avatar stage: 18 sequential clip segments, muted (silent source),
+           real narration audio is the separate <audio> element below.
+           4 role-change boundaries (namaskara->talk, talk->idle, idle->talk,
+           talk->idle) get an explicit 0.4s GSAP crossfade; same-role cycle
+           boundaries (talk1<->talk2, idle<->idle) are plain hard cuts owned
+           by HyperFrames' own clip-visibility timing - visually near-
+           invisible since the content barely changes between them. -->
+      <div data-hf-id="hf-gba6" class="avatar-stage">
+        <div data-hf-id="hf-gzzi" class="avatar-card">
+          <video data-hf-id="hf-yb82" id="v0" class="clip avatar-clip" src="assets/namaskara.mp4" data-start="0" data-duration="3.608" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-0xz2" id="v1" class="clip avatar-clip" src="assets/talk_loop_1.mp4" data-start="3.208" data-duration="3.833" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-vmi1" id="v2" class="clip avatar-clip" src="assets/talk_loop_2.mp4" data-start="7.042" data-duration="3.708" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-gdrc" id="v3" class="clip avatar-clip" src="assets/talk_loop_1.mp4" data-start="10.75" data-duration="3.833" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-jct7" id="v4" class="clip avatar-clip" src="assets/talk_loop_2.mp4" data-start="14.583" data-duration="3.517" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-uzdl" id="v5" class="clip avatar-clip" src="assets/talk_loop_1.mp4" data-start="18.1" data-duration="3.833" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-k1dy" id="v6" class="clip avatar-clip" src="assets/talk_loop_2.mp4" data-start="21.933" data-duration="3.708" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-erue" id="v7" class="clip avatar-clip" src="assets/talk_loop_1.mp4" data-start="25.642" data-duration="0.838" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-qq5b" id="v8" class="clip avatar-clip" src="assets/idle_loop.mp4" data-start="26.08" data-duration="3.917" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-x7l8" id="v9" class="clip avatar-clip" src="assets/idle_loop.mp4" data-start="29.997" data-duration="3.917" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-b5qt" id="v10" class="clip avatar-clip" src="assets/idle_loop.mp4" data-start="33.913" data-duration="1.157" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-jl04" id="v11" class="clip avatar-clip" src="assets/talk_loop_1.mp4" data-start="34.67" data-duration="3.833" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-vkc8" id="v12" class="clip avatar-clip" src="assets/talk_loop_2.mp4" data-start="38.503" data-duration="3.317" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-4yca" id="v13" class="clip avatar-clip" src="assets/idle_loop.mp4" data-start="41.42" data-duration="3.917" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-9zt5" id="v14" class="clip avatar-clip" src="assets/idle_loop.mp4" data-start="45.337" data-duration="1.013" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-ih1x" id="v15" class="clip avatar-clip" src="assets/idle_loop.mp4" data-start="46.35" data-duration="3.917" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-fs8o" id="v16" class="clip avatar-clip" src="assets/idle_loop.mp4" data-start="50.267" data-duration="3.917" data-media-start="0" data-track-index="0" muted playsinline></video>
+          <video data-hf-id="hf-d6sp" id="v17" class="clip avatar-clip" src="assets/idle_loop.mp4" data-start="54.183" data-duration="3.817" data-media-start="0" data-track-index="0" muted playsinline></video>
+        </div>
+      </div>
+
+      <!-- caption tags. Each clip element wraps a non-clip inner div - the
+           fade-in/out tween runs on the inner div, with a hard tl.set kill
+           at the clip's own boundary, so a non-linear seek landing exactly
+           at that boundary can't read stale mid-tween visibility. -->
+      <div data-hf-id="hf-szc0" id="tag1" class="clip tag-caption" data-start="4.3" data-duration="4.0" data-track-index="1">
+        <div data-hf-id="hf-9al2" id="tag1-inner" class="tag-caption-inner">For ASHA workers in rural Karnataka</div>
+      </div>
+      <div data-hf-id="hf-p5cx" id="tag2" class="clip tag-caption" data-start="10.2" data-duration="4.2" data-track-index="1">
+        <div data-hf-id="hf-mgtn" id="tag2-inner" class="tag-caption-inner">Kannada · Hindi · English</div>
+      </div>
+
+      <!-- trust card, the whole "never guesses / always escalates" beat -->
+      <div data-hf-id="hf-ls0h" id="trust-scrim" class="clip trust-scrim" data-start="18.1" data-duration="7.98" data-track-index="1"></div>
+      <div data-hf-id="hf-j5vq" id="trust-card" class="clip trust-card" data-start="18.1" data-duration="7.98" data-track-index="2">
+        <div data-hf-id="hf-6mci" id="trust-card-inner" class="trust-card-inner">
+          <div data-hf-id="hf-qsj8" class="line">Never guesses.<br data-hf-id="hf-x5px">Always <span data-hf-id="hf-b4qi" class="accent">escalates.</span></div>
+        </div>
+      </div>
+
+      <!-- closing title card -->
+      <div data-hf-id="hf-l8kx" id="close-scrim" class="clip close-scrim" data-start="44.5" data-duration="13.5" data-track-index="1"></div>
+      <div data-hf-id="hf-ies4" id="close-card" class="clip close-card" data-start="45.2" data-duration="12.8" data-track-index="2">
+        <div data-hf-id="hf-q5yv" class="brand">Sakhi</div>
+        <div data-hf-id="hf-zpve" class="tagline">— a voice companion for ASHA workers</div>
+        <div data-hf-id="hf-b3h5" class="langs">Kannada · Hindi · English</div>
+      </div>
+
+      <!-- real production narration audio -->
+      <audio data-hf-id="hf-lool" id="narration" src="assets/sakhi_intro_narration.wav" data-start="0" data-duration="46.35" data-track-index="10" data-volume="1"></audio>
+    </div>
+
+    <script>
+      const tl = gsap.timeline({ paused: true });
+
+      // --- background: slow ambient breathing + drift, never static ---
+      tl.to(["#glow1", "#glow3"], { scale: 1.07, duration: 3, ease: "sine.inOut", repeat: 30, yoyo: true }, 0);
+      tl.to("#glow2", { scale: 1.05, duration: 3.6, ease: "sine.inOut", repeat: 25, yoyo: true }, 0.4);
+      tl.to("#hl1", { x: 30, duration: 6, ease: "sine.inOut", repeat: 10, yoyo: true }, 0);
+      tl.to("#hl2", { x: -30, duration: 7, ease: "sine.inOut", repeat: 9, yoyo: true }, 0.8);
+
+      // --- role-change crossfades (0.4s overlaps authored into the clip
+      // durations above) ---
+      const crossfades = [
+        ["#v0", "#v1", 3.208],
+        ["#v7", "#v8", 26.08],
+        ["#v10", "#v11", 34.67],
+        ["#v12", "#v13", 41.42],
+      ];
+      crossfades.forEach(([outEl, inEl, at]) => {
+        tl.to(outEl, { opacity: 0, duration: 0.4, ease: "sine.inOut" }, at);
+        tl.fromTo(inEl, { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "sine.inOut" }, at);
+      });
+
+      // --- caption tags: soft rise + fade, on the inner (non-clip) div,
+      // with a hard tl.set kill at the clip's own boundary so a non-linear
+      // seek landing exactly there can't read stale mid-tween visibility. ---
+      function captionInOut(innerId, clipEndAt, start, dur) {
+        tl.fromTo(
+          innerId,
+          { opacity: 0, y: 14 },
+          { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" },
+          start
+        );
+        tl.to(innerId, { opacity: 0, y: -10, duration: 0.5, ease: "power2.in" }, start + dur - 0.5);
+        tl.set(innerId, { opacity: 0, y: -10 }, clipEndAt);
+      }
+      captionInOut("#tag1-inner", 8.3, 4.3, 4.0);
+      captionInOut("#tag2-inner", 14.4, 10.2, 4.2);
+
+      // --- trust card: scrim darkens slightly + card rises, held, then
+      // clears; hard-killed on the inner div at the clip's own boundary. ---
+      tl.fromTo("#trust-scrim", { backgroundColor: "rgba(15,23,42,0)" }, { backgroundColor: "rgba(15,23,42,0.28)", duration: 0.6, ease: "sine.inOut" }, 18.1);
+      tl.fromTo("#trust-card-inner", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.6, ease: "power2.out" }, 18.3);
+      tl.to("#trust-scrim", { backgroundColor: "rgba(15,23,42,0)", duration: 0.6, ease: "sine.inOut" }, 25.48);
+      tl.to("#trust-card-inner", { opacity: 0, y: -14, duration: 0.6, ease: "power2.in" }, 25.48);
+      tl.set("#trust-card-inner", { opacity: 0, y: -14 }, 26.08);
+
+      // --- closing title: scrim settles to the app's own bg, brand lockup rises in and holds ---
+      tl.to("#close-scrim", { opacity: 0.94, duration: 1.0, ease: "sine.inOut" }, 44.5);
+      tl.fromTo(
+        "#close-card",
+        { opacity: 0, y: 24, scale: 0.97 },
+        { opacity: 1, y: 0, scale: 1, duration: 1.1, ease: "power2.out" },
+        45.2
+      );
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>
