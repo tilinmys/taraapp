@@ -323,6 +323,14 @@ async def test_agent_repeat_request_replays_last_prompt(zero_tts):
 
 @pytest.mark.asyncio
 async def test_agent_decision_is_under_100ms(zero_tts):
+    # Warm the process first, as a live worker already is before any call: the
+    # first pipeline event in a process starts the event-writer thread and
+    # imports status_server (~20-50 ms, more on a busy machine). That is
+    # start-up cost, not the per-turn decision this test measures.
+    warm, _, warm_state = zero_tts("q06")
+    with pytest.raises(agent.StopResponse):
+        await warm.on_user_turn_completed(MagicMock(items=[]), _message("120 ಮೇಲೆ 80"))
+
     sakhi, session, state = zero_tts("q06")
     started = time.perf_counter()
     with pytest.raises(agent.StopResponse):
