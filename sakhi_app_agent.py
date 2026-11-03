@@ -535,7 +535,8 @@ class Executor:
                     text, ms = await self.ears.transcribe(frames)
                 if seq == self.seq:
                     await self._send({"t": "heard", "seq": seq, "text": text, "ms": ms, "speechMs": round(speech_ms)})
-                    logger.info("heard (%d ms stt, %.1f s speech): %s", ms, speech_ms / 1000, text)
+                    # Length only, never her words: this log is not a health record (DPDP s.8(5)).
+                    logger.info("heard (%d ms stt, %.1f s speech): %d chars", ms, speech_ms / 1000, len(text))
             except Exception as exc:
                 logger.warning("stt failed: %s", exc)
                 await self._send({"t": "error", "seq": seq, "message": f"stt: {exc}"[:200]})

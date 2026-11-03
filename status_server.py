@@ -694,6 +694,35 @@ _PROTECTED_GET = frozenset({
 _PROTECTED_PREFIXES = ("/dashboard/", "/api/dashboard/")
 
 
+# Public, real-time, measurable data (UNICEF Innovation Fund REOI): counts
+# only, computed live from the same database the dashboard reads. Never a
+# name, id, village, reading or date per person. A count from 1 to 4 is shown
+# as "<5" (small-cell suppression): in a single village a small number can
+# point to a person.
+PUBLIC_METRICS_MIN_CELL = 5
+_PUBLIC_METRICS = (
+    ("screenings", "calls", "Voice check-ins completed"),
+    ("mothers_screened", "mothers", "Mothers with a screening record"),
+    ("high_risk_mothers", "high_risk_mothers", "Mothers currently flagged high risk"),
+    ("escalations", "escalations", "Danger signs referred to a doctor"),
+)
+
+
+def _suppress(n: int) -> int | str:
+    return "<5" if 0 < n < PUBLIC_METRICS_MIN_CELL else n
+
+
+def public_metrics() -> dict:
+    """The public, anonymised, aggregate counters (see _PUBLIC_METRICS)."""
+    summary = get_store().summary()
+    return {
+        "generated_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "suppressed_below": PUBLIC_METRICS_MIN_CELL,
+        "metrics": {key: _suppress(int(summary.get(src) or 0)) for key, src, _label in _PUBLIC_METRICS},
+        "definitions": {key: label for key, _src, label in _PUBLIC_METRICS},
+    }
+
+
 def _needs_token(method: str, path: str) -> bool:
     return method == "POST" or path in _PROTECTED_GET or path.startswith(_PROTECTED_PREFIXES)
 
@@ -730,6 +759,14 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if parsed.path in {"/events", "/api/events"}:
             self._handle_sse()
+            return
+        if parsed.path in {"/public/metrics", "/api/public/metrics"}:
+            try:
+                payload = public_metrics()
+            except Exception:
+                self._send_json({"error": "metrics unavailable"}, status=503)
+                return
+            self._send_json(payload, headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=30"})
             return
         if parsed.path in {"/health", "/api/worker-status"}:
             self._send_json(worker_status())
@@ -969,11 +1006,13 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             _unregister_sse_client(q)
 
-    def _send_json(self, payload: dict, status: int = 200) -> None:
+    def _send_json(self, payload: dict, status: int = 200, headers: dict | None = None) -> None:
         data = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(data)
 

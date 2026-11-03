@@ -7,7 +7,7 @@
 [![DPDP Act 2023](https://img.shields.io/badge/Privacy-DPDP%20Act%202023%20aligned-success.svg)](#privacy--data-protection)
 
 > **Digital Public Good notice:**
-> Sakhi (Tara) is developed as open-source software, a candidate Digital Public Good, to support **UN Sustainable Development Goal 3 (Good Health and Well-Being)** by reducing maternal and newborn deaths in low-resource settings.
+> Sakhi (Tara) is developed as open-source software, a candidate Digital Public Good, to support **UN Sustainable Development Goal 3 (Good Health and Well-Being)** by reducing maternal and newborn deaths in low-resource settings. Pre-eclampsia, the danger sign Sakhi screens for first, is a leading cause of preterm birth, stillbirth and newborn death: catching it at the doorstep protects the **baby** as much as the mother.
 >
 > **Clinical AI & medical disclaimer (following WHO guidance on AI for health):**
 > Sakhi is **clinical decision support** built for trained community health workers (ASHAs). **Sakhi is not a medical practitioner, does not diagnose, and never names a medicine or a dose.** When a danger sign is reported, Sakhi stops the questions and refers the mother to a doctor or the nearest facility; the mother's SOS alerts her nearest ASHAs and offers a direct call to 108.
@@ -302,9 +302,22 @@ yet, is in [`SECURITY.md`](SECURITY.md#data-protection-principles).
 - Aadhaar, PAN, phone and bank numbers are masked before a transcript is stored.
 - Patient-level dashboard routes need a bearer token; the speech gateway refuses
   requests without its token.
-- An append-only DPDP consent table exists
-  ([`deploy/supabase/20261102_dpdp_consent.sql`](deploy/supabase/20261102_dpdp_consent.sql));
-  recording consent from the app, and an erasure workflow, are not built yet.
+- Consent first: the app reads a notice to the mother in her language (what is
+  collected, who sees it, which speech services process her voice, that she may
+  refuse) and the check-in cannot start until the ASHA records that she agreed.
+  The server-side record is the append-only table in
+  [`deploy/supabase/20261102_dpdp_consent.sql`](deploy/supabase/20261102_dpdp_consent.sql);
+  syncing the app's consent to it, and an erasure workflow, are not built yet.
+- Public, anonymised, real-time counters at `/status/public/metrics`
+  (counts only; any count from 1 to 4 is shown as "<5").
+
+### Third-party services and platform independence
+
+Sakhi uses third-party speech, LLM, call and hosting services, each chosen by
+configuration and each with an open alternative; the app itself calls none of
+them directly and holds no provider key. The images made with Canva AI are
+bundled files: Canva receives no data at run time. Every service, the data it
+receives and its open alternative: [`docs/THIRD_PARTY_SERVICES.md`](docs/THIRD_PARTY_SERVICES.md).
 
 Report a vulnerability privately: see [`SECURITY.md`](SECURITY.md).
 

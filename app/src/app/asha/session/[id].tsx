@@ -15,9 +15,9 @@ import { Colors, Layout } from '@/constants/theme';
 import { ME_ASHA } from '@/data/care-network';
 import { dayPlanStore } from '@/data/day-plan';
 import { ANTENATAL_QUESTIONS, questionText, RULES } from '@/data/mockScreening';
-import { useAshaMothers, useMother, type MotherRecord } from '@/data/store';
+import { store, useAshaMothers, useMother, type MotherRecord } from '@/data/store';
 import { useOnboarding, useT } from '@/features/onboarding/context';
-import type { Lang } from '@/i18n/strings';
+import { STRINGS, type Lang } from '@/i18n/strings';
 import { goBack } from '@/lib/nav';
 import { DirectSession, type DirectSnapshot } from '@/voice/direct';
 import { SakhiEngine, type Line, type Snapshot } from '@/voice/engine';
@@ -172,10 +172,12 @@ function Conversation({ mother, direct }: { mother: MotherRecord; direct: boolea
                 : t('sReady');
   const orb: OrbState = held ? 'idle' : snap.stage === 'asking' ? 'speaking' : listening ? 'listening' : snap.stage === 'finishing' || snap.stage === 'preparing' ? 'thinking' : 'idle';
 
+  // DPDP s.6: no check-in before she has heard the notice and agreed.
+  const consented = !!mother.consent?.granted;
   const cta = intro
     ? {
         label: t('sStart'),
-        enabled: direct ? wsSnap.stage !== 'idle' : liveSnap.available !== null,
+        enabled: consented && (direct ? wsSnap.stage !== 'idle' : liveSnap.available !== null),
         icon: 'mic' as const,
         haptic: 'medium' as const,
         // Direct: the socket, even if it is still connecting (Start waits for
@@ -332,6 +334,30 @@ function Conversation({ mother, direct }: { mother: MotherRecord; direct: boolea
               </AppText>
             </View>
           )}
+          {/* Consent (DPDP s.6): the notice, in HER language, read to her by
+              the ASHA; an explicit tick, never a default. */}
+          <View style={styles.consent}>
+            <AppText variant="label">{t('cTitle')}</AppText>
+            <AppText variant="caption" color={Colors.inkMuted}>
+              {t('cRead', { name: mother.name.split(' ')[0] })}
+            </AppText>
+            <AppText variant="body">{STRINGS[lang].cNotice}</AppText>
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: consented }}
+              accessibilityLabel={t('cAgree')}
+              onPress={() => store.recordConsent(mother.id, { granted: !consented, by: ME_ASHA, lang })}
+              style={({ pressed }) => [styles.consentRow, pressed && styles.pressed]}
+            >
+              <View style={[styles.box, consented && styles.boxOn]}>{consented && <Icon name="check" size={16} color={Colors.surface} />}</View>
+              <AppText variant="bodyStrong" style={styles.flex}>
+                {t('cAgree')}
+              </AppText>
+            </Pressable>
+            <AppText variant="caption" color={consented ? Colors.sage : Colors.inkMuted}>
+              {consented && mother.consent ? t('cRecorded', { date: new Date(mother.consent.at).toLocaleDateString() }) : t('cNeeded')}
+            </AppText>
+          </View>
           <AppText variant="caption" color={Colors.inkMuted} align="center">
             {t('sHaveHer', { name: mother.name.split(' ')[0] })}
           </AppText>
@@ -562,6 +588,10 @@ const styles = StyleSheet.create({
   bubbleSoft: { opacity: 0.85 },
   intro: { alignItems: 'center', gap: 16, paddingTop: 4 },
   langPick: { alignSelf: 'stretch', gap: 8 },
+  consent: { alignSelf: 'stretch', gap: 8, padding: 14, borderRadius: 18, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.bandLine },
+  consentRow: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 48 },
+  box: { width: 26, height: 26, borderRadius: 7, borderWidth: 2, borderColor: Colors.cherry, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surface },
+  boxOn: { backgroundColor: Colors.cherry },
   liveNote: { alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 4 },
   steps: { alignSelf: 'stretch', gap: 2, padding: 6, borderRadius: 20, backgroundColor: Colors.orangeTint },
   stepRow: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 52, paddingHorizontal: 10 },

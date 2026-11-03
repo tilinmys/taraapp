@@ -92,3 +92,13 @@ def test_sarvam_stt_logs_the_message_type_only():
     source = Path(agent.__file__).with_name("sarvam_wrappers.py").read_text(encoding="utf-8")
     assert 'logger.debug("Sarvam STT received: %s", resp)' not in source
     assert 'logger.debug("Sarvam STT received response type: %s", resp.get("type", "unknown"))' in source
+
+
+def test_speech_logs_carry_lengths_not_words():
+    root = Path(agent.__file__).parent
+    sarvam = (root / "sarvam_wrappers.py").read_text(encoding="utf-8")
+    assert 'logger.info(f"[SARVAM TTS] Synthesizing: {clean_input}")' not in sarvam
+    assert 'logger.info("[SARVAM TTS] Synthesizing %d chars", len(clean_input))' in sarvam
+    app_agent = (root / "sakhi_app_agent.py").read_text(encoding="utf-8")
+    assert 'speech_ms / 1000, text)' not in app_agent      # the mother's transcript, verbatim
+    assert 'speech_ms / 1000, len(text))' in app_agent

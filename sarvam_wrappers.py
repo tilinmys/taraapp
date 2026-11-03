@@ -1365,7 +1365,8 @@ class SarvamTTSChunkedStream(tts.ChunkedStream):
                 "Content-Type": "application/json",
             }
             url = f"{self._sarvam_tts._base_url}/text-to-speech"
-            logger.info(f"[SARVAM TTS] Synthesizing: {clean_input}")
+            # Length only: a reply can repeat a name or a reading (DPDP s.8(5)).
+            logger.info("[SARVAM TTS] Synthesizing %d chars", len(clean_input))
 
             timeout = aiohttp.ClientTimeout(
                 total=float(os.getenv("SARVAM_TTS_HTTP_TIMEOUT", "3.0"))
