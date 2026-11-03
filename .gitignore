@@ -28,7 +28,9 @@ frontend/.env.local
 deploy/aws/.deploy-state/
 
 # Database - local SQLite is test/mock data only; production is Supabase.
-data/
+# Anchored to the repo root: an unanchored `data/` also hid app/src/data/
+# (the app's whole data layer) from git.
+/data/
 tests/data/
 *.sqlite
 *.sqlite3
@@ -47,9 +49,11 @@ assets/audio/greetings/
 # Same for the per-clause TTS cache (tts_audio_cache.CachedTTS).
 assets/audio/tts_cache/
 
-# Logs
+# Logs (runtime output; anchored: an unanchored `logs/` hid the dashboard's
+# frontend/src/app/api/logs/ route)
 *.log
-logs/
+/logs/
+tests/logs/
 
 # Node.js
 node_modules/
