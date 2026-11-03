@@ -1,0 +1,76 @@
+{
+  "name": "tara-app",
+  "version": "1.0.0",
+  "main": "expo-router/entry",
+  "private": true,
+  "scripts": {
+    "start": "expo start --go",
+    "lan": "expo start --go --lan",
+    "tunnel": "node scripts/tunnel.mjs",
+    "web": "expo start --web",
+    "lint": "expo lint",
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "test:voice": "jest src/voice"
+  },
+  "dependencies": {
+    "@expo-google-fonts/baloo-2": "^0.4.2",
+    "@expo-google-fonts/baloo-tamma-2": "^0.4.2",
+    "@expo-google-fonts/parisienne": "^0.4.1",
+    "@expo-google-fonts/satisfy": "^0.4.1",
+    "@types/jest": "30.0.0",
+    "expo": "^58.0.19",
+    "expo-asset": "~58.0.18",
+    "expo-audio": "~58.0.10",
+    "expo-blur": "~58.0.5",
+    "expo-constants": "~58.0.13",
+    "expo-file-system": "~58.0.11",
+    "expo-font": "~58.0.10",
+    "expo-haptics": "~58.0.7",
+    "expo-linking": "~58.0.14",
+    "expo-network": "~58.0.4",
+    "expo-print": "~58.0.7",
+    "expo-router": "~58.0.26",
+    "expo-sharing": "~58.0.20",
+    "expo-speech": "~58.0.3",
+    "expo-splash-screen": "~58.0.11",
+    "expo-sqlite": "~58.0.14",
+    "expo-status-bar": "~58.0.4",
+    "expo-system-ui": "~58.0.6",
+    "expo-web-browser": "~58.0.6",
+    "jest": "~30.5.2",
+    "jest-expo": "~58.0.12",
+    "phosphor-react-native": "^3.0.6",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-native": "0.88.0",
+    "react-native-gesture-handler": "~3.3.0",
+    "react-native-reanimated": "4.7.1",
+    "react-native-safe-area-context": "~5.10.1",
+    "react-native-screens": "~4.30.0",
+    "react-native-svg": "15.16.0",
+    "react-native-web": "~0.21.4",
+    "react-native-webview": "14.0.1",
+    "react-native-worklets": "0.13.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.3.0",
+    "cloudflared": "^0.7.3",
+    "eslint": "^9.0.0",
+    "eslint-config-expo": "~58.0.4",
+    "typescript": "~6.0.3"
+  },
+  "jest": {
+    "preset": "jest-expo",
+    "moduleNameMapper": {
+      "^@/(.*)$": "<rootDir>/src/$1"
+    },
+    "testMatch": [
+      "<rootDir>/src/**/__tests__/**/*.test.ts?(x)"
+    ],
+    "setupFiles": [
+      "<rootDir>/src/test/setup.ts"
+    ],
+    "clearMocks": true
+  }
+}

@@ -1,0 +1,235 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sakhi live</title>
+<style>html, body { margin: 0; background: transparent; }</style>
+<!--
+  Sakhi LIVE media layer, loaded inside the tara app (react-native-webview on
+  phones, an iframe on the web). The app (voice/live.ts) owns the UI and the
+  state; this page owns ONLY the WebRTC connection to LiveKit:
+    mic   getUserMedia with echo cancellation / noise suppression / AGC,
+          published as Opus "speech" with DTX (no packets in silence) and RED
+          (redundant frames: a lost packet costs no syllable)
+    out   the agent's audio track, played as soon as it is subscribed
+    data  agent state (lk.agent.state) and live transcripts (text streams on
+          lk.transcription) arrive on the same connection: no extra hop
+  Messages to the app: {type, ...} JSON (ReactNativeWebView.postMessage, or
+  window.parent.postMessage({sakhiLive}) in an iframe). Commands from the
+  app: window.sakhi.start / mute / end (injected), or {sakhiCmd} messages.
+  Same livekit-client build as the web app (2.20.0), served by the gateway.
+-->
+<script src="livekit-client.js?v=2.20.0"></script>
+</head>
+<body>
+<script>
+(function () {
+  var LK = window.LivekitClient;
+  var t0 = performance.now();
+  var ms = function () { return Math.round(performance.now() - t0); };
+  var post = function (msg) {
+    var s = JSON.stringify(msg);
+    if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(s);
+    else if (window.parent !== window) window.parent.postMessage({ sakhiLive: msg }, '*');
+  };
+  if (!LK) { post({ type: 'error', code: 'load', message: 'livekit-client did not load' }); return; }
+
+  var room = null, agent = null, timers = [], analysers = [], meters = { me: null, agent: null };
+  var TOPIC = 'sakhi.app', encoder = new TextEncoder(), decoder = new TextDecoder();
+
+  /** A command for the voice agent (speak a line, listen, next, stop). */
+  function send(msg) {
+    if (!room) return;
+    room.localParticipant.publishData(encoder.encode(JSON.stringify(msg)), { reliable: true, topic: TOPIC })
+      .catch(function (e) { post({ type: 'error', code: 'send', message: String((e && e.message) || e) }); });
+  }
+
+  function isAgent(p) {
+    return !!p && (p.isAgent || (p.attributes && p.attributes['lk.agent.state'] !== undefined));
+  }
+  function setAgent(p) {
+    if (agent || !isAgent(p)) return;
+    agent = p;
+    post({ type: 'agentJoined', at: ms(), identity: p.identity });
+    var s = p.attributes && p.attributes['lk.agent.state'];
+    if (s) post({ type: 'agentState', state: s, at: ms() });
+  }
+  function meter(track, who) {
+    try {
+      var a = LK.createAudioAnalyser(track, { cloneTrack: false, fftSize: 256, smoothingTimeConstant: 0.6 });
+      analysers.push(a);
+      meters[who] = a;
+    } catch (e) { /* levels are cosmetic */ }
+  }
+  function cleanup() {
+    timers.forEach(clearInterval); timers = [];
+    analysers.forEach(function (a) { try { a.cleanup(); } catch (e) {} }); analysers = [];
+    meters = { me: null, agent: null };
+    document.querySelectorAll('audio').forEach(function (el) { el.remove(); });
+    room = null; agent = null;
+  }
+
+  // Network health every 2 s from the mic sender: round trip to the SFU,
+  // jitter and loss as LiveKit's server reports them back (RTCP).
+  async function stats() {
+    if (!room) return;
+    var pub = room.localParticipant.getTrackPublication(LK.Track.Source.Microphone);
+    var track = pub && pub.track;
+    if (!track || !track.getRTCStatsReport) return;
+    try {
+      var report = await track.getRTCStatsReport();
+      var out = null;
+      report && report.forEach(function (s) {
+        if (s.type === 'remote-inbound-rtp') out = { rttMs: Math.round((s.roundTripTime || 0) * 1000), jitterMs: Math.round((s.jitter || 0) * 1000), lossPct: Math.round((s.fractionLost || 0) * 1000) / 10 };
+      });
+      if (out) post(Object.assign({ type: 'stats' }, out));
+    } catch (e) { /* ignore */ }
+  }
+
+  // Pre-connect while the ASHA reads the intro: region lookup, DNS, TLS to
+  // LiveKit Cloud. The tap on Start then only pays for the join itself.
+  var warmed = null;
+  function prepare(url) {
+    if (warmed || room || !url) return;
+    var t = ms();
+    warmed = new LK.Room();
+    warmed.prepareConnection(url).then(function () { post({ type: 'prepared', ms: ms() - t }); }).catch(function () {});
+  }
+
+  async function start(opts) {
+    if (room) return;
+    warmed = null; // its warm connection pool and region cache are shared by the next Room
+    try {
+      room = new LK.Room({
+        adaptiveStream: false,
+        dynacast: false,
+        // The APP decides when the call ends (End / exit / leaving the screen).
+        // livekit would otherwise disconnect on pagehide / beforeunload and, on
+        // WebKit, on "freeze": an embedded iOS WebView can fire those while the
+        // microphone starts (seen on an iPhone: a client-side disconnect 20 ms
+        // after capture began).
+        disconnectOnPageLeave: false,
+        audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+        publishDefaults: { dtx: true, red: true, audioPreset: LK.AudioPresets.speech, stopMicTrackOnMute: false },
+      });
+      var E = LK.RoomEvent;
+      room.on(E.ParticipantConnected, setAgent);
+      room.on(E.ParticipantAttributesChanged, function (changed, p) {
+        if (changed['lk.agent.state'] === undefined) return;
+        setAgent(p);
+        post({ type: 'agentState', state: changed['lk.agent.state'], at: ms() });
+      });
+      room.on(E.TrackSubscribed, function (track, pub, p) {
+        if (track.kind !== 'audio') return;
+        var el = track.attach();
+        el.autoplay = true; el.playsInline = true;
+        document.body.appendChild(el);
+        setAgent(p);
+        meter(track, 'agent');
+        post({ type: 'agentAudio', at: ms() });
+      });
+      room.on(E.TrackUnsubscribed, function (track) { track.detach().forEach(function (el) { el.remove(); }); });
+      room.on(E.AudioPlaybackStatusChanged, function () { if (room && !room.canPlaybackAudio) post({ type: 'needsTap' }); });
+      room.on(E.Reconnecting, function () { post({ type: 'net', state: 'reconnecting', at: ms() }); });
+      room.on(E.Reconnected, function () { post({ type: 'net', state: 'ok', at: ms() }); });
+      room.on(E.ConnectionQualityChanged, function (q, p) { if (p && p.isLocal) post({ type: 'quality', quality: q }); });
+      room.on(E.MediaDevicesError, function (e) { post({ type: 'error', code: 'mic', message: String((e && e.message) || e) }); });
+      room.on(E.Disconnected, function (reason) { post({ type: 'ended', reason: String(reason == null ? '' : reason), at: ms() }); cleanup(); });
+      // The app <-> voice agent command channel (reliable, ordered).
+      room.on(E.DataReceived, function (payload, participant, kind, topic) {
+        if (topic !== TOPIC) return;
+        try { post({ type: 'agentMsg', msg: JSON.parse(decoder.decode(payload)) }); } catch (e) { /* not ours */ }
+      });
+
+      // Live captions: agents >= 1.0 publish both sides as text streams.
+      room.registerTextStreamHandler('lk.transcription', async function (reader, info) {
+        var attrs = (reader.info && reader.info.attributes) || {};
+        var id = attrs['lk.segment_id'] || (reader.info && reader.info.id) || String(Date.now());
+        var who = room && info.identity === room.localParticipant.identity ? 'user' : 'agent';
+        var text = '';
+        for await (var chunk of reader) { text += chunk; post({ type: 'transcript', id: id, who: who, text: text, final: false }); }
+        // Sakhi's line streams word by word and is complete when its stream
+        // closes; the ASHA's side arrives as interim + final streams (attribute).
+        post({ type: 'transcript', id: id, who: who, text: text, final: who === 'agent' || attrs['lk.transcription_final'] !== 'false' });
+      });
+
+      post({ type: 'connecting', at: ms() });
+      await room.connect(opts.url, opts.token, { autoSubscribe: true });
+      post({ type: 'connected', at: ms() });
+      try {
+        await room.localParticipant.setMicrophoneEnabled(true);
+      } catch (e) {
+        // iOS can end a capture track while it is being published (audio
+        // session hand-over): try once more before calling it a failure.
+        post({ type: 'micRetry', message: String((e && e.message) || e) });
+        await new Promise(function (r) { setTimeout(r, 600); });
+        if (!room) return;
+        await room.localParticipant.setMicrophoneEnabled(true);
+      }
+      var micPub = room.localParticipant.getTrackPublication(LK.Track.Source.Microphone);
+      if (micPub && micPub.track) meter(micPub.track, 'me');
+      post({ type: 'micOn', at: ms() });
+      room.remoteParticipants.forEach(setAgent);
+      try { await room.startAudio(); } catch (e) { post({ type: 'needsTap' }); }
+
+      // Levels for the orb: 10 a second, never at audio rate.
+      timers.push(setInterval(function () {
+        post({ type: 'level', me: meters.me ? meters.me.calculateVolume() : 0, agent: meters.agent ? meters.agent.calculateVolume() : 0 });
+      }, 100));
+      timers.push(setInterval(stats, 2000));
+    } catch (e) {
+      post({ type: 'error', code: 'connect', message: String((e && e.message) || e) });
+      try { room && room.disconnect(); } catch (x) {}
+      cleanup();
+    }
+  }
+
+  function mute(on) {
+    if (room) room.localParticipant.setMicrophoneEnabled(!on).then(function () { post({ type: 'muted', muted: !!on }); });
+  }
+  function end() {
+    if (room) room.disconnect(); else post({ type: 'ended', reason: 'client', at: ms() });
+  }
+  function resumeAudio() { if (room) room.startAudio().catch(function () {}); }
+
+  // Development only (localhost + ?test=1): a synthetic microphone that
+  // answers Sakhi with real spoken Kannada (made by the gateway's own TTS)
+  // over room noise, so the whole loop can be tested without a person.
+  if (/[?&]test=1/.test(location.search) && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
+    var answers = ['ನನ್ನ ಹೆಸರು ರೂಪಾ, ವಯಸ್ಸು ಇಪ್ಪತ್ತೈದು', 'ಏಳು ತಿಂಗಳು ಆಗಿದೆ', 'ಇಲ್ಲ, ಏನೂ ತೊಂದರೆ ಇಲ್ಲ', 'ಬಿಪಿ ನೂರ ನಲವತ್ತೆಂಟು ಬೈ ತೊಂಬತ್ತಾರು'];
+    var tctx = new AudioContext(), tdest = tctx.createMediaStreamDestination(), said = 0, spoke = false;
+    var nb = tctx.createBuffer(1, tctx.sampleRate * 2, tctx.sampleRate), nd = nb.getChannelData(0);
+    for (var i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1) * 0.003;
+    var ns = tctx.createBufferSource(); ns.buffer = nb; ns.loop = true; ns.connect(tdest); ns.start();
+    navigator.mediaDevices.getUserMedia = async function () { await tctx.resume(); return tdest.stream; };
+    var basePost = post;
+    post = function (m) {
+      basePost(m);
+      if (m.type === 'agentState' && m.state === 'speaking') spoke = true;
+      if (m.type === 'agentState' && m.state === 'listening' && spoke) {
+        spoke = false;
+        var text = answers[said++ % answers.length];
+        fetch('../tts?lang=kn&text=' + encodeURIComponent(text)).then(function (r) { return r.arrayBuffer(); })
+          .then(function (b) { return tctx.decodeAudioData(b); })
+          .then(function (buf) { setTimeout(function () { var s = tctx.createBufferSource(); s.buffer = buf; s.connect(tdest); s.start(); basePost({ type: 'testSaid', text: text, at: ms() }); }, 700); });
+      }
+    };
+  }
+
+  window.sakhi = { prepare: prepare, start: start, mute: mute, end: end, resumeAudio: resumeAudio, send: send };
+  window.addEventListener('message', function (e) {
+    var c = e.data && e.data.sakhiCmd;
+    if (!c) return;
+    if (c.cmd === 'send') send(c.msg);
+    else if (c.cmd === 'prepare') prepare(c.url);
+    else if (c.cmd === 'start') start(c.opts);
+    else if (c.cmd === 'mute') mute(c.on);
+    else if (c.cmd === 'end') end();
+    else if (c.cmd === 'resumeAudio') resumeAudio();
+  });
+  post({ type: 'ready', at: ms(), lk: LK.version });
+})();
+</script>
+</body>
+</html>

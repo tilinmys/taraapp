@@ -1,0 +1,55 @@
+<template>
+  <style>
+    @font-face { font-family: 'Baloo 2'; font-weight: 500; src: url('assets/fonts/Baloo2_500Medium.ttf'); }
+    @font-face { font-family: 'Baloo 2'; font-weight: 700; src: url('assets/fonts/Baloo2_700Bold.ttf'); }
+    #root {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      background: radial-gradient(1200px 900px at 62% 40%, #fbeff2 0%, #f7e4e8 60%);
+      font-family: 'Baloo 2', sans-serif;
+      color: #2b1b21;
+    }
+    #s8-paper { position: absolute; inset: 0; background: #ffffff; opacity: 0; }
+    #s8-phone {
+      position: absolute; left: 300px; top: 61px; width: 444px; height: 957px; padding: 12px;
+      border-radius: 62px; background: #1b1316; box-shadow: 0 40px 80px rgba(43, 27, 33, 0.28);
+      transform-origin: 50% 50%;
+    }
+    #s8-phone .screen { position: relative; width: 420px; height: 933px; border-radius: 50px; overflow: hidden; background: #fff; }
+    #s8-phone .screen img { position: absolute; left: 0; top: 0; width: 420px; height: 933px; }
+    /* the mark: 25% of the frame's width, centred */
+    #s8-logo { position: absolute; left: 720px; top: 250px; width: 480px; height: 289px; }
+    #s8-logo img { position: absolute; left: 0; top: 0; width: 480px; height: 289px; }
+    #s8-line { position: absolute; left: 0; right: 0; top: 600px; text-align: center; font-size: 72px; font-weight: 700; letter-spacing: -0.01em; }
+    #s8-line .w { display: inline-block; }
+    #s8-line .accent { color: #a11d44; }
+    #s8-small { position: absolute; left: 0; right: 0; top: 708px; text-align: center; font-size: 34px; font-weight: 500; color: #5a464d; }
+  </style>
+  <div id="root" data-composition-id="s8-end" data-width="1920" data-height="1080">
+    <div id="s8-paper"></div>
+    <div id="s8-phone"><div class="screen"><img src="assets/app/mother-advice.png" alt="" /></div></div>
+    <div id="s8-logo">
+      <img id="s8-figure" src="assets/logo/tara-logo-figure.png" alt="" />
+      <img class="ltr" src="assets/logo/tara-logo-t.png" alt="" />
+      <img class="ltr" src="assets/logo/tara-logo-a1.png" alt="" />
+      <img class="ltr" src="assets/logo/tara-logo-r.png" alt="" />
+      <img class="ltr" src="assets/logo/tara-logo-a2.png" alt="" />
+    </div>
+    <div id="s8-line"><span class="w">Every</span> <span class="w">danger</span> <span class="w">sign,</span> <span class="w accent">heard</span> <span class="w">in</span> <span class="w">time.</span></div>
+    <div id="s8-small">Sakhi · Kannada and Hindi · voice-first, no typing</div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    // 0.0 her phone travels to the centre and becomes the white of the end card
+    tl.fromTo('#s8-phone', { x: 0, scale: 1, opacity: 1 }, { x: 438, scale: 0.55, opacity: 0, duration: 0.65, ease: 'power2.inOut' }, 0);
+    tl.fromTo('#s8-paper', { opacity: 0 }, { opacity: 1, duration: 0.5, ease: 'power2.inOut' }, 0.15);
+    // 0.45 the mark builds: the figure wipes up, the letters land one by one
+    tl.fromTo('#s8-figure', { clipPath: 'inset(100% 0% 0% 0%)' }, { clipPath: 'inset(0% 0% 0% 0%)', duration: 0.6, ease: 'power2.inOut' }, 0.45);
+    tl.fromTo('#s8-logo .ltr', { opacity: 0, filter: 'blur(5px)' }, { opacity: 1, filter: 'blur(0px)', duration: 0.2, ease: 'power4.out', stagger: 0.1 }, 0.6);
+    // 1.1 the line lands and holds to the end (2.4 s)
+    tl.fromTo('#s8-line .w', { opacity: 0, filter: 'blur(6px)' }, { opacity: 1, filter: 'blur(0px)', duration: 0.18, ease: 'power4.out', stagger: 0.067 }, 0.95);
+    tl.fromTo('#s8-small', { opacity: 0, filter: 'blur(6px)' }, { opacity: 1, filter: 'blur(0px)', duration: 0.2, ease: 'power4.out' }, 1.25);
+    window.__timelines['s8-end'] = tl;
+  </script>
+</template>

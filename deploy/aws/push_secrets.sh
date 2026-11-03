@@ -216,37 +216,34 @@ else
 fi
 fi
 
-# --- Preserve (or mint) the egress-recording S3 credentials, same pattern -
-# these belong to the sakhi-egress-uploader IAM user (s3:PutObject/
+# --- Preserve (or mint) the egress-recording S3 credentials ---------------
+# These belong to the sakhi-egress-uploader IAM user (s3:PutObject/
 # PutObjectAcl on recordings/* in the recordings bucket only - see
 # README.md), used by LiveKit Cloud's own egress workers to write the call
-# recording, since egress runs on LiveKit's infra and can't see this
-# instance's IAM role at all.
-EXISTING_EGRESS=$(aws secretsmanager get-secret-value --secret-id sakhi/api-keys \
-  --region "${AWS_REGION}" --query SecretString --output text 2>/dev/null \
-  | grep -E "^RECORDING_AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)=" || true)
+# recording. Egress runs on LiveKit's infrastructure and cannot use this
+# instance's IAM role (sakhi-instance-role), so a key pair is unavoidable;
+# its ONLY home is the sakhi/api-keys secret in AWS Secrets Manager.
+#
+# Never written to disk (ISO 27001 A.9.4): no .deploy-state JSON is read or
+# written. An existing key is carried over from Secrets Manager; when there
+# is none, one is minted and piped straight into the temp merge file that
+# the EXIT trap above deletes. To rotate: SAKHI_ROTATE_EGRESS=1 mints a new
+# key even when the secret already holds one (then delete the old key in IAM).
+EXISTING_EGRESS=""
+if [ "${SAKHI_ROTATE_EGRESS:-}" != "1" ]; then
+  EXISTING_EGRESS=$(aws secretsmanager get-secret-value --secret-id sakhi/api-keys \
+    --region "${AWS_REGION}" --query SecretString --output text 2>/dev/null \
+    | grep -E "^RECORDING_AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)=" || true)
+fi
 if [ -n "${EXISTING_EGRESS}" ]; then
   echo "${EXISTING_EGRESS}" >> "${TMP_MERGED}"
-elif [ -f "${STATE_DIR}/egress-access-key.json" ]; then
-  "$PY" - "${STATE_DIR}/egress-access-key.json" >> "${TMP_MERGED}" <<'PYEOF'
-import json, sys
-d = json.load(open(sys.argv[1], encoding="utf-8"))
-ak = d["AccessKey"]
-print(f"RECORDING_AWS_ACCESS_KEY_ID={ak['AccessKeyId']}")
-print(f"RECORDING_AWS_SECRET_ACCESS_KEY={ak['SecretAccessKey']}")
-PYEOF
-  echo ">>> Using the sakhi-egress-uploader access key created earlier this session (.deploy-state/egress-access-key.json)."
+  echo ">>> Egress-recording credential carried over from Secrets Manager (value not shown)."
 else
-  echo ">>> No existing egress-recording credential found and no local .deploy-state/egress-access-key.json -"
-  echo ">>> minting a new access key for the sakhi-egress-uploader IAM user (must already exist)."
-  aws iam create-access-key --user-name sakhi-egress-uploader --region "${AWS_REGION}" --output json > "${STATE_DIR}/egress-access-key.json"
-  "$PY" - "${STATE_DIR}/egress-access-key.json" >> "${TMP_MERGED}" <<'PYEOF'
-import json, sys
-d = json.load(open(sys.argv[1], encoding="utf-8"))
-ak = d["AccessKey"]
-print(f"RECORDING_AWS_ACCESS_KEY_ID={ak['AccessKeyId']}")
-print(f"RECORDING_AWS_SECRET_ACCESS_KEY={ak['SecretAccessKey']}")
-PYEOF
+  echo ">>> No egress-recording credential to keep (or SAKHI_ROTATE_EGRESS=1) - minting a new access key for the"
+  echo ">>> sakhi-egress-uploader IAM user (must already exist). It goes into the secret only, never to disk."
+  aws iam create-access-key --user-name sakhi-egress-uploader --region "${AWS_REGION}" \
+    --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text \
+    | awk '{ print "RECORDING_AWS_ACCESS_KEY_ID=" $1; print "RECORDING_AWS_SECRET_ACCESS_KEY=" $2 }' >> "${TMP_MERGED}"
 fi
 
 echo "Pushing merged configuration to Secrets Manager (values not shown)..."

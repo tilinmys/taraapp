@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { workerHeaders } from "@/lib/worker";
 
 const WORKER_STATUS_URL = process.env.WORKER_STATUS_URL || "http://localhost:8080";
 
@@ -8,7 +9,7 @@ export async function GET(req: NextRequest) {
   try {
     const qs = new URLSearchParams({ doctor });
     if (weekStart) qs.set("week_start", weekStart);
-    const res = await fetch(`${WORKER_STATUS_URL}/schedule?${qs.toString()}`, { cache: "no-store" });
+    const res = await fetch(`${WORKER_STATUS_URL}/schedule?${qs.toString()}`, { cache: "no-store", headers: workerHeaders() });
     return NextResponse.json(await res.json(), { status: res.status });
   } catch (error: any) {
     return NextResponse.json({ error: `Worker unreachable: ${error.message}` }, { status: 502 });

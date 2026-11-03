@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>tara: app overview</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 18mm 16mm; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', -apple-system, Roboto, Arial, sans-serif; color: #2B1B21; font-size: 10.5pt; line-height: 1.5; margin: 0; }
+  h1 { font-size: 26pt; margin: 0; color: #A11D44; letter-spacing: -0.5px; }
+  h2 { font-size: 15pt; color: #A11D44; margin: 22px 0 8px; padding-bottom: 4px; border-bottom: 2px solid #F7E4E8; page-break-after: avoid; }
+  h3 { font-size: 11.5pt; margin: 14px 0 4px; color: #2B1B21; page-break-after: avoid; }
+  p { margin: 4px 0 8px; }
+  ul { margin: 4px 0 8px; padding-left: 18px; }
+  li { margin: 2px 0; }
+  .muted { color: #6F5A61; }
+  .cover { height: 245mm; display: flex; flex-direction: column; justify-content: center; page-break-after: always; }
+  .cover img { width: 230px; margin-bottom: 26px; }
+  .cover .tag { font-size: 14pt; color: #6F5A61; margin-top: 8px; }
+  .cover .meta { margin-top: 40px; font-size: 10pt; color: #6F5A61; border-top: 1px solid #E5D8D0; padding-top: 12px; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 12px; page-break-inside: auto; }
+  tr { page-break-inside: avoid; }
+  th, td { text-align: left; vertical-align: top; padding: 5px 8px; border-bottom: 1px solid #F0E6E1; font-size: 9.5pt; }
+  th { background: #FAF1EC; color: #6F5A61; font-size: 8.5pt; text-transform: uppercase; letter-spacing: 0.5px; }
+  code, .mono { font-family: Consolas, Menlo, monospace; font-size: 9pt; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0 12px; }
+  .card { border-radius: 10px; padding: 10px 12px; border: 1px solid #E5D8D0; page-break-inside: avoid; }
+  .card b { display: block; margin-bottom: 2px; }
+  .asha { background: #FFF5F0; border-color: #F2D2BF; }
+  .mother { background: #FDF0F5; border-color: #F0CAD6; }
+  .doctor { background: #F4EEFA; border-color: #DCCDEC; }
+  .note { background: #FAF1EC; border-left: 4px solid #C84B00; padding: 8px 12px; border-radius: 6px; margin: 8px 0 12px; page-break-inside: avoid; }
+  .warn { background: #F7E4E8; border-left: 4px solid #A11D44; padding: 8px 12px; border-radius: 6px; margin: 8px 0 12px; page-break-inside: avoid; }
+  .swatches { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 12px; }
+  .sw { width: 112px; font-size: 8.5pt; }
+  .sw i { display: block; height: 30px; border-radius: 6px; border: 1px solid rgba(0,0,0,0.08); margin-bottom: 3px; }
+  .flow { font-family: Consolas, monospace; font-size: 9pt; background: #FBF4F1; padding: 10px 12px; border-radius: 8px; white-space: pre-wrap; page-break-inside: avoid; }
+  .toc li { margin: 1px 0; }
+  .pb { page-break-before: always; }
+</style>
+</head>
+<body>
+
+<section class="cover">
+  <img src="../assets/images/tara-logo.png" alt="tara" />
+  <h1>tara: app overview</h1>
+  <div class="tag">Voice-first maternal care for ASHA workers, mothers and PHC doctors.</div>
+  <div class="tag" style="font-size:11pt">Sakhi (the ASHA's voice check-in) · Tara (the mother's companion)</div>
+  <div class="meta">
+    Prepared 21 October 2026 · Mobile app in <code>app/</code> (Expo SDK 57, Expo Go)<br/>
+    Status: working prototype in test mode. Demo data on the phone, backend not yet connected.
+  </div>
+</section>
+
+<h2>Contents</h2>
+<ol class="toc">
+  <li>What tara is</li>
+  <li>Who uses it (three roles)</li>
+  <li>The journeys, screen by screen</li>
+  <li>Clinical logic: the 24 questions and the triage rules</li>
+  <li>The PDF check-in report</li>
+  <li>Design system: colours, type, icons, grids, motion</li>
+  <li>Edge cases and safety behaviour</li>
+  <li>How the app is built (technology and structure)</li>
+  <li>Data and state management</li>
+  <li>How to run and test it</li>
+  <li>Personas behind the design</li>
+  <li>Current limits and next steps</li>
+</ol>
+
+<h2>1. What tara is</h2>
+<p>tara is a mobile app for antenatal (pregnancy) care in rural Karnataka. An ASHA worker visits a pregnant mother and, instead of filling a paper form, talks with <b>Sakhi</b>, a voice assistant that asks 24 standard antenatal questions in Kannada, Hindi or English. Each answer is checked against fixed, deterministic clinical rules. Danger signs are flagged the moment they are spoken, and a high-risk mother moves to the top of the PHC doctor's queue.</p>
+<p>The doctor reviews each case as a set of grids: triage first, then vitals, the ASHA's voice report and the full answers. They confirm a referral, which sends plain advice to the mother's phone. The mother has her own space with her results, her baby's progress, care guides and <b>Tara</b>, her companion she can ask questions to.</p>
+<div class="note"><b>Two voices, never mixed.</b> Sakhi belongs to the ASHA (structured check-in). Tara belongs to the mother (questions and guidance). They have different looks: Sakhi is a rangoli orb, Tara is the tara leaf in a soft halo.</div>
+
+<h2>2. Who uses it</h2>
+<div class="grid">
+  <div class="card asha"><b>ASHA worker</b>Chooses a mother, runs the Sakhi voice check-in, sees the report with the live transcript, downloads the PDF. Emblem colour: pumpkin.</div>
+  <div class="card mother"><b>Pregnant mother</b>Sees her result and the doctor's advice, listens to it read aloud, tracks kicks and daily care, reads care guides, talks to Tara, calls her ASHA, doctor or 108. Emblem colour: cherry.</div>
+  <div class="card doctor"><b>PHC doctor</b>Works a queue sorted by risk, opens a case record (triage, vitals, voice report, answers), downloads the same PDF, confirms referrals. Emblem colour: plum.</div>
+  <div class="card"><b>Every role</b>Profile: language (Kannada / Hindi / English), demo controls, sign out (always confirmed).</div>
+</div>
+
+<h2>3. The journeys</h2>
+<div class="flow">Splash (logo builds from the leaf) → Welcome → Language → Role → Sign in
+  ASHA:   Mothers → Before you start → Talk with Sakhi (tap to start) → Report → Finish → Mothers
+  Doctor: Case queue → Case record (Triage · Vitals · Voice report · Answers) → Confirm referral
+  Mother: tabs Home · Track · Talk · Records;  Home → Maternity / Fertility / Reproductive health
+  Every role: Profile (language, demo controls, sign out)</div>
+
+<h3>3.1 Start and onboarding</h3>
+<ul>
+  <li><b>Splash:</b> the native splash shows the tara leaf; the app then builds the logo letter by letter and blooms into the welcome screen. Logo images are WebP and preloaded with the fonts, and the hold is 1.2 s.</li>
+  <li><b>Onboarding, 3 steps:</b> Language, then Role, then Sign in. A two-row header shows back + language pill on top, and "Step n of 3 • name" with a progress bar underneath, so nothing overlaps.</li>
+  <li><b>Role screen:</b> three cards with illustrated emblems. ASHA is pre-selected (smart default) and the button reads "Continue as ASHA Worker".</li>
+  <li><b>Sign in (test mode):</b> any details work and there is no OTP. The phone field accepts keyboard / SIM autofill: "+91 98765 43210" becomes "9876543210" (the +91 is shown separately).</li>
+</ul>
+
+<h3>3.2 ASHA workspace</h3>
+<ul>
+  <li><b>Header band</b> (warm tint + hairline) with greeting and a stats grid: High risk (largest, first), Mothers, Due soon, Done today, Sakhi check-in.</li>
+  <li><b>Mother list:</b> compact rows (initial, name, months, last check-in, HIGH RISK / NORMAL chip). A high-risk row adds one line saying what to do. The first high-risk mother not yet referred is pre-selected.</li>
+  <li><b>Before you start:</b> a short checklist and a microphone test.</li>
+  <li><b>Talk with Sakhi:</b> nothing starts until the ASHA taps <i>Start questionnaire</i>. Sakhi reads each question aloud (text-to-speech in the chosen language, English underneath). The ASHA taps to answer and the answer is saved. A danger answer opens an escalation sheet at once (<i>Escalate and continue</i> or <i>Undo</i>). A live transcript builds as they talk. The Sakhi orb sits above the button: dots wave while listening, the ring turns while speaking.</li>
+  <li><b>Report:</b> a processing pill (transcribe → extract → evaluate), then grids in order of importance: risk, vitals with trends, rule audit, answered / danger counts, the live transcript, the ASHA signature, and <i>Download PDF report</i>.</li>
+  <li><b>Exit</b> is always confirmed (including the Android back button). An unfinished check-in never changes the mother's record.</li>
+</ul>
+
+<h3>3.3 Doctor workspace</h3>
+<ul>
+  <li><b>Queue:</b> a stats band (Urgent, Referred, Cases), filters (All / High risk / Normal), high risk first. Long-press a case for quick actions (open, confirm referral). The single button reviews the next unreviewed high-risk case.</li>
+  <li><b>Case record</b>, grid by grid. A sticky jump bar glides between the four sections:
+    <ol>
+      <li>Triage: a large risk cell, rules fired, gestation, symptom chips and the deterministic rule audit with the exact answers that fired each rule.</li>
+      <li>Vitals: BP, haemoglobin, sugar and weight with sparklines and change since the last visit.</li>
+      <li>ASHA voice report: transcript preview and the same PDF the ASHA has.</li>
+      <li>All 24 answers, collapsed until needed. A row opens a sheet with the question as asked in Kannada and Hindi and its linked rule.</li>
+    </ol>
+  </li>
+  <li><b>Confirm referral</b> sends 3-step advice to the mother's home screen.</li>
+</ul>
+
+<h3>3.4 Mother workspace (bottom tabs)</h3>
+<ul>
+  <li><b>Home, "Care begins with you.":</b>
+    <ul>
+      <li>This week: baby size compared with familiar produce, weeks to go, next visit, kicks.</li>
+      <li>Latest result: sealed until she pulls or taps it open, then the doctor's advice and <i>Listen to my results</i>.</li>
+      <li>A brief of the ASHA's last visit (BP, danger signs, advice count).</li>
+      <li>Explore care: Maternity, Fertility and Reproductive health.</li>
+      <li>Ask Tara, and the Care Circle with one-tap calls to the ASHA, the doctor and 108.</li>
+    </ul>
+  </li>
+  <li><b>Track:</b> a kick counter (tap per kick, goal 10 in 2 hours, ring fills), a daily care checklist (iron, calcium, water, extra meal, rest on the left side) with a streak, and the next baby-size milestones.</li>
+  <li><b>Talk, "Speak to Tara":</b> suggested questions, typed questions and a voice preview. Tara can read replies aloud. Questions about danger signs always answer "call 108 / your ASHA" first, in cherry.</li>
+  <li><b>Records:</b> her vitals over time, a check-in timeline and <i>Download my report</i>.</li>
+  <li><b>Topic pages:</b> short guides that expand in place, with urgent guides first. They are read-only and private: nothing is tracked or shared.</li>
+</ul>
+
+<h2 class="pb">4. Clinical logic</h2>
+<h3>4.1 The 24 antenatal questions (by section)</h3>
+<table>
+  <tr><th>Section</th><th>What is asked</th></tr>
+  <tr><td>Identity</td><td>Mother's name and age</td></tr>
+  <tr><td>Pregnancy</td><td>Due date / months; last period; which pregnancy; problems in past deliveries; natural or IVF</td></tr>
+  <tr><td>Vitals</td><td>Today's BP; weight; iron tablets; paleness or swelling of the feet; baby's heart rate</td></tr>
+  <tr><td>Danger signs</td><td>Severe headache, blurred vision, swelling; pain, bleeding or leaking; fits; baby's movements; fever, vomiting, breathing</td></tr>
+  <tr><td>History</td><td>Sugar, BP, thyroid or fits before; current medicines and allergies</td></tr>
+  <tr><td>Scans and labs</td><td>Scan done; both tetanus injections; latest Hb and sugar</td></tr>
+  <tr><td>Birth plan</td><td>Doctor and nurse at delivery; a way to call 108</td></tr>
+  <tr><td>Close</td><td>Thank you; details sent to the PHC doctor</td></tr>
+</table>
+<p class="muted">Each question has real Kannada and Hindi wording, an English version, and (where relevant) a danger trigger linked to a rule.</p>
+
+<h3>4.2 Deterministic triage rules</h3>
+<table>
+  <tr><th>Rule</th><th>Name</th><th>Logic</th><th>Severity</th></tr>
+  <tr><td class="mono">PE-01</td><td>Raised blood pressure</td><td class="mono">BP &gt;= 140/90</td><td>Refer</td></tr>
+  <tr><td class="mono">PE-02</td><td>Severe blood pressure</td><td class="mono">BP &gt;= 160/110</td><td>Emergency</td></tr>
+  <tr><td class="mono">PE-03</td><td>Pre-eclampsia symptoms</td><td class="mono">HEADACHE | BLURRED_VISION | FACE_HAND_SWELLING</td><td>Refer</td></tr>
+  <tr><td class="mono">PE-04</td><td>Severe pre-eclampsia risk</td><td class="mono">PE-01 AND PE-03</td><td>Emergency</td></tr>
+  <tr><td class="mono">EC-01</td><td>Fits / convulsions</td><td class="mono">CONVULSIONS == TRUE</td><td>Emergency</td></tr>
+  <tr><td class="mono">HM-01</td><td>Bleeding or leaking fluid</td><td class="mono">ABDOMINAL_PAIN | BLEEDING | LEAKING_FLUID</td><td>Emergency</td></tr>
+  <tr><td class="mono">FM-01</td><td>Reduced baby movements</td><td class="mono">FETAL_MOVEMENT == REDUCED (&gt;= 24w)</td><td>Refer</td></tr>
+  <tr><td class="mono">IN-01</td><td>Fever, vomiting or breathlessness</td><td class="mono">FEVER | SEVERE_VOMITING | BREATHLESSNESS</td><td>Refer</td></tr>
+  <tr><td class="mono">AN-01</td><td>Anaemia or swelling signs</td><td class="mono">PALLOR | PEDAL_EDEMA</td><td>Watch</td></tr>
+</table>
+<div class="warn">Any Refer or Emergency rule makes the mother <b>high risk</b>. "Watch" alone does not. The rules are code, not AI: the same answers always give the same result, and every decision shows the rule and the answers that fired it. tara supports a doctor's decision; it is not a diagnosis.</div>
+
+<h2>5. The PDF check-in report</h2>
+<p>One A4 document, identical for the ASHA, the doctor and the mother (all three build it from the same stored report):</p>
+<ol>
+  <li>Header: the tara logo, title, short reference (e.g. <code>TR-039868</code>) and date.</li>
+  <li>Mother details: name, gestation, PHC, ASHA.</li>
+  <li>Risk banner: high risk (cherry) or routine (green), with the rules fired.</li>
+  <li>Vitals table (today, last visit, flag) beside the rule audit (logic → action).</li>
+  <li>All 24 questions and answers by section, danger answers marked.</li>
+  <li>Signature lines: ASHA (captured at completion) and reviewing doctor.</li>
+  <li>Full conversation transcript on its own page.</li>
+</ol>
+<p>On a phone it opens the share sheet (save, WhatsApp, print). On the web it opens the print dialog. The logo is embedded, so it works offline.</p>
+
+<h2 class="pb">6. Design system</h2>
+<h3>6.1 Colour</h3>
+<div class="swatches">
+  <div class="sw"><i style="background:#FFFFFF"></i>Canvas #FFFFFF</div>
+  <div class="sw"><i style="background:#A11D44"></i>Cherry #A11D44 (actions)</div>
+  <div class="sw"><i style="background:#C84B00"></i>Pumpkin #C84B00 (accent)</div>
+  <div class="sw"><i style="background:#5B2A86"></i>Plum #5B2A86</div>
+  <div class="sw"><i style="background:#2F6B4F"></i>Sage #2F6B4F</div>
+  <div class="sw"><i style="background:#2B1B21"></i>Ink #2B1B21 (text)</div>
+  <div class="sw"><i style="background:#F7E4E8"></i>Cherry mist #F7E4E8</div>
+  <div class="sw"><i style="background:#FFF5F0"></i>Orange tint #FFF5F0</div>
+  <div class="sw"><i style="background:#FDF0F5"></i>Rose tint #FDF0F5</div>
+  <div class="sw"><i style="background:#F4EEFA"></i>Lilac tint #F4EEFA</div>
+  <div class="sw"><i style="background:#EEF6F1"></i>Sage tint #EEF6F1</div>
+  <div class="sw"><i style="background:#FAF1EC"></i>Header band #FAF1EC</div>
+</div>
+<p>Premium white canvas; cherry is reserved for actions. Danger is never shown by colour alone: it is always ⚠️ plus bold words. Text contrast meets WCAG AA (ink 15.8:1, muted 6.1:1, white on cherry 7.6:1).</p>
+
+<h3>6.2 Type</h3>
+<p><b>Anek</b> (Google Fonts) in Latin, Kannada and Devanagari cuts. Mixed-script strings are split automatically so every run uses the right cut. <b>Parisienne</b> is used for the tagline only. Scale: title 26/34 · heading 19/26 · body 17/25 · label 15 · caption 14 · overline 12 · metric 28. Titles and body text are never truncated.</p>
+
+<h3>6.3 Icons and emblems</h3>
+<p>One icon family: Phosphor. Regular weight when inactive, fill when active, duotone (pumpkin inner fill at 30 %) for feature tiles and active tabs. <b>No star or heart shapes anywhere.</b> Emblems are the app's own illustrated tiles (tinted squircle, petal arc, orbit dot and duotone glyph), drawn in code. Image slots are ready for real artwork later.</p>
+
+<h3>6.4 Layout</h3>
+<ul>
+  <li>Bento grids: the most important cell first and largest; one flat tinted surface per cell, one hue per cell; no glass and no card inside a card.</li>
+  <li>24 pt gutter; content column 520 pt on phones and 720 pt on tablets (vitals go four across).</li>
+  <li>Safe areas respected (notch, Dynamic Island, home bar, landscape).</li>
+  <li>Labelled back buttons everywhere ("‹ Mothers", "‹ Queue").</li>
+  <li>One primary 56 pt button per screen, with a context line above it saying what will happen.</li>
+</ul>
+
+<h3>6.5 Motion and haptics</h3>
+<table>
+  <tr><th>Pattern</th><th>Where</th></tr>
+  <tr><td>Parallax page slides; iOS-style pushes</td><td>Onboarding, all stacks</td></tr>
+  <tr><td>Bottom sheets with the screen scaling to 0.96 behind</td><td>Confirmations, answer details</td></tr>
+  <tr><td>Press springs (scale 0.97) + tiered haptics</td><td>Every button and card</td></tr>
+  <tr><td>Large title morphing into the nav bar on scroll</td><td>Every screen</td></tr>
+  <tr><td>Dynamic-Island status pill</td><td>Report processing</td></tr>
+  <tr><td>Pull-to-open "unboxing"</td><td>Mother's new result</td></tr>
+  <tr><td>Sakhi rangoli orb (rings 1.0 → 1.35, opacity 0.8 → 0.2)</td><td>ASHA conversation</td></tr>
+  <tr><td>Tara leaf halo</td><td>Mother's Talk tab</td></tr>
+  <tr><td>Gliding pills (spring stiffness 250, damping 25)</td><td>Doctor jump bar, mother tab bar</td></tr>
+  <tr><td>In-place expand (layout spring)</td><td>Transcript, guides, 24 answers</td></tr>
+</table>
+<p class="muted">All animations run on the UI thread and respect the phone's Reduce Motion setting.</p>
+
+<h2 class="pb">7. Edge cases and safety behaviour</h2>
+<ul>
+  <li><b>No network:</b> a slim banner, "Offline · saved on this phone, will sync". It never blocks the screen.</li>
+  <li><b>Unknown link:</b> a "This page has moved" screen with a way home.</li>
+  <li><b>Crash:</b> a calm "Something went wrong · Try again" screen instead of an error box.</li>
+  <li><b>Empty lists:</b> the tara leaf mascot with one next action.</li>
+  <li><b>Unfinished check-in:</b> kept as a draft and never shown to the doctor. Exiting leaves the mother's record exactly as it was.</li>
+  <li><b>Double filing:</b> a report is saved once per report ID; remounts or reloads cannot file it twice.</li>
+  <li><b>Accessibility:</b> every control has a role and label; text scales to 150 %; screen-reader friendly.</li>
+</ul>
+
+<h2>8. How the app is built</h2>
+<table>
+  <tr><th>Layer</th><th>Choice</th></tr>
+  <tr><td>Framework</td><td>Expo SDK 57 (runs in Expo Go), React 19.2, React Native 0.86, React Compiler</td></tr>
+  <tr><td>Navigation</td><td>Expo Router (file-based routes, typed). Native stacks; custom bottom tabs for mothers</td></tr>
+  <tr><td>Animation</td><td>Reanimated 4.5, Gesture Handler, react-native-svg</td></tr>
+  <tr><td>Device features</td><td>expo-speech (text to speech), expo-haptics, expo-print + expo-sharing (PDF), expo-network (offline), expo-font, expo-asset</td></tr>
+  <tr><td>Icons and type</td><td>phosphor-react-native; @expo-google-fonts Anek (Latin, Kannada, Devanagari) and Parisienne</td></tr>
+  <tr><td>Languages</td><td>Kannada, Hindi, English (in-app dictionaries)</td></tr>
+  <tr><td>Remote testing</td><td>Cloudflare quick tunnel (<code>npm run tunnel</code>), so phones on any network can load the app</td></tr>
+</table>
+<h3>Folder map (<code>app/src</code>)</h3>
+<table>
+  <tr><th>Path</th><th>Contents</th></tr>
+  <tr><td><code>app/</code></td><td>Screens (routes): onboarding, asha, doctor, mother/(tabs), mother/topic, profile, not-found</td></tr>
+  <tr><td><code>components/system/</code></td><td>Screen frame, icons, emblems, Sakhi orb, jump bar, state views, offline banner, sheets, status pill</td></tr>
+  <tr><td><code>components/report/</code></td><td>Bento grid, vitals grid, rule audit, transcript, PDF button</td></tr>
+  <tr><td><code>components/mother/</code>, <code>ui/</code>, <code>onboarding/</code></td><td>Tab bar, buttons, fields, segmented control, onboarding header and CTA</td></tr>
+  <tr><td><code>data/</code></td><td>Questions and rules, the demo store, pregnancy content (sizes, guides, tracker), Tara replies</td></tr>
+  <tr><td><code>constants/</code>, <code>lib/</code>, <code>i18n/</code></td><td>Brand colours, type, motion, config; haptics and PDF builder; translations</td></tr>
+</table>
+
+<h2>9. Data and state management</h2>
+<ul>
+  <li>A small reactive store (<code>useSyncExternalStore</code>): when one role changes something, every screen updates at once (e.g. the ASHA finishes a check-in and the doctor's queue reorders).</li>
+  <li>Each mother has: saved answers (last finished check-in), an in-progress <b>draft</b>, vitals history, check-in history, reports (answers, rules, transcript), advice and referral status.</li>
+  <li>Risk is always computed from saved answers by the rules, never stored, so it cannot drift.</li>
+  <li>Finishing a check-in commits the draft, files the report, adds a vitals reading parsed from the spoken answers, and clears the referral so the doctor reviews the new findings.</li>
+  <li>Four demo mothers: Lakshmi D. (high risk, pre-eclampsia), Meena S. (reduced movements), Kavitha R. and Roopa K. (normal).</li>
+</ul>
+<div class="warn">Data lives in the phone's memory only for now. It resets when the app restarts and is not shared between phones. The planned Supabase backend will provide shared, persistent storage.</div>
+
+<h2 class="pb">10. How to run and test it</h2>
+<ol>
+  <li>In the <code>app</code> folder run <code>npm run tunnel</code>. Wait for "Tunnel ready" and the QR code.</li>
+  <li>Open Expo Go on the phone and scan the QR code (or type the <code>exp://…trycloudflare.com</code> address).</li>
+  <li>If Expo Go says "server with the specified hostname could not be found", the tunnel has expired. Run <code>npm run tunnel</code> again and use the new address.</li>
+  <li>Sign in with anything (test mode, no OTP). Pick a role.</li>
+  <li>Demo tools: Profile → switch high-risk / normal mother, Reset demo data. In the Sakhi check-in: Testing tools → next answer Normal / Danger, Fill the rest as normal.</li>
+</ol>
+<p>Quality checks: <code>npx tsc --noEmit</code> (types) and <code>npx expo lint</code>. Both are clean, and the iOS and Android bundles compile.</p>
+
+<h2>11. Personas behind the design</h2>
+<table>
+  <tr><th>Persona</th><th>Need</th><th>What tara does</th></tr>
+  <tr><td>Sunita, 38, experienced ASHA</td><td>Never miss a danger sign</td><td>High risk pinned first; ⚠️ + words, not colour alone</td></tr>
+  <tr><td>Savitri, 52, new to phones</td><td>Not get lost</td><td>One red button per screen; plain instructions; large text works</td></tr>
+  <tr><td>Asha, 29, in a hurry</td><td>Finish fast</td><td>Smart defaults; testing shortcuts; visible progress</td></tr>
+  <tr><td>Gowri, 34, poor network</td><td>Not lose work</td><td>Offline banner; work kept on the phone</td></tr>
+  <tr><td>Lakshmi, 26, high BP</td><td>Calm, clear next step</td><td>Warm wording, "go to the clinic today; Sunita knows"</td></tr>
+  <tr><td>Meena, 23, reads with difficulty</td><td>Listen, not read</td><td>Results and Tara read aloud; emblems carry meaning</td></tr>
+  <tr><td>Roopa, 21, little privacy</td><td>No embarrassment</td><td>Fertility and reproductive pages are read-only; nothing saved</td></tr>
+  <tr><td>Dr. Anand, 41, busy PHC</td><td>Find the urgent case</td><td>Risk-sorted queue; "Review next case"</td></tr>
+  <tr><td>Dr. Fathima, 33, wants reasons</td><td>No black box</td><td>Rule audit with the exact answers</td></tr>
+  <tr><td>Dr. Rao, 58, tablet</td><td>Readable at a distance</td><td>720 pt column, four-across vitals, large type</td></tr>
+  <tr><td>Screen-reader users</td><td>Full access</td><td>Labelled controls, roles, live regions</td></tr>
+</table>
+
+<h2>12. Current limits and next steps</h2>
+<h3>Placeholders today</h3>
+<ul>
+  <li>Sakhi's answers come from Testing tools (normal / danger samples) until the voice service is connected. Questions are spoken with on-device text-to-speech.</li>
+  <li>Tara answers from a small, safe set of replies. Its microphone is a preview that "hears" a sample question.</li>
+  <li>Sign-in is in test mode (no OTP). The Care Circle numbers for the ASHA and doctor are demo numbers; 108 is real.</li>
+  <li>Data is in memory on one phone.</li>
+</ul>
+<h3>Next steps</h3>
+<ol>
+  <li>Connect the Sakhi voice backend (speech recognition, answer extraction) to the check-in screen.</li>
+  <li>Move data to Supabase so the ASHA's report reaches the doctor's phone, with an offline queue that syncs.</li>
+  <li>Real sign-in (SMS OTP) and role-based access to mothers' records.</li>
+  <li>Real illustrations in the image slots; device testing on low-end Android and iPhone; a development build for store release.</li>
+</ol>
+
+<p class="muted" style="margin-top:24px;font-size:8.5pt">tara · decisions are rule-based (deterministic) and reviewed by a doctor. Not a diagnosis.</p>
+</body>
+</html>

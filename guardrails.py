@@ -284,9 +284,13 @@ _OUTPUT_BLOCK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Last-resort fallback only: the stream guard speaks the call's own language
+# via script_for("medical_advice", language). Kannada (the pilot language),
+# and no offer to book anything - Sakhi books nothing (WHO: an assistant
+# must never promise an action it cannot take).
 OUTPUT_REPLACEMENT = (
-    " ...actually, our doctors are the right people to guide you on that. "
-    "Shall I book you an appointment?"
+    "ನಮ್ಮ ವೈದ್ಯರು ನಿಮಗೆ ಸೂಕ್ತ ಮಾರ್ಗದರ್ಶನ ನೀಡುತ್ತಾರೆ. "
+    "ದಯವಿಟ್ಟು ಹತ್ತಿರದ ಪ್ರಾಥಮಿಕ ಆರೋಗ್ಯ ಕೇಂದ್ರಕ್ಕೆ ಭೇಟಿ ನೀಡಿ."
 )
 
 

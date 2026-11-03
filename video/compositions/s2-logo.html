@@ -1,0 +1,47 @@
+<template>
+  <style>
+    @font-face { font-family: 'Baloo 2'; font-weight: 500; src: url('assets/fonts/Baloo2_500Medium.ttf'); }
+    @font-face { font-family: 'Baloo 2'; font-weight: 700; src: url('assets/fonts/Baloo2_700Bold.ttf'); }
+    #root {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      font-family: 'Baloo 2', sans-serif;
+      color: #2b1b21;
+    }
+    /* iris from the pin's point (960, 540) onto porcelain */
+    #s2-paper { position: absolute; inset: 0; background: #ffffff; clip-path: circle(0px at 960px 520px); }
+    /* the brand's own logo layers, one 922 x 554 canvas each, stacked pixel-aligned */
+    #s2-logo { position: absolute; left: 580px; top: 205px; width: 760px; height: 457px; }
+    #s2-logo img { position: absolute; left: 0; top: 0; width: 760px; height: 457px; }
+    #s2-tag { position: absolute; left: 0; right: 0; top: 700px; text-align: center; font-size: 44px; font-weight: 500; color: #5a464d; }
+    #s2-tag .w { display: inline-block; }
+    #s2-tag b { font-weight: 700; color: #a11d44; }
+  </style>
+  <div id="root" data-composition-id="s2-logo" data-width="1920" data-height="1080">
+    <div id="s2-paper">
+      <div id="s2-logo">
+        <img id="s2-figure" src="assets/logo/tara-logo-figure.png" alt="" />
+        <img id="s2-t" class="ltr" src="assets/logo/tara-logo-t.png" alt="" />
+        <img id="s2-a1" class="ltr" src="assets/logo/tara-logo-a1.png" alt="" />
+        <img id="s2-r" class="ltr" src="assets/logo/tara-logo-r.png" alt="" />
+        <img id="s2-a2" class="ltr" src="assets/logo/tara-logo-a2.png" alt="" />
+      </div>
+      <div id="s2-tag"><span class="w">A</span> <span class="w">voice</span> <span class="w">companion,</span> <b class="w">Sakhi,</b> <span class="w">for</span> <span class="w">ASHA</span> <span class="w">workers</span></div>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    // 0.0 iris: the pin's point opens onto the brand's white
+    tl.fromTo('#s2-paper', { clipPath: 'circle(30px at 960px 520px)' }, { clipPath: 'circle(1200px at 960px 520px)', duration: 0.55, ease: 'power3.in' }, 0);
+    // 0.35 the figure grows up out of the pin's place (a wipe from the bottom)
+    tl.fromTo('#s2-figure', { clipPath: 'inset(100% 0% 0% 0%)', opacity: 1 }, { clipPath: 'inset(0% 0% 0% 0%)', duration: 0.7, ease: 'power2.inOut' }, 0.35);
+    // the name, per letter: opacity 0.3 -> 1 with a slight blur, 0.1 s apart
+    tl.fromTo('#s2-logo .ltr', { opacity: 0, filter: 'blur(5px)' }, { opacity: 1, filter: 'blur(0px)', duration: 0.22, ease: 'power4.out', stagger: 0.1 }, 0.6);
+    // 1.3 the line, per word
+    tl.fromTo('#s2-tag .w', { opacity: 0, filter: 'blur(6px)' }, { opacity: 1, filter: 'blur(0px)', duration: 0.18, ease: 'power4.out', stagger: 0.067 }, 1.3);
+    // 3.25 blur swap out: the ASHA's world comes in on the same beat
+    tl.to(['#s2-logo', '#s2-tag'], { opacity: 0, filter: 'blur(8px)', duration: 0.2, ease: 'power3.in' }, 3.28);
+    window.__timelines['s2-logo'] = tl;
+  </script>
+</template>

@@ -1,9 +1,10 @@
 # Sakhi standalone AWS deployment
 
-Provisions Sakhi as an isolated stack in `ap-south-1`: one `t3.small` EC2
-instance (standard CPU credits, no burst-surplus billing), Secrets Manager
-for config, S3 for deploy artifacts + call recordings, zero SSH (SSM only).
-Target baseline: **$15-20/month**.
+Provisions Sakhi as an isolated stack in `ap-south-1`: one `t3.medium` EC2
+instance (4 GB; standard CPU credits, no burst-surplus billing), Secrets
+Manager for config, S3 for deploy artifacts + call recordings, zero SSH (SSM
+only). Target baseline: **about $35-40/month** (t3.medium costs roughly twice
+a t3.small; the 2 GB t3.small hit the OOM killer at 3-4 concurrent calls).
 
 ## What this deploys (and what it deliberately does not)
 

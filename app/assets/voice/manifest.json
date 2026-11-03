@@ -1,0 +1,837 @@
+{
+ "voice": "Kaveri",
+ "provider": "gnani",
+ "sample_rate": 16000,
+ "lines": {
+  "kn": {
+   "greeting": {
+    "text": "ನಮಸ್ಕಾರ! ನಾನು ಸಖಿ. ತಾಯಿಯ ಬಗ್ಗೆ 24 ಪ್ರಶ್ನೆಗಳನ್ನು ಕೇಳುತ್ತೇನೆ. ಪ್ರತಿ ಪ್ರಶ್ನೆಗೆ ಜೋರಾಗಿ ಉತ್ತರಿಸಿ.",
+    "file": "kn/greeting.wav",
+    "ms": 6240,
+    "bytes": 199724,
+    "hash": "9bedef46ae79"
+   },
+   "reask": {
+    "text": "ಕ್ಷಮಿಸಿ, ಸರಿಯಾಗಿ ತಿಳಿಯಲಿಲ್ಲ. ಮತ್ತೊಮ್ಮೆ ಕೇಳುತ್ತೇನೆ.",
+    "file": "kn/reask.wav",
+    "ms": 3680,
+    "bytes": 117804,
+    "hash": "1b5116444d7b"
+   },
+   "reprompt": {
+    "text": "ಉತ್ತರ ಕೇಳಿಸಲಿಲ್ಲ. ದಯವಿಟ್ಟು ಮತ್ತೊಮ್ಮೆ ಹೇಳಿ.",
+    "file": "kn/reprompt.wav",
+    "ms": 2400,
+    "bytes": 76844,
+    "hash": "fa917db9aaa6"
+   },
+   "ask_name": {
+    "text": "ತಾಯಿಯ ಹೆಸರು ಏನು?",
+    "file": "kn/ask_name.wav",
+    "ms": 1280,
+    "bytes": 41004,
+    "hash": "7be6f334a6e4"
+   },
+   "ask_age": {
+    "text": "ತಾಯಿಯ ವಯಸ್ಸು ಎಷ್ಟು?",
+    "file": "kn/ask_age.wav",
+    "ms": 1280,
+    "bytes": 41004,
+    "hash": "c9a2d4b591ee"
+   },
+   "ask_diastolic": {
+    "text": "ಬಿಪಿಯ ಕೆಳಗಿನ ಸಂಖ್ಯೆ ಎಷ್ಟು?",
+    "file": "kn/ask_diastolic.wav",
+    "ms": 1600,
+    "bytes": 51244,
+    "hash": "0cf04a897b1f"
+   },
+   "ask_para": {
+    "text": "ಈ ಮೊದಲು ಎಷ್ಟು ಮಕ್ಕಳು ಜನಿಸಿದ್ದಾರೆ?",
+    "file": "kn/ask_para.wav",
+    "ms": 1920,
+    "bytes": 61484,
+    "hash": "955b6c4bde7f"
+   },
+   "ask_allergy": {
+    "text": "ಯಾವುದಾದರೂ ಔಷಧಿಯಿಂದ ಅಲರ್ಜಿ ಇದೆಯಾ?",
+    "file": "kn/ask_allergy.wav",
+    "ms": 2240,
+    "bytes": 71724,
+    "hash": "1c194f8b1a23"
+   },
+   "ask_meds": {
+    "text": "ಈಗ ಯಾವುದಾದರೂ ಮಾತ್ರೆ ತೆಗೆದುಕೊಳ್ಳುತ್ತಿದ್ದಾರಾ?",
+    "file": "kn/ask_meds.wav",
+    "ms": 2080,
+    "bytes": 66604,
+    "hash": "0b8094ce310a"
+   },
+   "ask_hb": {
+    "text": "ಮತ್ತು ಹಿಮೋಗ್ಲೋಬಿನ್ ಎಷ್ಟು?",
+    "file": "kn/ask_hb.wav",
+    "ms": 1440,
+    "bytes": 46124,
+    "hash": "2b765d442a18"
+   },
+   "ask_sugar": {
+    "text": "ಮತ್ತು ಶುಗರ್ ವರದಿ ಎಷ್ಟು?",
+    "file": "kn/ask_sugar.wav",
+    "ms": 1600,
+    "bytes": 51244,
+    "hash": "d5cab0c860b4"
+   },
+   "waiting": {
+    "text": "ನಿಧಾನವಾಗಿ ಹೇಳಿ. ನಾನು ಕೇಳುತ್ತಿದ್ದೇನೆ.",
+    "file": "kn/waiting.wav",
+    "ms": 2560,
+    "bytes": 81964,
+    "hash": "d50343a88f8f"
+   },
+   "away": {
+    "text": "ಯಾರ ಧ್ವನಿಯೂ ಕೇಳಿಸುತ್ತಿಲ್ಲ. ನಾನು ಕಾಯುತ್ತೇನೆ. ಸಿದ್ಧವಾದಾಗ ಮುಂದುವರಿಸಿ ಒತ್ತಿ.",
+    "file": "kn/away.wav",
+    "ms": 4480,
+    "bytes": 143404,
+    "hash": "5fd77a6a6b4c"
+   },
+   "danger": {
+    "text": "ಇದು ಅಪಾಯದ ಲಕ್ಷಣ. ವೈದ್ಯರಿಗಾಗಿ ಗುರುತಿಸಿದ್ದೇನೆ.",
+    "file": "kn/danger.wav",
+    "ms": 3040,
+    "bytes": 97324,
+    "hash": "03c6dfebea6b"
+   },
+   "done": {
+    "text": "ಎಲ್ಲಾ 24 ಪ್ರಶ್ನೆಗಳು ಮುಗಿದಿವೆ. ಸಾರಾಂಶ ಸಿದ್ಧಪಡಿಸುತ್ತಿದ್ದೇನೆ.",
+    "file": "kn/done.wav",
+    "ms": 4320,
+    "bytes": 138284,
+    "hash": "b28b08608368"
+   },
+   "q01": {
+    "text": "ತಾಯಿಯ ಹೆಸರು ಮತ್ತು ವಯಸ್ಸು ಎಷ್ಟು?",
+    "file": "kn/q01.wav",
+    "ms": 2080,
+    "bytes": 66604,
+    "hash": "a2d3304e4eb1"
+   },
+   "q02": {
+    "text": "ಕೊನೆಯ ಮುಟ್ಟಿನ ದಿನಾಂಕ ಅಥವಾ ಹೆರಿಗೆಯ ಅಂದಾಜು ದಿನಾಂಕ ಯಾವಾಗ? ಈಗ ಎಷ್ಟು ತಿಂಗಳು ಅಥವಾ ವಾರಗಳು?",
+    "file": "kn/q02.wav",
+    "ms": 5440,
+    "bytes": 174124,
+    "hash": "c28c058d1b92"
+   },
+   "q03": {
+    "text": "ಕೊನೆಯ ಮುಟ್ಟಿನ ದಿನಾಂಕ ಯಾವಾಗ?",
+    "file": "kn/q03.wav",
+    "ms": 1760,
+    "bytes": 56364,
+    "hash": "cfbc18732ef8"
+   },
+   "q04": {
+    "text": "ಇದು ಎಷ್ಟನೇ ಗರ್ಭಧಾರಣೆ? ಈ ಮೊದಲು ಎಷ್ಟು ಮಕ್ಕಳು ಜನಿಸಿದ್ದಾರೆ?",
+    "file": "kn/q04.wav",
+    "ms": 3680,
+    "bytes": 117804,
+    "hash": "a34643706f43"
+   },
+   "q05": {
+    "text": "ಹಿಂದಿನ ಹೆರಿಗೆಗಳಲ್ಲಿ ಸಿ-ಸೆಕ್ಷನ್, ಅಧಿಕ ರಕ್ತಸ್ರಾವ, ಅಥವಾ ಬೇರೆ ತೊಂದರೆಗಳು ಆಗಿದ್ದವಾ?",
+    "file": "kn/q05.wav",
+    "ms": 5120,
+    "bytes": 163884,
+    "hash": "a6e49fd6788c"
+   },
+   "q21": {
+    "text": "ಇದು ನೈಸರ್ಗಿಕ ಗರ್ಭಧಾರಣೆಯಾ ಅಥವಾ IVF ಚಿಕಿತ್ಸೆ ಪಡೆದಿದ್ದಾರಾ?",
+    "file": "kn/q21.wav",
+    "ms": 3520,
+    "bytes": 112684,
+    "hash": "bb3d3d58e350"
+   },
+   "q06": {
+    "text": "ತಾಯಿಯ ಇಂದಿನ ಬಿಪಿ ಎಷ್ಟು ದಾಖಲಾಗಿದೆ?",
+    "file": "kn/q06.wav",
+    "ms": 2240,
+    "bytes": 71724,
+    "hash": "27794d66c83e"
+   },
+   "q07": {
+    "text": "ತಾಯಿಯ ತೂಕ ಎಷ್ಟು ಕೆಜಿ ಇದೆ?",
+    "file": "kn/q07.wav",
+    "ms": 1600,
+    "bytes": 51244,
+    "hash": "03a90e6ae5c5"
+   },
+   "q08": {
+    "text": "ಕಬ್ಬಿಣಾಂಶ ಗುಳಿಗೆ ತಪ್ಪದೆ ತಿನ್ನುತ್ತಿದ್ದಾಳಾ?",
+    "file": "kn/q08.wav",
+    "ms": 2080,
+    "bytes": 66604,
+    "hash": "935026f90e5c"
+   },
+   "q24": {
+    "text": "ಕಣ್ಣು ಅಥವಾ ಉಗುರುಗಳಲ್ಲಿ ರಕ್ತಹೀನತೆ (ಬಿಳುಪು), ಅಥವಾ ಪಾದಗಳಲ್ಲಿ ಊತ ಕಂಡುಬಂದಿದೆಯಾ?",
+    "file": "kn/q24.wav",
+    "ms": 4960,
+    "bytes": 158764,
+    "hash": "3b1eb66a2946"
+   },
+   "q25": {
+    "text": "ಮಗುವಿನ ಹೃದಯ ಬಡಿತ (FHR) ಪರೀಕ್ಷೆ ಮಾಡಲಾಗಿದೆಯಾ? ಎಷ್ಟಿದೆ?",
+    "file": "kn/q25.wav",
+    "ms": 4320,
+    "bytes": 138284,
+    "hash": "edf868f72b15"
+   },
+   "q09": {
+    "text": "ತೀವ್ರ ತಲೆನೋವು, ಕಣ್ಣು ಮಂಜಾಗುವುದು, ಅಥವಾ ಮುಖ ಕೈಕಾಲುಗಳಲ್ಲಿ ಊತ ಇದೆಯಾ?",
+    "file": "kn/q09.wav",
+    "ms": 4320,
+    "bytes": 138284,
+    "hash": "00c70333cc52"
+   },
+   "q10": {
+    "text": "ಈಗ ತಾಯಿಗೆ ಹೊಟ್ಟೆ ನೋವು, ರಕ್ತಸ್ರಾವ, ಅಥವಾ ನೀರಿನಂಶ ಹೋಗುವ ತೊಂದರೆ ಇದೆಯಾ?",
+    "file": "kn/q10.wav",
+    "ms": 4160,
+    "bytes": 133164,
+    "hash": "9783b5f51f95"
+   },
+   "q11": {
+    "text": "ಫಿಟ್ಸ್ ಅಥವಾ ಸೆಳೆತ ಆಗಿದೆಯ?",
+    "file": "kn/q11.wav",
+    "ms": 2080,
+    "bytes": 66604,
+    "hash": "5ba96f4122a6"
+   },
+   "q12": {
+    "text": "ಮಗುವಿನ ಚಲನೆ ಸರಿಯಾಗಿ ಗೊತ್ತಾಗುತ್ತಿದೆಯಾ?",
+    "file": "kn/q12.wav",
+    "ms": 2080,
+    "bytes": 66604,
+    "hash": "88f1319e1c48"
+   },
+   "q18": {
+    "text": "ಜ್ವರ, ತೀವ್ರ ವಾಂತಿ, ಅಥವಾ ಉಸಿರಾಟದ ತೊಂದರೆ ಏನಾದರೂ ಇದೆಯಾ?",
+    "file": "kn/q18.wav",
+    "ms": 4000,
+    "bytes": 128044,
+    "hash": "85749ff46ee0"
+   },
+   "q19": {
+    "text": "ತಾಯಿಗೆ ಮೊದಲಿನಿಂದ ಶುಗರ್, ಬಿಪಿ, ಥೈರಾಯ್ಡ್, ಅಥವಾ ಫಿಟ್ಸ್ ತೊಂದರೆ ಇದೆಯಾ?",
+    "file": "kn/q19.wav",
+    "ms": 4320,
+    "bytes": 138284,
+    "hash": "351692d521b1"
+   },
+   "q20": {
+    "text": "ಈಗ ಯಾವುದಾದರೂ ಮಾತ್ರೆಗಳನ್ನು ತೆಗೆದುಕೊಳ್ಳುತ್ತಿದ್ದಾರಾ? ಯಾವುದಾದರೂ ಔಷಧಿಯಿಂದ ಅಲರ್ಜಿ ಇದೆಯಾ?",
+    "file": "kn/q20.wav",
+    "ms": 4480,
+    "bytes": 143404,
+    "hash": "f42ce1a3e2ed"
+   },
+   "q13": {
+    "text": "ಸ್ಕ್ಯಾನ್ ಮಾಡಿದೆಯ? (ಬಿ.ಆರ್.ಐ.ಎಂ.ಎಸ್ ಅಥವಾ ತಾಲೂಕು ಆಸ್ಪತ್ರೆ)",
+    "file": "kn/q13.wav",
+    "ms": 3520,
+    "bytes": 112684,
+    "hash": "7ab4ef7b8ab4"
+   },
+   "q14": {
+    "text": "ಎರಡು ಧನುರ್ವಾತ ಚುಚ್ಚುಮದ್ದು ತೆಗೆದೆಯ?",
+    "file": "kn/q14.wav",
+    "ms": 2080,
+    "bytes": 66604,
+    "hash": "b3de49d223d5"
+   },
+   "q26": {
+    "text": "ಇತ್ತೀಚಿನ ರಕ್ತ ಪರೀಕ್ಷೆಯಲ್ಲಿ ಹಿಮೋಗ್ಲೋಬಿನ್ (Hb) ಮತ್ತು ಶುಗರ್ ವರದಿ ಎಷ್ಟಿದೆ?",
+    "file": "kn/q26.wav",
+    "ms": 4480,
+    "bytes": 143404,
+    "hash": "60ff55640e29"
+   },
+   "q15": {
+    "text": "ಪ್ರಸವಕ್ಕೆ ಆಸ್ಪತ್ರೆಯಲ್ಲಿ ಡಾಕ್ಟರ್ ನರ್ಸ್ ಇದ್ದಾರಾ?",
+    "file": "kn/q15.wav",
+    "ms": 2080,
+    "bytes": 66604,
+    "hash": "cf7526c83005"
+   },
+   "q16": {
+    "text": "ನೂರನೆಂಟು (108) ಗಾಡಿ ಕರೆ ಮಾಡುವ ವ್ಯವಸ್ಥೆ ಇದೆಯ?",
+    "file": "kn/q16.wav",
+    "ms": 3520,
+    "bytes": 112684,
+    "hash": "e9350e97a261"
+   },
+   "q17": {
+    "text": "ಧನ್ಯವಾದಗಳು. ಎಲ್ಲಾ ವಿವರಗಳನ್ನು ಯಶಸ್ವಿಯಾಗಿ ದಾಖಲಿಸಲಾಗಿದೆ. ನಾನು ಈ ಮಾಹಿತಿಯನ್ನು ಪ್ರಾಥಮಿಕ ಆರೋಗ್ಯ ಕೇಂದ್ರದ ವೈದ್ಯರಿಗೆ ಕಳುಹಿಸುತ್ತಿದ್ದೇನೆ.",
+    "file": "kn/q17.wav",
+    "ms": 8000,
+    "bytes": 256044,
+    "hash": "148b53ad43cb"
+   },
+   "also_q09_headache": {
+    "text": "ಮತ್ತು ತೀವ್ರ ತಲೆನೋವು ಇದೆಯಾ?",
+    "file": "kn/also_q09_headache.wav",
+    "ms": 1600,
+    "bytes": 51244,
+    "hash": "fb4ec0f40e12"
+   },
+   "also_q09_vision": {
+    "text": "ಮತ್ತು ಕಣ್ಣು ಮಂಜಾಗುವುದು ಇದೆಯಾ?",
+    "file": "kn/also_q09_vision.wav",
+    "ms": 1760,
+    "bytes": 56364,
+    "hash": "4adef45c19ac"
+   },
+   "also_q09_headache_vision": {
+    "text": "ಮತ್ತು ತೀವ್ರ ತಲೆನೋವು ಅಥವಾ ಕಣ್ಣು ಮಂಜಾಗುವುದು ಇದೆಯಾ?",
+    "file": "kn/also_q09_headache_vision.wav",
+    "ms": 2880,
+    "bytes": 92204,
+    "hash": "4bf400406c65"
+   },
+   "also_q09_swellFace": {
+    "text": "ಮತ್ತು ಮುಖ ಕೈಗಳಲ್ಲಿ ಊತ ಇದೆಯಾ?",
+    "file": "kn/also_q09_swellFace.wav",
+    "ms": 1920,
+    "bytes": 61484,
+    "hash": "569696a7207d"
+   },
+   "also_q09_headache_swellFace": {
+    "text": "ಮತ್ತು ತೀವ್ರ ತಲೆನೋವು ಅಥವಾ ಮುಖ ಕೈಗಳಲ್ಲಿ ಊತ ಇದೆಯಾ?",
+    "file": "kn/also_q09_headache_swellFace.wav",
+    "ms": 3200,
+    "bytes": 102444,
+    "hash": "fed61fd97eb8"
+   },
+   "also_q09_vision_swellFace": {
+    "text": "ಮತ್ತು ಕಣ್ಣು ಮಂಜಾಗುವುದು ಅಥವಾ ಮುಖ ಕೈಗಳಲ್ಲಿ ಊತ ಇದೆಯಾ?",
+    "file": "kn/also_q09_vision_swellFace.wav",
+    "ms": 2880,
+    "bytes": 92204,
+    "hash": "206e971d86be"
+   },
+   "also_q10_abdPain": {
+    "text": "ಮತ್ತು ಹೊಟ್ಟೆ ನೋವು ಇದೆಯಾ?",
+    "file": "kn/also_q10_abdPain.wav",
+    "ms": 1440,
+    "bytes": 46124,
+    "hash": "9bd779d91dd4"
+   },
+   "also_q10_bleeding": {
+    "text": "ಮತ್ತು ರಕ್ತಸ್ರಾವ ಇದೆಯಾ?",
+    "file": "kn/also_q10_bleeding.wav",
+    "ms": 1440,
+    "bytes": 46124,
+    "hash": "6f1898fbce9b"
+   },
+   "also_q10_abdPain_bleeding": {
+    "text": "ಮತ್ತು ಹೊಟ್ಟೆ ನೋವು ಅಥವಾ ರಕ್ತಸ್ರಾವ ಇದೆಯಾ?",
+    "file": "kn/also_q10_abdPain_bleeding.wav",
+    "ms": 2560,
+    "bytes": 81964,
+    "hash": "0105c7466e8b"
+   },
+   "also_q10_leaking": {
+    "text": "ಮತ್ತು ನೀರು ಹೋಗುವುದು ಇದೆಯಾ?",
+    "file": "kn/also_q10_leaking.wav",
+    "ms": 1280,
+    "bytes": 41004,
+    "hash": "a7e3cd1d1695"
+   },
+   "also_q10_abdPain_leaking": {
+    "text": "ಮತ್ತು ಹೊಟ್ಟೆ ನೋವು ಅಥವಾ ನೀರು ಹೋಗುವುದು ಇದೆಯಾ?",
+    "file": "kn/also_q10_abdPain_leaking.wav",
+    "ms": 2400,
+    "bytes": 76844,
+    "hash": "dc6042bce609"
+   },
+   "also_q10_bleeding_leaking": {
+    "text": "ಮತ್ತು ರಕ್ತಸ್ರಾವ ಅಥವಾ ನೀರು ಹೋಗುವುದು ಇದೆಯಾ?",
+    "file": "kn/also_q10_bleeding_leaking.wav",
+    "ms": 2240,
+    "bytes": 71724,
+    "hash": "987f509a543f"
+   },
+   "also_q18_fever": {
+    "text": "ಮತ್ತು ಜ್ವರ ಇದೆಯಾ?",
+    "file": "kn/also_q18_fever.wav",
+    "ms": 1280,
+    "bytes": 41004,
+    "hash": "63d03590bdfb"
+   },
+   "also_q18_vomiting": {
+    "text": "ಮತ್ತು ತೀವ್ರ ವಾಂತಿ ಇದೆಯಾ?",
+    "file": "kn/also_q18_vomiting.wav",
+    "ms": 1600,
+    "bytes": 51244,
+    "hash": "144f7ab65221"
+   },
+   "also_q18_fever_vomiting": {
+    "text": "ಮತ್ತು ಜ್ವರ ಅಥವಾ ತೀವ್ರ ವಾಂತಿ ಇದೆಯಾ?",
+    "file": "kn/also_q18_fever_vomiting.wav",
+    "ms": 2400,
+    "bytes": 76844,
+    "hash": "ae6c9b05ce7a"
+   },
+   "also_q18_breathless": {
+    "text": "ಮತ್ತು ಉಸಿರಾಟದ ತೊಂದರೆ ಇದೆಯಾ?",
+    "file": "kn/also_q18_breathless.wav",
+    "ms": 1760,
+    "bytes": 56364,
+    "hash": "d09d7b3b7abf"
+   },
+   "also_q18_fever_breathless": {
+    "text": "ಮತ್ತು ಜ್ವರ ಅಥವಾ ಉಸಿರಾಟದ ತೊಂದರೆ ಇದೆಯಾ?",
+    "file": "kn/also_q18_fever_breathless.wav",
+    "ms": 2560,
+    "bytes": 81964,
+    "hash": "f766deb227c7"
+   },
+   "also_q18_vomiting_breathless": {
+    "text": "ಮತ್ತು ತೀವ್ರ ವಾಂತಿ ಅಥವಾ ಉಸಿರಾಟದ ತೊಂದರೆ ಇದೆಯಾ?",
+    "file": "kn/also_q18_vomiting_breathless.wav",
+    "ms": 2880,
+    "bytes": 92204,
+    "hash": "b0dfb775b155"
+   },
+   "also_q24_pallor": {
+    "text": "ಮತ್ತು ಕಣ್ಣು ಉಗುರುಗಳಲ್ಲಿ ಬಿಳುಪು ಇದೆಯಾ?",
+    "file": "kn/also_q24_pallor.wav",
+    "ms": 1920,
+    "bytes": 61484,
+    "hash": "e09e45705276"
+   },
+   "also_q24_swellFeet": {
+    "text": "ಮತ್ತು ಪಾದಗಳಲ್ಲಿ ಊತ ಇದೆಯಾ?",
+    "file": "kn/also_q24_swellFeet.wav",
+    "ms": 1760,
+    "bytes": 56364,
+    "hash": "4caecf495ce5"
+   }
+  },
+  "hi": {
+   "greeting": {
+    "text": "नमस्ते! मैं सखी हूँ। मैं माँ के बारे में 24 सवाल पूछूंगी। हर सवाल का जवाब ज़ोर से दें।",
+    "file": "hi/greeting.wav",
+    "ms": 5280,
+    "bytes": 169004,
+    "hash": "6bfc356a6474"
+   },
+   "reask": {
+    "text": "माफ़ कीजिए, ठीक से समझ नहीं आया। मैं फिर से पूछती हूँ।",
+    "file": "hi/reask.wav",
+    "ms": 3200,
+    "bytes": 102444,
+    "hash": "3b04c6efd92f"
+   },
+   "reprompt": {
+    "text": "जवाब सुनाई नहीं दिया। कृपया एक बार फिर बोलें।",
+    "file": "hi/reprompt.wav",
+    "ms": 2560,
+    "bytes": 81964,
+    "hash": "c0ff93b7ca38"
+   },
+   "ask_name": {
+    "text": "माता का नाम क्या है?",
+    "file": "hi/ask_name.wav",
+    "ms": 1280,
+    "bytes": 41004,
+    "hash": "198889f7a8a4"
+   },
+   "ask_age": {
+    "text": "माता की उम्र कितनी है?",
+    "file": "hi/ask_age.wav",
+    "ms": 1440,
+    "bytes": 46124,
+    "hash": "6d2bde0bb30d"
+   },
+   "ask_diastolic": {
+    "text": "बीपी का नीचे वाला नंबर कितना है?",
+    "file": "hi/ask_diastolic.wav",
+    "ms": 1920,
+    "bytes": 61484,
+    "hash": "459a97f06a02"
+   },
+   "ask_para": {
+    "text": "पहले कितने बच्चे जन्मे हैं?",
+    "file": "hi/ask_para.wav",
+    "ms": 1600,
+    "bytes": 51244,
+    "hash": "e752838c6ad7"
+   },
+   "ask_allergy": {
+    "text": "किसी दवाई से एलर्जी है क्या?",
+    "file": "hi/ask_allergy.wav",
+    "ms": 1600,
+    "bytes": 51244,
+    "hash": "45d219518eb5"
+   },
+   "ask_meds": {
+    "text": "अभी कोई गोली ले रही हैं क्या?",
+    "file": "hi/ask_meds.wav",
+    "ms": 1600,
+    "bytes": 51244,
+    "hash": "9db843f8d4a6"
+   },
+   "ask_hb": {
+    "text": "और हीमोग्लोबिन कितना है?",
+    "file": "hi/ask_hb.wav",
+    "ms": 1440,
+    "bytes": 46124,
+    "hash": "00c52d058b55"
+   },
+   "ask_sugar": {
+    "text": "और शुगर की रिपोर्ट कितनी है?",
+    "file": "hi/ask_sugar.wav",
+    "ms": 1600,
+    "bytes": 51244,
+    "hash": "aa32d8d56db4"
+   },
+   "waiting": {
+    "text": "आराम से बताइए। मैं सुन रही हूँ।",
+    "file": "hi/waiting.wav",
+    "ms": 2240,
+    "bytes": 71724,
+    "hash": "2ed37616ba99"
+   },
+   "away": {
+    "text": "कोई आवाज़ सुनाई नहीं दे रही। मैं रुकती हूँ। तैयार हों तो आगे बढ़ें दबाइए।",
+    "file": "hi/away.wav",
+    "ms": 4800,
+    "bytes": 153644,
+    "hash": "78c62a2d0c43"
+   },
+   "danger": {
+    "text": "यह खतरे का संकेत है। मैंने डॉक्टर के लिए इसे चिह्नित कर दिया है।",
+    "file": "hi/danger.wav",
+    "ms": 3680,
+    "bytes": 117804,
+    "hash": "67f5c472a44d"
+   },
+   "done": {
+    "text": "सभी 24 प्रश्न पूरे हो गए। मैं सारांश तैयार कर रही हूँ।",
+    "file": "hi/done.wav",
+    "ms": 3200,
+    "bytes": 102444,
+    "hash": "7dd201727d58"
+   },
+   "q01": {
+    "text": "माता का नाम और उम्र बताइए दीदी",
+    "file": "hi/q01.wav",
+    "ms": 1920,
+    "bytes": 61484,
+    "hash": "24afde8b8a87"
+   },
+   "q02": {
+    "text": "आखिरी माहवारी की तारीख या प्रसव की संभावित तारीख कब है? अभी कितने महीने या हफ्ते हैं?",
+    "file": "hi/q02.wav",
+    "ms": 4800,
+    "bytes": 153644,
+    "hash": "df3388a142cd"
+   },
+   "q03": {
+    "text": "आखिरी माहवारी की तारीख कब थी?",
+    "file": "hi/q03.wav",
+    "ms": 1760,
+    "bytes": 56364,
+    "hash": "90dbb95c71ea"
+   },
+   "q04": {
+    "text": "यह कौन सा गर्भ है? पहले कितने बच्चे जन्मे हैं?",
+    "file": "hi/q04.wav",
+    "ms": 2720,
+    "bytes": 87084,
+    "hash": "cc282633da29"
+   },
+   "q05": {
+    "text": "पहले के प्रसव में सी-सेक्शन, अधिक रक्तस्राव, या कोई और समस्या हुई थी?",
+    "file": "hi/q05.wav",
+    "ms": 4320,
+    "bytes": 138284,
+    "hash": "2b0657982bc6"
+   },
+   "q21": {
+    "text": "यह प्राकृतिक गर्भ है या आई.वी.एफ इलाज करवाया था?",
+    "file": "hi/q21.wav",
+    "ms": 3040,
+    "bytes": 97324,
+    "hash": "ac315636930c"
+   },
+   "q06": {
+    "text": "आज का रक्तचाप कितना दर्ज हुआ है?",
+    "file": "hi/q06.wav",
+    "ms": 1920,
+    "bytes": 61484,
+    "hash": "3bbbda6e5829"
+   },
+   "q07": {
+    "text": "माता का वजन कितने किलो है?",
+    "file": "hi/q07.wav",
+    "ms": 1760,
+    "bytes": 56364,
+    "hash": "bde1774b6e8a"
+   },
+   "q08": {
+    "text": "आयरन की गोली रोज बिना चूके खा रही है क्या?",
+    "file": "hi/q08.wav",
+    "ms": 2400,
+    "bytes": 76844,
+    "hash": "7e81e205d0af"
+   },
+   "q24": {
+    "text": "आँख या नाखूनों में खून की कमी, या पैरों में सूजन दिखी है क्या?",
+    "file": "hi/q24.wav",
+    "ms": 3520,
+    "bytes": 112684,
+    "hash": "379b4996de8a"
+   },
+   "q25": {
+    "text": "बच्चे की धड़कन (एफ.एच.आर) जांची क्या, कितनी है?",
+    "file": "hi/q25.wav",
+    "ms": 3520,
+    "bytes": 112684,
+    "hash": "ae18e4bb9964"
+   },
+   "q09": {
+    "text": "तेज सिरदर्द, धुंधला दिखना, या चेहरे-हाथ-पैरों में सूजन है क्या?",
+    "file": "hi/q09.wav",
+    "ms": 3680,
+    "bytes": 117804,
+    "hash": "bad66ca0a01c"
+   },
+   "q10": {
+    "text": "अभी पेट दर्द, रक्तस्राव, या पानी जाने की तकलीफ है क्या?",
+    "file": "hi/q10.wav",
+    "ms": 3840,
+    "bytes": 122924,
+    "hash": "2a52c8f33a43"
+   },
+   "q11": {
+    "text": "दौरा या झटके आए हैं क्या?",
+    "file": "hi/q11.wav",
+    "ms": 1600,
+    "bytes": 51244,
+    "hash": "0f9496d3c568"
+   },
+   "q12": {
+    "text": "बच्चे की हलचल ठीक से महसूस हो रही है क्या?",
+    "file": "hi/q12.wav",
+    "ms": 2400,
+    "bytes": 76844,
+    "hash": "82604b0f2c38"
+   },
+   "q18": {
+    "text": "बुखार, तेज उल्टी, या सांस लेने में कोई तकलीफ है क्या?",
+    "file": "hi/q18.wav",
+    "ms": 3520,
+    "bytes": 112684,
+    "hash": "352e4ad3a74f"
+   },
+   "q19": {
+    "text": "माता को पहले से शुगर, बीपी, थायरॉइड, या मिर्गी की समस्या है क्या?",
+    "file": "hi/q19.wav",
+    "ms": 4480,
+    "bytes": 143404,
+    "hash": "fc0233f4edd5"
+   },
+   "q20": {
+    "text": "अभी कोई दवाइयां ले रही हैं? किसी दवाई से एलर्जी है क्या?",
+    "file": "hi/q20.wav",
+    "ms": 3040,
+    "bytes": 97324,
+    "hash": "9db6c0b2e928"
+   },
+   "q13": {
+    "text": "स्कैन करवाया है क्या? (बी.आर.आई.एम.एस या तालुक अस्पताल में)",
+    "file": "hi/q13.wav",
+    "ms": 3520,
+    "bytes": 112684,
+    "hash": "458d71f08649"
+   },
+   "q14": {
+    "text": "धनुर्वात के दोनों इंजेक्शन लगवाए हैं क्या?",
+    "file": "hi/q14.wav",
+    "ms": 2080,
+    "bytes": 66604,
+    "hash": "11833d36ef38"
+   },
+   "q26": {
+    "text": "हाल की जांच में हीमोग्लोबिन और शुगर की रिपोर्ट कितनी है?",
+    "file": "hi/q26.wav",
+    "ms": 3040,
+    "bytes": 97324,
+    "hash": "0e4d919b0bc7"
+   },
+   "q15": {
+    "text": "प्रसव के लिए अस्पताल में डॉक्टर नर्स मौजूद हैं क्या?",
+    "file": "hi/q15.wav",
+    "ms": 2560,
+    "bytes": 81964,
+    "hash": "089399454e66"
+   },
+   "q16": {
+    "text": "एक सौ आठ (108) गाड़ी बुलाने की व्यवस्था है क्या?",
+    "file": "hi/q16.wav",
+    "ms": 3520,
+    "bytes": 112684,
+    "hash": "a5abed6433f1"
+   },
+   "q17": {
+    "text": "धन्यवाद। सभी विवरण सफलतापूर्वक दर्ज कर लिए गए हैं। मैं यह जानकारी डॉक्टर को भेज रही हूँ।",
+    "file": "hi/q17.wav",
+    "ms": 5120,
+    "bytes": 163884,
+    "hash": "65ffd0e5da6e"
+   },
+   "also_q09_headache": {
+    "text": "और क्या तेज़ सिरदर्द है?",
+    "file": "hi/also_q09_headache.wav",
+    "ms": 1440,
+    "bytes": 46124,
+    "hash": "71be6fe3c2e1"
+   },
+   "also_q09_vision": {
+    "text": "और क्या धुंधला दिखना है?",
+    "file": "hi/also_q09_vision.wav",
+    "ms": 1440,
+    "bytes": 46124,
+    "hash": "a2156d7fbabf"
+   },
+   "also_q09_headache_vision": {
+    "text": "और क्या तेज़ सिरदर्द या धुंधला दिखना है?",
+    "file": "hi/also_q09_headache_vision.wav",
+    "ms": 2400,
+    "bytes": 76844,
+    "hash": "ebf0533ceeba"
+   },
+   "also_q09_swellFace": {
+    "text": "और क्या चेहरे या हाथों में सूजन है?",
+    "file": "hi/also_q09_swellFace.wav",
+    "ms": 1920,
+    "bytes": 61484,
+    "hash": "76fb9e831eb0"
+   },
+   "also_q09_headache_swellFace": {
+    "text": "और क्या तेज़ सिरदर्द या चेहरे या हाथों में सूजन है?",
+    "file": "hi/also_q09_headache_swellFace.wav",
+    "ms": 2880,
+    "bytes": 92204,
+    "hash": "35dea91dc028"
+   },
+   "also_q09_vision_swellFace": {
+    "text": "और क्या धुंधला दिखना या चेहरे या हाथों में सूजन है?",
+    "file": "hi/also_q09_vision_swellFace.wav",
+    "ms": 2880,
+    "bytes": 92204,
+    "hash": "d4d593c6607b"
+   },
+   "also_q10_abdPain": {
+    "text": "और क्या पेट दर्द है?",
+    "file": "hi/also_q10_abdPain.wav",
+    "ms": 1440,
+    "bytes": 46124,
+    "hash": "f92071857849"
+   },
+   "also_q10_bleeding": {
+    "text": "और क्या खून आना है?",
+    "file": "hi/also_q10_bleeding.wav",
+    "ms": 1280,
+    "bytes": 41004,
+    "hash": "056ea054f8cc"
+   },
+   "also_q10_abdPain_bleeding": {
+    "text": "और क्या पेट दर्द या खून आना है?",
+    "file": "hi/also_q10_abdPain_bleeding.wav",
+    "ms": 1920,
+    "bytes": 61484,
+    "hash": "cdf2d6ffeefa"
+   },
+   "also_q10_leaking": {
+    "text": "और क्या पानी जाना है?",
+    "file": "hi/also_q10_leaking.wav",
+    "ms": 1280,
+    "bytes": 41004,
+    "hash": "4eccb346e5a0"
+   },
+   "also_q10_abdPain_leaking": {
+    "text": "और क्या पेट दर्द या पानी जाना है?",
+    "file": "hi/also_q10_abdPain_leaking.wav",
+    "ms": 1920,
+    "bytes": 61484,
+    "hash": "adedbaa3f213"
+   },
+   "also_q10_bleeding_leaking": {
+    "text": "और क्या खून आना या पानी जाना है?",
+    "file": "hi/also_q10_bleeding_leaking.wav",
+    "ms": 2080,
+    "bytes": 66604,
+    "hash": "f5d4e182e3cb"
+   },
+   "also_q18_fever": {
+    "text": "और क्या बुखार है?",
+    "file": "hi/also_q18_fever.wav",
+    "ms": 1120,
+    "bytes": 35884,
+    "hash": "3bb6745cdeda"
+   },
+   "also_q18_vomiting": {
+    "text": "और क्या तेज़ उल्टी है?",
+    "file": "hi/also_q18_vomiting.wav",
+    "ms": 1280,
+    "bytes": 41004,
+    "hash": "7a9ab38a3803"
+   },
+   "also_q18_fever_vomiting": {
+    "text": "और क्या बुखार या तेज़ उल्टी है?",
+    "file": "hi/also_q18_fever_vomiting.wav",
+    "ms": 1760,
+    "bytes": 56364,
+    "hash": "82cc8dc808e2"
+   },
+   "also_q18_breathless": {
+    "text": "और क्या सांस लेने में तकलीफ है?",
+    "file": "hi/also_q18_breathless.wav",
+    "ms": 1760,
+    "bytes": 56364,
+    "hash": "c8f5c41ef5ff"
+   },
+   "also_q18_fever_breathless": {
+    "text": "और क्या बुखार या सांस लेने में तकलीफ है?",
+    "file": "hi/also_q18_fever_breathless.wav",
+    "ms": 2400,
+    "bytes": 76844,
+    "hash": "bbb0429d0fb7"
+   },
+   "also_q18_vomiting_breathless": {
+    "text": "और क्या तेज़ उल्टी या सांस लेने में तकलीफ है?",
+    "file": "hi/also_q18_vomiting_breathless.wav",
+    "ms": 2720,
+    "bytes": 87084,
+    "hash": "caead5e6cb9d"
+   },
+   "also_q24_pallor": {
+    "text": "और क्या आँख या नाखून में पीलापन है?",
+    "file": "hi/also_q24_pallor.wav",
+    "ms": 2080,
+    "bytes": 66604,
+    "hash": "acffb990f608"
+   },
+   "also_q24_swellFeet": {
+    "text": "और क्या पैरों में सूजन है?",
+    "file": "hi/also_q24_swellFeet.wav",
+    "ms": 1440,
+    "bytes": 46124,
+    "hash": "b4b649504ccd"
+   }
+  }
+ }
+}

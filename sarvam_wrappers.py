@@ -747,7 +747,10 @@ class SarvamSpeechStream(stt.SpeechStream):
                     nonlocal utterance_no
                     async for message in websocket:
                         resp = json.loads(message)
-                        logger.debug("Sarvam STT received: %s", resp)
+                        # The message type only: the payload carries the
+                        # mother's transcript (DPDP Act s.8(5)).
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug("Sarvam STT received response type: %s", resp.get("type", "unknown"))
 
                         if resp.get("type") in {"error", "ERROR"} or "error" in resp:
                             raise APIStatusError(

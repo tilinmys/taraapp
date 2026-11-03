@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { workerHeaders } from "@/lib/worker";
 
 const WORKER_STATUS_URL = process.env.WORKER_STATUS_URL || "http://localhost:8080";
 
@@ -7,7 +8,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const res = await fetch(`${WORKER_STATUS_URL}/slots`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: workerHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     });
     return NextResponse.json(await res.json(), { status: res.status });

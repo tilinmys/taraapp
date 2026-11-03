@@ -55,12 +55,12 @@ echo "Staging application code to s3://${DEPLOY_BUCKET}/..."
 # never imported and were removed from the server; Gnani STT comes from the
 # livekit plugin). tests/test_deploy_manifest.py fails if one goes missing.
 PY_FILES=(
-  agent.py clinical_terms.py db_helper.py gemini_wrappers.py
+  agent.py audio_bank.py clinical_terms.py db_helper.py gemini_wrappers.py
   guardrails.py kitten_tts_provider.py llm_hedge.py
   rumik_wrappers.py sakhi_avatar.py
   sakhi_aws_costs.py sakhi_dashboard_store.py sakhi_domain.py sakhi_intake.py sakhi_kannada.py
   sakhi_normalizer.py sakhi_pacing.py sakhi_question_lock.py
-  sakhi_prompts.py sakhi_repository.py sakhi_schema.py sakhi_sql_repository.py
+  sakhi_prompts.py sakhi_repository.py sakhi_schema.py sakhi_slot_engine.py sakhi_sql_repository.py
   sakhi_telemetry.py sakhi_tools.py sakhi_triage.py sarvam_wrappers.py sixtydb_wrappers.py
   skillies_wrappers.py smallest_wrappers.py status_server.py tts_audio_cache.py
   vakyam_wrappers.py voice_catalog.py
@@ -80,6 +80,9 @@ for f in "${PY_FILES[@]}"; do
 done
 aws s3 cp requirements.txt "s3://${DEPLOY_BUCKET}/app/requirements.txt" --only-show-errors
 [ -f mock_sixtydb.json ] && aws s3 cp mock_sixtydb.json "s3://${DEPLOY_BUCKET}/app/mock_sixtydb.json" --only-show-errors
+# Zero-TTS prompt recordings (scripts/prerecord_prompts.py). Without them the
+# worker logs "Zero-TTS off" and keeps the LLM/TTS turn loop - safe, slower.
+aws s3 sync assets/audio/prompts/ "s3://${DEPLOY_BUCKET}/app/assets/audio/prompts/" --delete --only-show-errors
 
 # Ship only the production operational scripts. Broad-syncing scripts/ would
 # place ad-hoc benchmarks and live provider probes on the server. The

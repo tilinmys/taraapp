@@ -375,6 +375,8 @@ import guardrails
 # agent.py so they stay unit-testable without LiveKit. agent.py's job is to
 # wire them into a voice session, not to own clinical logic.
 from sakhi_domain import (
+    BloodPressure,
+    BloodPressureError,
     Language,
     detect_language_switch_request,
     RiskLevel,
@@ -401,6 +403,10 @@ from sakhi_repository import MockSixtyDBRepository, PatientRepository
 from sakhi_sql_repository import PostgresPatientRepository, SQLitePatientRepository
 from sakhi_tools import ClinicalToolset
 from sakhi_triage import TRIAGE, TriageEngine
+from audio_bank import AUDIO_BANK
+from sakhi_slot_engine import (
+    EMERGENCY_WAV, all_prompt_paths, extract_all, localized, prompt_text,
+)
 from voice_catalog import (
     CATALOG as VOICE_CATALOG,
     PROVIDERS as TTS_PROVIDERS,
@@ -749,7 +755,7 @@ async def filter_disallowed_punctuation(text):
             yield cleaned
 
 
-async def medical_output_guard(text):
+async def medical_output_guard(text, language="kn"):
     """TTS guard: drug names and dosage phrasing must never be SPOKEN, even
     if the LLM generates them (a jailbreak that survived the input gate, or
     unprompted volunteering). The agent's legitimate vocabulary contains no
@@ -759,9 +765,12 @@ async def medical_output_guard(text):
     mid-stream ("paraceta" + "mol"), so only whitespace-complete text is
     scanned and emitted, with a short emitted-tail window for patterns that
     span a word boundary ("500 " then "mg"). On a hit, the rest of this
-    reply is swallowed and replaced with the approved redirect - the drug
-    name never reaches the synthesizer.
+    reply is swallowed and replaced with the approved refusal IN THE CALL'S
+    LANGUAGE (guardrails.script_for) - the drug name never reaches the
+    synthesizer, and a Kannada call never switches to English mid-reply.
     """
+    # Leading space: the refusal follows whatever was already spoken of this reply.
+    refusal = " " + (guardrails.script_for("medical_advice", language) or guardrails.OUTPUT_REPLACEMENT)
     buffer = ""
     tail = ""  # last emitted chars, for cross-chunk pattern context
     flagged = False
@@ -780,7 +789,7 @@ async def medical_output_guard(text):
                 "Generated text contained drug/dosage phrasing; replaced before TTS",
                 event="guardrail_output_blocked",
             )
-            yield guardrails.OUTPUT_REPLACEMENT
+            yield refusal
             buffer = ""
             continue
         yield emit
@@ -792,9 +801,20 @@ async def medical_output_guard(text):
                 "Generated text contained drug/dosage phrasing; replaced before TTS",
                 event="guardrail_output_blocked",
             )
-            yield guardrails.OUTPUT_REPLACEMENT
+            yield refusal
         else:
             yield buffer
+
+
+def medical_output_guard_for(language):
+    """medical_output_guard bound to one call's language (a TTS transform
+    takes only the text stream), like number_normalization_for()."""
+
+    async def guard(text):
+        async for piece in medical_output_guard(text, language):
+            yield piece
+
+    return guard
 
 
 _TIME_RE = re.compile(r"(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?", re.IGNORECASE)
@@ -1420,6 +1440,24 @@ def sarvam_tts_model() -> str:
 # held the maternal set. They were dead weight that still pulled in db_helper,
 # SlotCache and BookingPrefetch on every import. Sakhi's tools are in
 # sakhi_tools.ClinicalToolset. See changed.md §0.1.
+
+
+_ZERO_TTS_READY: dict[str, bool] = {}
+
+
+def _zero_tts_ready(lang: str) -> bool:
+    """Every prompt the zero-TTS loop can play is recorded for `lang`.
+
+    All or nothing, decided once per language per worker: a call never runs
+    half on recordings and half on a voice that suddenly differs. English
+    has no recordings and keeps the LLM/TTS pipeline.
+    """
+    if lang not in _ZERO_TTS_READY:
+        missing = [p for p in all_prompt_paths(lang) if not AUDIO_BANK.has(p)]
+        _ZERO_TTS_READY[lang] = AUDIO_BANK.ready and not missing
+        if AUDIO_BANK.ready and missing:
+            logger.warning("Zero-TTS off for %s: %d prompt(s) not recorded, e.g. %s", lang, len(missing), missing[0])
+    return _ZERO_TTS_READY[lang]
 
 
 def schedule_hangup_after_playout(session) -> None:
@@ -3339,11 +3377,13 @@ CallState = SakhiCallState
 # long window.
 _VAD_SLOW_TOPIC_RE = re.compile(
     r"spell|letter by letter|name|village|week|gestational|old"
-    r"|blood pressure|reading|systolic|diastolic|number|symptom|describe"
+    r"|\bbp\b|blood pressure|reading|systolic|diastolic|number|symptom|describe|weight"
     r"|headache|vision|swelling"
-    r"|ಹೆಸರ|ಊರ|ವಾರ|ರಕ್ತದೊತ್ತಡ|ಲಕ್ಷಣ|ವಯಸ"          # stems
+    # Vitals as the recorded prompts actually say them (q06 "ಬಿಪಿ", q07 "ತೂಕ"):
+    # she reads the cuff or the scale, so these need the slow window too.
+    r"|ಹೆಸರ|ಊರ|ವಾರ|ರಕ್ತದೊತ್ತಡ|ಬಿಪಿ|ತೂಕ|ಲಕ್ಷಣ|ವಯಸ"    # stems + vitals
     r"|ನೋವು|ಮಂಜ|ಕಣ್ಣ|ಊತ|ಅಕ್ಷರ"                       # symptoms + "letter"
-    r"|नाम|गाँव|गांव|सप्ताह|हफ़्ते|रक्तचाप|लक्षण|उम्र"
+    r"|नाम|गाँव|गांव|सप्ताह|हफ़्ते|रक्तचाप|बीपी|वजन|लक्षण|उम्र"
     r"|सिरदर्द|दर्द|सूजन",
     re.IGNORECASE,
 )
@@ -3481,11 +3521,9 @@ class DynamicVADController:
     def fragment_recovery(self) -> None:
         """Extend the listen window because the caller was cut off mid-sentence.
 
-        Currently unwired: its only trigger was the fast path's
-        `looks_incomplete` fragment detector, which was English clinic phrasing
-        ("my name is", "i want to") and was removed with the rest of that path.
-        Kept because the state and its timing are still correct - a Kannada or
-        Hindi fragment detector can call this directly once one exists.
+        Triggered by the zero-TTS turn loop when an answer ends on a Kannada,
+        Hindi or English connective (looks_incomplete); the fragment is held
+        and joined to the continuation (SakhiAgent._hold_fragment).
         """
         self._apply("FRAGMENT_RECOVERY", "Incomplete fragment detected; extending the listen window")
 
@@ -4685,6 +4723,212 @@ class SakhiAgent(Agent):
 
         asyncio.create_task(_run())
 
+    # --- zero-TTS turn loop (2026-11-01) -------------------------------
+
+    def _play_prompt(self, state: SakhiCallState, wav: str) -> bool:
+        """Play a pre-recorded prompt on the call's audio track. The text
+        goes to the transcript and chat context; no TTS synthesises it."""
+        if not AUDIO_BANK.has(wav):
+            return False
+        self._zt_last_wav = wav
+        txt = prompt_text(wav, state.language.value)
+        # A recording never passes through the TTS hook that normally tells the
+        # adaptive VAD what was asked: tell it here, so a BP or weight question
+        # gets the slow window (she is reading the cuff) for the reply.
+        self._vad_eval(txt)
+        self.session.say(
+            txt,
+            audio=AUDIO_BANK.stream(wav), allow_interruptions=True, add_to_chat_ctx=True,
+        )
+        return True
+
+    def _hold_fragment(self, state: SakhiCallState, qid: str, raw_speech: str, turn_id: str) -> None:
+        """Keep a cut-off answer ("ಬಿಪಿ 130 ಮತ್ತು") for the next turn instead of
+        answering half of it. If no continuation comes, it is processed alone
+        after VOICE_FRAGMENT_WAIT_S, exactly as it would have been before."""
+        self._drop_fragment()
+        self._zt_fragment = (qid, raw_speech)
+
+        def flush() -> None:
+            held, self._zt_fragment, self._zt_fragment_timer = self._zt_fragment, None, None
+            if held and state.intake.pending_id == held[0]:
+                self._zero_tts_turn(state, held[1], turn_id, fragment_ok=False)
+
+        try:
+            self._zt_fragment_timer = asyncio.get_running_loop().call_later(
+                float(os.getenv("VOICE_FRAGMENT_WAIT_S", "3.0")), flush)
+        except RuntimeError:  # no running loop (a synchronous caller): nothing to wait on
+            self._zt_fragment_timer = None
+
+    def _drop_fragment(self) -> None:
+        timer = getattr(self, "_zt_fragment_timer", None)
+        if timer is not None:
+            timer.cancel()
+        self._zt_fragment = None
+        self._zt_fragment_timer = None
+
+    def _zero_tts_turn(self, state: SakhiCallState | None, raw_speech: str, turn_id: str, *, fragment_ok: bool = True) -> bool:
+        """Handle one turn with slots and recordings only. True = handled.
+
+        1. strip filler and extract every slot (sakhi_slot_engine.extract_all)
+        2. feed the intake (IntakeProgress.ingest_slots): next question, or a
+           micro-prompt for the one missing slot
+        3. readings into call state; TRIAGE decides. HIGH_RISK halts the
+           questionnaire, locks the intake and plays emergency_referral.wav
+        4. play the WAV; persistence and escalation run behind it, so the
+           first audio frame never waits on the database
+        """
+        if state is None or not raw_speech or not AUDIO_BANK.ready or state.awaiting_identity_box:
+            return False
+        lang = state.language.value
+        if not _zero_tts_ready(lang):
+            return False
+        canon = canonicalise(raw_speech)
+        if is_side_talk(canon):
+            return True                      # she is talking to the mother: stay quiet
+        if state.intake_locked:
+            # Emergency already declared: the referral is the only thing to say.
+            return self._play_prompt(state, localized(EMERGENCY_WAV, lang))
+        intake = state.intake
+        intake.sync_from_state(state)
+        intake.sync_applicability(state)
+        if intake.pending_id is None:
+            intake.arm_next()                # the greeting asked the first open question
+        qid = intake.pending_id
+        if qid is None:
+            return False                     # intake complete: the closing turn is the pipeline's
+        if is_repeat_request(canon):
+            last = getattr(self, "_zt_last_wav", None) or localized(
+                f"assets/audio/prompts/kn/{qid}_full.wav", lang)
+            return self._play_prompt(state, last)
+        # Thinking noise ("ಹೂಂ", "uh") while she reads the cuff or the scale:
+        # stay quiet, keep the question armed, and burn no stall attempt. A
+        # real yes/no to a question that takes one is NOT noise
+        # (_answers_pending_question), so a danger-sign "ಹೌದು" is never dropped.
+        if is_backchannel(canon) and not _answers_pending_question(
+                state, canon, getattr(self, "_last_agent_utterance", None)):
+            pipeline_event(
+                "turn", "info", "Zero-TTS backchannel ignored",
+                f"{len(raw_speech.strip())} chars of thinking noise; question stays armed",
+                event="backchannel_ignored", question_id=qid, turn_id=turn_id,
+            )
+            return True
+        # The rest of a cut-off answer: join the held fragment and process both
+        # halves together ("ಬಿಪಿ 130 ಮತ್ತು" + "90").
+        held = getattr(self, "_zt_fragment", None)
+        if held is not None:
+            self._drop_fragment()
+            if held[0] == qid:
+                raw_speech = f"{held[1]} {raw_speech}"
+                canon = canonicalise(raw_speech)
+        # Cut off mid-thought (ends on "ಮತ್ತು" / "and" / "और"): wait for the rest
+        # with the widened listen window instead of answering half a sentence.
+        if (
+            fragment_ok
+            and env_flag("VOICE_FRAGMENT_RECOVERY_ENABLED", True)
+            and len(raw_speech.split()) <= 6
+            and looks_incomplete(raw_speech)
+        ):
+            if self._vad_controller is not None:
+                self._vad_controller.fragment_recovery()
+            self._hold_fragment(state, qid, raw_speech, turn_id)
+            pipeline_event(
+                "turn", "info", "Zero-TTS fragment recovery",
+                f"{len(raw_speech.split())} words ending on a connective; waiting for the rest",
+                event="fragment_recovery", question_id=qid, turn_id=turn_id,
+            )
+            return True
+
+        started = time.perf_counter()
+        slots = extract_all(raw_speech, expecting=qid)
+        complete, wav = intake.ingest_slots(qid, slots, text=raw_speech, language=lang)
+
+        # Readings into call state (the only inputs triage reads).
+        v = intake.slot_values
+        new = {}
+        if v.get("name") or v.get("age"):
+            state.identify(name=v.get("name"), age=v.get("age"))
+        if v.get("gestational_weeks") and not state.gestational_weeks:
+            state.identify(gestational_weeks=int(v["gestational_weeks"]))
+            new["weeks"] = state.gestational_weeks
+        if "systolic" in v and "diastolic" in v:
+            reading = (int(v["systolic"]), int(v["diastolic"]))
+            current = state.blood_pressure
+            if current is None or (current.systolic, current.diastolic) != reading:
+                try:
+                    state.record_blood_pressure(BloodPressure(*reading))
+                    new["bp"] = reading
+                except BloodPressureError:
+                    # Implausible ("90 over 140"): never recorded, asked again whole.
+                    v.pop("systolic", None)
+                    v.pop("diastolic", None)
+                    intake.answered.pop("q06", None)
+                    intake.pending_id = "q06"
+                    complete, wav = False, localized("assets/audio/prompts/kn/q06_full.wav", lang)
+        heard = detect_symptoms(canon, qid)
+        if heard.any_present:
+            state.record_symptoms(heard)
+        if new.get("bp") or heard.any_present:
+            engine = getattr(self, "_triage", None) or TRIAGE
+            state.record_assessment(engine.assess(
+                state.blood_pressure, state.symptoms, gestational_weeks=state.gestational_weeks,
+            ))
+        emergency = bool(state.assessment and state.assessment.requires_escalation)
+        if emergency:
+            state.lock_intake_on_danger_sign(danger_sign_lock_reason(state))
+            wav = localized(EMERGENCY_WAV, lang)
+        q01_done = qid == "q01" and complete and state.name and state.age
+
+        played = bool(wav) and self._play_prompt(state, wav)
+        if intake.complete and not emergency:
+            self._farewell_hangup_scheduled = True
+            try:
+                schedule_hangup_after_playout(self.session)
+            except Exception:
+                logger.warning("Zero-TTS hangup scheduling failed", exc_info=True)
+        pipeline_event(
+            "turn", "warn" if emergency else "ok",
+            "Zero-TTS emergency halt" if emergency else "Zero-TTS turn",
+            f"{qid} -> {wav.rsplit('/', 1)[-1] if wav else 'done'}",
+            event="zero_tts_turn", turn_id=turn_id, question_id=qid, complete=complete,
+            slots=sorted(slots), wav=wav, played=played, emergency=emergency,
+            decide_ms=round((time.perf_counter() - started) * 1000, 2),
+        )
+        self._zero_tts_persist(state, new, heard, bool(q01_done), emergency)
+        return True
+
+    def _zero_tts_persist(self, state: SakhiCallState, new: dict, heard, q01_done: bool, emergency: bool) -> None:
+        """The database writes the LLM's tool calls used to make, run behind
+        the prompt already playing. Same tools, same repository, same audit
+        events; a failure is logged and never reaches the call."""
+        toolset = self._toolset
+        if toolset is None or not (new or heard.any_present or q01_done or emergency):
+            return
+        ctx = _ToolRunContext(self.session, state)
+        found = {f.name: True for f in dataclasses.fields(heard) if getattr(heard, f.name)}
+
+        async def _run() -> None:
+            try:
+                if q01_done:
+                    await toolset.record_patient_intake(ctx, state.name, state.age)
+                if "weeks" in new:
+                    await toolset.record_gestational_age(ctx, new["weeks"])
+                if "bp" in new:
+                    await toolset.record_bp(ctx, *new["bp"])
+                if found:
+                    await toolset.record_symptoms(ctx, **found)
+                if emergency and not state.escalated and not self._escalation_in_flight:
+                    self._escalation_in_flight = True
+                    try:
+                        reason = "; ".join(state.assessment.reasons) if state.assessment else "high-risk triage"
+                        await toolset.connect_smfmi_specialist(ctx, reason)
+                    finally:
+                        self._escalation_in_flight = False
+            except Exception:
+                logger.warning("Zero-TTS persistence failed; call continues", exc_info=True)
+
+        asyncio.create_task(_run())
+
     # --- framework hooks -----------------------------------------------
 
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
@@ -4697,14 +4941,17 @@ class SakhiAgent(Agent):
         turn_id = self._turn_id(new_message, raw_speech)
         # TABLET_AUDIO_INGRESS: every committed turn, before any gate can drop
         # it. Duration is the last VAD speech burst (ChatMessage carries none).
+        # Length only, never the words: this runs before guardrail redaction,
+        # and a raw turn holds names, villages and vitals (DPDP Act s.8(5)).
         logger.info(
-            "TABLET_AUDIO_INGRESS: text='%s' duration=%.2f",
-            raw_speech,
+            "TABLET_AUDIO_INGRESS: chars=%d duration=%.2f turn_id=%s",
+            len(raw_speech),
             float(
                 getattr(new_message, "duration", None)
                 or (getattr(self, "_state_watch", None) or {}).get("last_speech_seconds")
                 or 0.0
             ),
+            turn_id,
         )
 
         # [SAKHI_TURN_GATE] - one record per committed turn, at entry, showing
@@ -4729,14 +4976,16 @@ class SakhiAgent(Agent):
                     "vocal_tic_re": (bool(_tic_re.match(_gate_text.strip())) if _tic_re is not None else None),
                     "looks_incomplete": bool(_gate_text) and looks_incomplete(_gate_text),
                 }
-                logger.debug("[SAKHI_TURN_GATE] %r %s", raw_speech, _gates)
+                logger.debug("[SAKHI_TURN_GATE] chars=%d gates=%s", len(raw_speech), _gates)
+                # No transcript, raw or canonical: this event is written to
+                # pipeline_events.jsonl and streamed over SSE, unredacted.
                 pipeline_event(
                     "turn", "info", "[SAKHI_TURN_GATE]",
                     f"{len(raw_speech)} chars; gates={[k for k, v in _gates.items() if v]}",
                     event="turn_gate_debug",
                     turn_id=turn_id,
-                    raw_transcript=raw_speech,
-                    canonical_transcript=_gate_text,
+                    raw_transcript_chars=len(raw_speech),
+                    canonical_transcript_chars=len(_gate_text),
                     turn_duration_s=round(float(_watch.get("last_speech_seconds") or 0.0), 3),
                     pending_question_id=(state.intake.pending_id if state is not None else None),
                     **_gates,
@@ -4806,6 +5055,14 @@ class SakhiAgent(Agent):
             except Exception:
                 logger.warning("Pacing observation failed; turn continues", exc_info=True)
 
+        # ZERO-TTS DETERMINISTIC TURN (2026-11-01). Slots, not a model, decide
+        # what the answer meant and what comes next; a pre-recorded WAV says
+        # it. No LLM call and no TTS call on this path. Falls through to the
+        # full pipeline below whenever it cannot handle the turn (prompts not
+        # recorded for this language, identity box up, English call).
+        if env_flag("VOICE_ZERO_TTS_MODE", True) and self._zero_tts_turn(state, raw_speech, turn_id):
+            raise StopResponse()
+
         # Backchannel / vocal-tic filter.
         #
         # A bare "ಹೌದು" or a cough is not a turn. Answering it costs an LLM
@@ -4829,9 +5086,11 @@ class SakhiAgent(Agent):
         if env_flag("SAKHI_CANONICALISE_TRANSCRIPT", True) and raw_turn_text.strip():
             canonical = canonicalise(raw_turn_text)
             if canonical != raw_turn_text:
+                # Lengths only: this event is persisted and streamed before
+                # guardrail redaction, and the words are the mother's.
                 pipeline_event(
                     "stt", "info", "Transcript canonicalised",
-                    f"{raw_turn_text.strip()[:60]!r} -> {canonical.strip()[:60]!r}",
+                    f"{len(raw_turn_text.strip())} -> {len(canonical.strip())} chars",
                     event="transcript_canonicalised",
                 )
                 raw_turn_text = canonical
@@ -6092,6 +6351,20 @@ def prewarm_process(proc: JobProcess) -> None:
         proc.userdata.setdefault("patient_repository", MockSixtyDBRepository("mock_sixtydb.json"))
         proc.userdata.setdefault("triage_engine", TRIAGE)
 
+    # Zero-TTS prompts into RAM once per worker, so a turn's reply is a dict
+    # lookup (see audio_bank.py). An empty bank keeps the LLM/TTS turn loop.
+    if env_flag("VOICE_ZERO_TTS_MODE", True):
+        try:
+            bank_started = time.perf_counter()
+            count = AUDIO_BANK.preload()
+            pipeline_event(
+                "tts", "ok" if count else "warn", "Audio prompt bank",
+                f"{count} prompt(s), {AUDIO_BANK.bytes_loaded // 1024} KB in RAM",
+                duration_ms=round((time.perf_counter() - bank_started) * 1000, 2),
+            )
+        except Exception as exc:
+            pipeline_event("tts", "error", "Audio prompt bank failed", str(exc), error=exc)
+
     # NOTE: the clinic FAQ semantic cache prewarm used to run here. It embedded
     # opening-hours/location/fees answers built from the appointment slot grid,
     # and SakhiAgent consulted it before the LLM on every non-fast-path turn -
@@ -6611,7 +6884,7 @@ async def entrypoint(ctx: JobContext):
                 vad_tag_transform,
                 "filter_markdown",
                 "filter_emoji",
-                medical_output_guard,
+                medical_output_guard_for(call_language),
                 filter_code_artifacts,
                 filter_disallowed_punctuation,
                 indian_english_phonetic_normalization,

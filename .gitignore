@@ -80,3 +80,9 @@ session_source.txt
 test_ec2_tts.py
 # Per-fix patch files are redundant with the commits themselves
 docs/*.patch
+
+# Local dev token for the Sakhi gateway (scripts/dev_token.py)
+.sakhi-dev-token
+
+# Rendered videos (rebuild with: cd video && npm run render)
+video/renders/

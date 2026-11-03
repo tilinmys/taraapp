@@ -4,11 +4,12 @@
     { "source": "/api/token", "destination": "/api/index" },
     { "source": "/api/logs", "destination": "/api/index" },
     { "source": "/api/worker-status", "destination": "/api/index" },
-    { "source": "/api/tts-catalog", "destination": "/api/index" }
+    { "source": "/api/tts-catalog", "destination": "/api/index" },
+    { "source": "/api/sakhi/:path*", "destination": "/api/index" }
   ],
   "functions": {
     "api/index.py": {
-      "includeFiles": "{voice_catalog,vercel_common}.py"
+      "includeFiles": "{voice_catalog.py,vercel_common.py,sakhi_gateway.py,sakhi_live/**}"
     }
   }
 }

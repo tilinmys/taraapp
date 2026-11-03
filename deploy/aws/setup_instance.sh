@@ -50,8 +50,8 @@ id -u sakhi &>/dev/null || useradd -r -s /bin/false -d /opt/sakhi sakhi
 
 mkdir -p /opt/sakhi/data /opt/sakhi/logs
 
-# t3.small is 2GB RAM. `next build` plus a live Python worker plus nginx can
-# spike past that during a build - a swapfile is cheap insurance against an
+# t3.medium is 4GB RAM (older stacks: t3.small, 2GB). `next build` plus live
+# Python call workers plus nginx can spike past that during a build - a swapfile is cheap insurance against an
 # OOM-killed deploy rather than a performance feature this app needs day to
 # day.
 if [ ! -f /swapfile ]; then

@@ -18,6 +18,7 @@ same regexes, same defaults.
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import re
@@ -678,12 +679,52 @@ def _unregister_sse_client(q: queue.Queue) -> None:
             _sse_clients.remove(q)
 
 
+# Routes that return patient-level data (names, risk, transcripts, clinical
+# cards, appointments) need the dashboard's bearer token, as does every POST
+# (writes). Open: liveness, config, the doctor list and aggregate counts.
+# /events (SSE) is not here: a browser EventSource cannot send a header, so
+# it relies on nginx's login and a fixed CORS origin instead.
+_PROTECTED_GET = frozenset({
+    "/reports", "/api/reports",
+    "/reports/mcp-card", "/api/reports/mcp-card",
+    "/logs", "/api/logs",
+    "/schedule", "/api/schedule",
+    "/slot-events", "/api/slot-events",
+})
+_PROTECTED_PREFIXES = ("/dashboard/", "/api/dashboard/")
+
+
+def _needs_token(method: str, path: str) -> bool:
+    return method == "POST" or path in _PROTECTED_GET or path.startswith(_PROTECTED_PREFIXES)
+
+
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:  # noqa: A002 - stdlib signature
         pass  # keep the worker's own log output free of HTTP access-log noise
 
+    def _is_authorized(self) -> bool:
+        """Bearer check for patient data (OWASP API1: broken object level
+        authorization). Sends the 401/403 itself and returns False on failure.
+
+        SAKHI_DASHBOARD_TOKEN (else SAKHI_GATEWAY_TOKEN) unset: open, for local
+        development; nginx's login still guards a deployed instance."""
+        expected = os.getenv("SAKHI_DASHBOARD_TOKEN", os.getenv("SAKHI_GATEWAY_TOKEN", "")).strip()
+        if not expected:
+            return True
+        auth_header = self.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            self._send_json({"error": "Unauthorized: Bearer token required"}, status=401)
+            return False
+        token = auth_header.split(" ", 1)[1].strip()
+        if not hmac.compare_digest(token.encode(), expected.encode()):
+            self._send_json({"error": "Forbidden: Invalid token"}, status=403)
+            return False
+        return True
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if _needs_token("GET", parsed.path) and not self._is_authorized():
+            return
         if parsed.path == "/":
             self._send_json({"status": "MyStree Voice Agent Worker is running"})
             return
@@ -830,7 +871,18 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             length = int(self.headers.get("Content-Length") or 0)
-            body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except ValueError:
+            length = 0
+        # Read the (small JSON) body BEFORE any refusal: answering 401 with the
+        # body unread resets the connection on Windows, and the client sees a
+        # network error instead of the 401.
+        raw = self.rfile.read(length) if 0 < length <= 1_000_000 else b""
+        if _needs_token("POST", parsed.path) and not self._is_authorized():
+            return
+        try:
+            if length > 1_000_000:
+                raise ValueError("body too large")
+            body = json.loads(raw or b"{}") if length else {}
             if not isinstance(body, dict):
                 raise ValueError("body must be a JSON object")
         except (ValueError, json.JSONDecodeError) as exc:
@@ -886,21 +938,13 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
-        # The frontend opens this directly from the BROWSER (page.tsx's
-        # EventSource, port 3100) against the worker's own port (8080) - a
-        # different origin, so without this header the browser blocks the
-        # connection before a single event arrives, no matter how correct
-        # the URL is. Every other route here (`/logs`, `/config`, ...) is
-        # reached through Next.js's server-side proxy routes instead, which
-        # do their own fetch() from Node and are never subject to CORS -
-        # this is the one endpoint actually meant for a direct cross-origin
-        # browser connection, so it is the one that needs the header. Wide
-        # open (not origin-locked) because this stream carries the exact
-        # same pipeline-event data the unauthenticated /logs polling
-        # endpoint already serves to anyone who can reach this port - no
-        # narrower here would be security theatre over that fact, not an
-        # actual restriction.
-        self.send_header("Access-Control-Allow-Origin", "*")
+        # A browser EventSource on another origin (the console, port 3100 in
+        # development) needs this header. Never "*": any website could then
+        # open the stream of live intakes from a browser that can reach this
+        # port. ALLOWED_ORIGIN is the console's origin. (/logs needs the
+        # dashboard token now; this stream cannot, so it is origin-locked.)
+        self.send_header("Access-Control-Allow-Origin", os.getenv("ALLOWED_ORIGIN", "http://localhost:3100"))
+        self.send_header("Vary", "Origin")
         self.end_headers()
 
         q = _register_sse_client()
@@ -918,7 +962,9 @@ class _Handler(BaseHTTPRequestHandler):
                     # Send heartbeat comment to keep connection alive
                     self.wfile.write(b": heartbeat\n\n")
                     self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError):
+                # ConnectionAbortedError / OSError (WinError 10053/10054): how a
+                # dropped client shows on Windows; without them the loop spins.
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
                     break
         finally:
             _unregister_sse_client(q)

@@ -79,7 +79,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from typing import Callable
+from typing import Any, Callable, Dict, Tuple
 
 
 @dataclasses.dataclass(frozen=True)
@@ -413,6 +413,14 @@ def is_assent(text: str) -> bool:
     return text.strip().strip(".,!?ಣ।").casefold() in IntakeProgress._ASSENTS
 
 
+@dataclasses.dataclass(frozen=True)
+class _SlotView:
+    """What `applicable_if` predicates read, taken from the slots: a weeks
+    value heard this turn gates q03/q12/q25 before call state has it."""
+
+    gestational_weeks: int | None
+
+
 @dataclasses.dataclass
 class IntakeProgress:
     """Which intake questions are done, and what comes next.
@@ -432,6 +440,11 @@ class IntakeProgress:
     # correct if that ever changes) doesn't inherit a stale count from a
     # different question. See record_answer() for the escape itself.
     _stall_counts: dict[str, int] = dataclasses.field(default_factory=dict)
+    # ZERO-TTS SLOT FILLING (2026-11-01). Every value an answer carried
+    # (name, age, gestational_weeks, systolic, diastolic, weight_kg, and a
+    # question's own yes/no keyed by its id), from ANY answer of the call.
+    # See ingest_slots() and sakhi_slot_engine.py.
+    slot_values: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
     # Two consecutive real-but-unclear replies to the SAME question is the
     # ceiling: the third non-empty reply closes it regardless, best-effort.
@@ -469,6 +482,13 @@ class IntakeProgress:
             self.mark_satisfied("q06", str(state.blood_pressure))
         if getattr(state, "symptoms_screened", False):
             self.mark_satisfied("q09", "screened")
+        # The same facts as slots, so ingest_slots() skips what the record holds.
+        bp = getattr(state, "blood_pressure", None)
+        for key, value in (("name", getattr(state, "name", None)), ("age", getattr(state, "age", None)),
+                           ("gestational_weeks", getattr(state, "gestational_weeks", None)),
+                           ("systolic", getattr(bp, "systolic", None)), ("diastolic", getattr(bp, "diastolic", None))):
+            if value:
+                self.slot_values.setdefault(key, value)
 
     def sync_applicability(self, state) -> None:
         """Skip any unanswered question whose `applicable_if` says no.
@@ -791,6 +811,113 @@ class IntakeProgress:
             self._stall_counts.pop(pending_id, None)
             return closed
         return None
+
+    # --- zero-TTS slot filling (2026-11-01) -----------------------------
+
+    def _absorb(self, question_id: str, extracted: Dict[str, Any], text: str) -> None:
+        """Merge one answer's slots into the call's slots (omnidirectional:
+        "ಏಳು ತಿಂಗಳು" said to the name question fills q02). The question just
+        asked may overwrite its own values; anything else only fills a blank.
+        A question's own yes/no is keyed by its id and filled only when it
+        was the one asked, so a danger question is always asked, never
+        skipped."""
+        from sakhi_slot_engine import QUESTION_CONFIGS
+
+        config = QUESTION_CONFIGS.get(question_id)
+        owned = {r.key for r in config.slots} if config else set()
+        sys_, dia = extracted.get("systolic"), extracted.get("diastolic")
+        if sys_ is not None and dia is not None and ("systolic" in owned or "systolic" not in self.slot_values):
+            # A reading is taken whole: never one half from each of two answers.
+            self.slot_values["systolic"], self.slot_values["diastolic"] = sys_, dia
+        single = extracted.get("bp_single")
+        if single is not None and "systolic" in owned:
+            known = self.slot_values.get("systolic")
+            if known is not None and "diastolic" not in self.slot_values and single < known:
+                self.slot_values["diastolic"] = single     # answer to "and the lower number?"
+            elif single >= 70:
+                self.slot_values["systolic"] = single
+                self.slot_values.pop("diastolic", None)
+        for key in ("name", "age", "gestational_weeks", "weight_kg"):
+            if key in extracted and (key in owned or key not in self.slot_values):
+                self.slot_values[key] = extracted[key]
+        if question_id in owned and question_id not in self.slot_values                 and self._answers_itself(question_id, extracted, text):
+            self.slot_values[question_id] = extracted.get("polarity", text.strip()[:120])
+
+    def _answers_itself(self, question_id: str, extracted: Dict[str, Any], text: str) -> bool:
+        """Does this turn fill a one-slot question's own answer slot?"""
+        question = QUESTIONS_BY_ID.get(question_id)
+        if question is None or not text.strip():
+            return False
+        valid, _ = self.validate_answer(text, vad=question.vad, question_id=question_id)
+        if question_id in VALUE_QUESTION_IDS:
+            return valid
+        return "polarity" in extracted or valid
+
+    def _slot_summary(self, question_id: str, fallback: str) -> str:
+        v = self.slot_values
+        if question_id == "q01":
+            return f"{v.get('name')}, {v.get('age')}"
+        if question_id == "q02":
+            return f"~{v.get('gestational_weeks')} weeks"
+        if question_id == "q06":
+            return f"{v.get('systolic')}/{v.get('diastolic')}"
+        if question_id == "q07":
+            return f"{v.get('weight_kg')} kg"
+        own = v.get(question_id)
+        if isinstance(own, bool):
+            return "yes" if own else "no"
+        return str(own if own is not None else fallback)[:120]
+
+    def ingest_slots(
+        self, question_id: str, extracted_slots: Dict[str, Any], *, text: str = "", language: str = "kn",
+    ) -> Tuple[bool, str]:
+        """One answer in, the next prompt out. No model, no network.
+
+        Returns (True, next question's main WAV) when `question_id` is now
+        complete, or (False, the micro-prompt WAV for its first missing slot)
+        - "and her age?", not the whole question again. Later questions this
+        answer (or any earlier one) already filled are closed and skipped.
+        After STALL_LIMIT re-asks the question closes best-effort, the same
+        ceiling record_answer() applies. (True, "") means the intake is done.
+        """
+        from sakhi_slot_engine import QUESTION_CONFIGS, localized
+
+        self._absorb(question_id, extracted_slots, text)
+        config = QUESTION_CONFIGS.get(question_id)
+        missing = [r for r in config.slots if r.key not in self.slot_values] if config else []
+        if missing and question_id not in self.answered:
+            stalls = self._stall_counts.get(question_id, 0) + 1
+            self._stall_counts[question_id] = stalls
+            if stalls <= self.STALL_LIMIT:
+                self.pending_id = question_id
+                return False, localized(missing[0].prompt_wav, language)
+            self.answered[question_id] = f"{(text or '')[:110]} (unclear, best-effort)"
+        elif question_id not in self.answered:
+            self.answered[question_id] = self._slot_summary(question_id, text)
+        self._stall_counts.pop(question_id, None)
+        self.pending_id = None
+        return True, self._advance(language)
+
+    def _advance(self, language: str) -> str:
+        """Arm the next question that still needs asking; its WAV, or "" when done."""
+        from sakhi_slot_engine import QUESTION_CONFIGS, localized
+
+        while (nxt := self.next_question()) is not None:
+            config = QUESTION_CONFIGS[nxt.id]
+            if nxt.id == "q17":
+                # The closing line is said, not asked: nothing to wait for.
+                self.mark_satisfied("q17", "(closing statement spoken)")
+                return localized(config.main_wav, language)
+            if nxt.applicable_if is not None and not nxt.applicable_if(
+                    _SlotView(self.slot_values.get("gestational_weeks"))):
+                self.mark_satisfied(nxt.id, "(not applicable)")
+                continue
+            if all(r.key in self.slot_values for r in config.slots):
+                self.mark_satisfied(nxt.id, f"{self._slot_summary(nxt.id, '')} (from earlier answer)")
+                continue
+            self.pending_id = nxt.id
+            return localized(config.main_wav, language)
+        return ""
 
     # --- queries -------------------------------------------------------
 

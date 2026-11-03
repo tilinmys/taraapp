@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Provisions the AWS infrastructure for a standalone Sakhi deployment in
 # ap-south-1 (Mumbai): S3 (deploy + recordings), Secrets Manager, IAM role/
-# instance profile, security group, and a t3.small EC2 instance with an
-# Elastic IP. Zero SSH - access is SSM-only.
+# instance profile, security group, and a t3.medium EC2 instance with an
+# Elastic IP. Zero SSH - access is SSM-only. t3.medium (4 GB), not t3.small
+# (2 GB): each live call runs in its own Python worker process, and 3-4
+# concurrent calls on 2 GB reached the Linux OOM killer.
 #
 # Adapted from a generated infra guide (2026-09-02). What changed from that
 # guide, and why:
@@ -299,7 +301,7 @@ if [ "${EXISTING_INSTANCE_ID}" != "None" ]; then
   INSTANCE_ID="${EXISTING_INSTANCE_ID}"
   echo "EC2 instance already exists: ${INSTANCE_ID}"
 else
-  echo "Looking up Ubuntu 24.04 LTS AMI (arm64, cheaper t3.small-equivalent Graviton path not used here since t3 is x86 - amd64 AMI)..."
+  echo "Looking up Ubuntu 24.04 LTS AMI (arm64, cheaper t3-equivalent Graviton path not used here since t3 is x86 - amd64 AMI)..."
   AMI_ID=$(aws ec2 describe-images \
     --owners 099720109477 \
     --filters "Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*" \
@@ -310,7 +312,7 @@ else
   INSTANCE_ID=$(aws ec2 run-instances \
     --image-id "${AMI_ID}" \
     --count 1 \
-    --instance-type "t3.small" \
+    --instance-type "t3.medium" \
     --security-group-ids "${SG_ID}" \
     --subnet-id "${SUBNET_ID}" \
     --iam-instance-profile Name="sakhi-instance-profile" \

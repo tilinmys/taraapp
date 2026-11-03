@@ -1,0 +1,800 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tara Brand Identity</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anek+Latin:wght@400;500;600;700&family=Anek+Kannada:wght@400;600;700&family=Anek+Devanagari:wght@400;600;700&family=Parisienne&display=swap" rel="stylesheet">
+<style>
+  @page { size: A4; margin: 0; }
+  :root {
+    --porcelain: #FEFAF4; --shell: #FBF4F1; --mist: #F7E4E8; --white: #FFFFFF; --outline: #9A858C;
+    --rose: #A9636D; --blush: #E8B4BC; --cherry: #A11D44; --cherry-pressed: #861636;
+    --pumpkin: #C84B00; --plum: #5B2A86; --sage: #2F6B4F;
+    --orange-tint: #FFF5F0; --rose-tint: #FDF0F5; --lilac-tint: #F4EEFA; --sage-tint: #EEF6F1;
+    --band: #FAF1EC; --band-line: #E5D8D0;
+    --ink: #2B1B21; --ink-muted: #6F5A61; --ink-subtle: #A3929A;
+    --g-blossom: #FCEEF2; --g-peach: #FDF0E6; --g-lavender: #F5EFFB; --g-pistachio: #EEF6F0;
+  }
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  html, body { margin: 0; padding: 0; background: #e9e4df; }
+  body { counter-reset: pg; font-family: 'Anek Latin', system-ui, sans-serif; color: var(--ink); font-size: 10.5pt; line-height: 1.5; }
+  .page { counter-increment: pg; width: 210mm; height: 297mm; padding: 18mm 18mm 16mm; background: var(--porcelain); position: relative; overflow: hidden; page-break-after: always; break-after: page; margin: 0 auto; }
+  .page:last-child { page-break-after: auto; break-after: auto; }
+  .folio .num::before { content: counter(pg, decimal-leading-zero); }
+  .folio { position: absolute; left: 18mm; right: 18mm; bottom: 9mm; display: flex; justify-content: space-between; font-size: 8pt; color: var(--ink-muted); letter-spacing: .08em; text-transform: uppercase; border-top: 1px solid var(--band-line); padding-top: 3mm; }
+  .eyebrow { font-size: 8.5pt; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: var(--cherry); margin: 0 0 2mm; }
+  h1 { font-size: 30pt; line-height: 1.1; letter-spacing: -.02em; margin: 0 0 4mm; font-weight: 700; }
+  h2 { font-size: 15pt; line-height: 1.25; margin: 7mm 0 2.5mm; font-weight: 700; letter-spacing: -.01em; }
+  h3 { font-size: 11.5pt; margin: 4mm 0 1.5mm; font-weight: 700; }
+  p { margin: 0 0 2.5mm; }
+  .lead { font-size: 12.5pt; line-height: 1.5; color: var(--ink-muted); max-width: 150mm; }
+  .muted { color: var(--ink-muted); }
+  .small { font-size: 8.5pt; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4mm; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3.5mm; }
+  .card { background: var(--white); border: 1px solid var(--band-line); border-radius: 4mm; padding: 4mm 4.5mm; }
+  .card.tint { background: var(--shell); border-color: transparent; }
+  .rule { list-style: none; padding: 0; margin: 0; }
+  .rule li { position: relative; padding-left: 5mm; margin: 0 0 1.6mm; }
+  .rule li::before { content: ''; position: absolute; left: 0; top: 2.1mm; width: 2mm; height: 2mm; border-radius: 1mm; background: var(--cherry); }
+  .rule.no li::before { background: transparent; border: 1.5px solid var(--ink-subtle); }
+  .do, .dont { font-size: 8pt; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; display: inline-block; padding: .6mm 2.4mm; border-radius: 2mm; margin-bottom: 2mm; }
+  .do { background: var(--sage-tint); color: var(--sage); }
+  .dont { background: var(--mist); color: var(--cherry); }
+  table { width: 100%; border-collapse: collapse; font-size: 9pt; }
+  th { text-align: left; font-size: 7.5pt; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-muted); font-weight: 600; padding: 1.6mm 2mm; border-bottom: 1px solid var(--band-line); }
+  td { padding: 1.8mm 2mm; border-bottom: 1px solid #efe6e1; vertical-align: middle; }
+  code, .mono { font-family: Consolas, 'Courier New', monospace; font-size: 8.5pt; }
+  .pill { display: inline-block; padding: .4mm 2.2mm; border-radius: 3mm; font-size: 8pt; font-weight: 600; }
+
+  /* Cover */
+  .cover { display: flex; flex-direction: column; justify-content: space-between; padding: 22mm 20mm 18mm; background: var(--porcelain); }
+  .cover .logo { width: 128mm; margin: 26mm auto 0; display: block; }
+  .cover .script { font-family: 'Parisienne', cursive; font-size: 30pt; color: var(--rose); text-align: center; margin-top: 8mm; }
+  .cover .title { text-align: center; }
+  .cover .title h1 { font-size: 26pt; margin: 0; }
+  .cover .meta { display: flex; justify-content: space-between; font-size: 8.5pt; color: var(--ink-muted); letter-spacing: .1em; text-transform: uppercase; border-top: 1px solid var(--band-line); padding-top: 4mm; }
+  .cover .blob { position: absolute; border-radius: 50%; z-index: 0; }
+  .cover > * { position: relative; z-index: 1; }
+
+  /* Contents */
+  .toc { list-style: none; padding: 0; margin: 6mm 0 0; columns: 2; column-gap: 10mm; }
+  .toc li { display: flex; gap: 4mm; padding: 2.6mm 0; border-bottom: 1px solid var(--band-line); break-inside: avoid; }
+  .toc .n { color: var(--cherry); font-weight: 700; width: 8mm; }
+
+  /* Colour */
+  .sw { border-radius: 3.5mm; overflow: hidden; border: 1px solid var(--band-line); background: var(--white); }
+  .sw .chip { height: 20mm; }
+  .sw .chip.big { height: 30mm; }
+  .sw .info { padding: 2.2mm 3mm 2.6mm; font-size: 8.5pt; line-height: 1.35; }
+  .sw .info b { display: block; font-size: 10pt; }
+  .ratio { display: flex; height: 9mm; border-radius: 3mm; overflow: hidden; margin: 2mm 0 1mm; }
+
+  /* Type */
+  .spec { display: grid; grid-template-columns: 30mm 1fr 34mm; align-items: baseline; gap: 4mm; padding: 2.2mm 0; border-bottom: 1px solid #efe6e1; }
+  .spec .role { font-size: 8pt; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-muted); font-weight: 600; }
+  .spec .m { font-size: 8pt; color: var(--ink-muted); text-align: right; }
+
+  /* Icons */
+  .icons { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3mm; }
+  .ic { background: var(--white); border: 1px solid var(--band-line); border-radius: 3.5mm; padding: 2mm 1mm 1.5mm; text-align: center; font-size: 8pt; color: var(--ink-muted); }
+  .ic .well { width: 12mm; height: 12mm; margin: 0 auto 1.5mm; border-radius: 4.5mm; display: flex; align-items: center; justify-content: center; }
+  .ic img { width: 9mm; height: 9mm; object-fit: contain; }
+  .tabbar { display: flex; justify-content: space-around; background: var(--white); border: 1px solid var(--band-line); border-radius: 4mm; padding: 3mm 2mm 2.5mm; }
+  .tab { text-align: center; font-size: 9pt; color: var(--ink-muted); }
+  .tab .cap { width: 18mm; height: 10mm; border-radius: 5mm; display: flex; align-items: center; justify-content: center; margin: 0 auto 1mm; }
+  .tab img { width: 8.5mm; height: 8.5mm; }
+  .tab.on { color: var(--ink); font-weight: 600; }
+  .tab.on .cap { background: var(--rose-tint); }
+  .tab.off img { opacity: .55; }
+  .prompt { background: #2B1B21; color: #F7E4E8; border-radius: 3.5mm; padding: 4mm 4.5mm; font-family: Consolas, monospace; font-size: 8.2pt; line-height: 1.5; white-space: pre-wrap; }
+  .prompt b { color: #E8B4BC; font-weight: 700; }
+
+  /* Imagery */
+  .art { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2.5mm; }
+  .art figure { margin: 0; background: var(--white); border: 1px solid var(--band-line); border-radius: 3mm; padding: 2mm; text-align: center; font-size: 7.5pt; color: var(--ink-muted); }
+  .art img { width: 100%; height: 16mm; object-fit: contain; }
+  .babies { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3mm; }
+  .babies figure { margin: 0; background: var(--rose-tint); border-radius: 4mm; padding: 2mm 2mm 3mm; text-align: center; font-size: 8pt; }
+  .babies img { width: 100%; height: 27mm; object-fit: contain; }
+
+  /* Screens */
+  .phones { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4mm; }
+  .phone { border-radius: 6mm; border: 2.2mm solid #2B1B21; overflow: hidden; background: var(--porcelain); height: 92mm; }
+  .phone img { width: 100%; display: block; }
+  .phones figcaption { text-align: center; font-size: 8pt; color: var(--ink-muted); margin-top: 2mm; }
+
+  /* Components */
+  .btn { height: 12mm; border-radius: 6mm; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 11pt; }
+  .tile { border-radius: 4mm; padding: 3.5mm; height: 34mm; display: flex; flex-direction: column; justify-content: space-between; }
+  .tile .badge { width: 9mm; height: 9mm; border-radius: 2.8mm; background: var(--porcelain); display: flex; align-items: center; justify-content: center; }
+  .tile .badge img { width: 7mm; height: 7mm; }
+  .tile .lab { font-size: 7pt; letter-spacing: .12em; font-weight: 600; color: var(--ink-muted); }
+  .datecard { display: flex; gap: 3mm; align-items: center; background: var(--white); border: 1px solid var(--band-line); border-radius: 4mm; padding: 3mm; }
+  .datetile { width: 13mm; height: 13mm; border-radius: 3.6mm; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1; }
+  .datetile b { font-size: 14pt; }
+  .datetile span { font-size: 6.5pt; letter-spacing: .12em; font-weight: 600; margin-top: .8mm; }
+
+  /* Motion */
+  .curve { display: flex; align-items: center; gap: 3mm; }
+</style>
+</head>
+<body>
+
+<!-- 1 COVER -->
+<section id="p1" class="page cover">
+  <div class="blob" style="width:150mm;height:150mm;background:#FDF0F5;right:-50mm;top:-40mm"></div>
+  <div class="blob" style="width:90mm;height:90mm;background:#FFF5F0;left:-30mm;bottom:20mm"></div>
+  <div>
+    <img class="logo" src="../assets/images/tara-logo.png" alt="tara logo">
+    <div class="script">A little guidance. A lot of care.</div>
+  </div>
+  <div class="title">
+    <p class="eyebrow">Brand identity guidelines</p>
+    <h1>How tara looks, sounds and moves</h1>
+    <p class="muted" style="margin-top:3mm">Logo · Colour · Typography · Iconography · Imagery · Layout · Motion · Voice</p>
+  </div>
+  <div class="meta"><span>tara by Mystree</span><span>Version 1.0 · October 2026</span><span>Internal</span></div>
+</section>
+
+<!-- 2 CONTENTS + ESSENCE -->
+<section id="p2" class="page">
+  <p class="eyebrow">01 · Brand essence</p>
+  <h1>A calm companion for every pregnancy</h1>
+  <p class="lead">tara is a maternal-health companion for rural India. It helps three people around one pregnancy: the <b>mother</b>, who wants to understand her week and feel looked after; the <b>ASHA worker</b>, who visits her and runs the voice check-in with <b>Sakhi</b>; and the <b>PHC doctor</b>, who reviews the results and acts on risk.</p>
+
+  <div class="grid3" style="margin-top:6mm">
+    <div class="card tint"><h3 style="margin-top:0">Mission</h3><p class="small">Catch danger early and make every mother feel cared for, in her own language, on a basic phone, with or without good internet.</p></div>
+    <div class="card tint"><h3 style="margin-top:0">Promise</h3><p class="small">Simple guidance she can act on today. Nothing that frightens her. Clinical detail goes to the people who can act on it.</p></div>
+    <div class="card tint"><h3 style="margin-top:0">Tagline</h3><p style="font-family:'Parisienne';font-size:17pt;color:var(--rose);margin:0;line-height:1.2">A little guidance. A lot of care.</p></div>
+  </div>
+
+  <h2>Personality</h2>
+  <div class="grid4">
+    <div class="card"><b style="color:var(--cherry)">Warm</b><p class="small muted">Speaks like a kind elder sister. "Amma", not "user".</p></div>
+    <div class="card"><b style="color:var(--pumpkin)">Calm</b><p class="small muted">Soft colours, settling motion, no red alarms for mothers.</p></div>
+    <div class="card"><b style="color:var(--plum)">Clear</b><p class="small muted">One idea per card, plain words, big tap targets.</p></div>
+    <div class="card"><b style="color:var(--sage)">Trustworthy</b><p class="small muted">Medically grounded, private by default, never guesses.</p></div>
+  </div>
+
+  <h2>The names</h2>
+  <div class="grid2">
+    <div class="card"><div style="display:flex;align-items:baseline;gap:3mm"><b style="font-size:18pt;color:var(--rose)">tara</b><span style="font-family:'Anek Devanagari';font-size:13pt;color:var(--ink-muted)">तारा</span><span style="font-family:'Anek Kannada';font-size:13pt;color:var(--ink-muted)">ತಾರಾ</span></div><p class="small muted" style="margin-top:2mm">"Star". A steady guiding light for nine months and beyond: always there, never loud. The name is short, easy to say in every Indian language, and feminine.</p></div>
+    <div class="card"><div style="display:flex;align-items:baseline;gap:3mm"><b style="font-size:18pt;color:var(--pumpkin)">Sakhi</b><span style="font-family:'Anek Devanagari';font-size:13pt;color:var(--ink-muted)">सखी</span><span style="font-family:'Anek Kannada';font-size:13pt;color:var(--ink-muted)">ಸಖಿ</span></div><p class="small muted" style="margin-top:2mm">"Companion, close friend". The voice that sits beside the ASHA worker and asks the 24 check-in questions, listening patiently in the mother's language.</p></div>
+  </div>
+
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<section id="p3" class="page">
+  <p class="eyebrow">01 · Brand essence</p>
+  <h1>Three people, one pregnancy</h1>
+  <h2 style="margin-top:2mm">Who sees what</h2>
+  <table>
+    <tr><th>Audience</th><th>What tara gives them</th><th>Tone</th></tr>
+    <tr><td><b>Mother</b></td><td>Her week (baby size and milestone), daily checklist from her ASHA, medicines, next visit, history papers, Ask Tara.</td><td>Warm, reassuring, no risk labels</td></tr>
+    <tr><td><b>ASHA worker</b></td><td>Her mothers sorted by risk, the 24-question Sakhi voice check-in, each mother's checklist editor, summaries.</td><td>Practical, direct, action-first</td></tr>
+    <tr><td><b>Doctor</b></td><td>Cases, rule hits, transcripts, vitals, referral actions.</td><td>Clinical, precise, dense</td></tr>
+  </table>
+
+  <h2>Contents</h2>
+  <ul class="toc">
+    <li><span class="n">01</span>Brand essence</li>
+    <li><span class="n">02</span>Logo</li>
+    <li><span class="n">03</span>Colour</li>
+    <li><span class="n">04</span>Typography</li>
+    <li><span class="n">05</span>Iconography</li>
+    <li><span class="n">06</span>Icon creation recipe</li>
+    <li><span class="n">07</span>Illustration and imagery</li>
+    <li><span class="n">08</span>Layout and components</li>
+    <li><span class="n">09</span>Motion and haptics</li>
+    <li><span class="n">10</span>Voice and tone</li>
+    <li><span class="n">11</span>Brand in use</li>
+    <li><span class="n">12</span>Quick reference</li>
+  </ul>
+
+  <h2>Brand architecture</h2>
+  <table>
+    <tr><th>Name</th><th>What it is</th><th>Who uses it</th></tr>
+    <tr><td><b style="color:var(--rose)">tara</b></td><td>The master brand and the app</td><td>Everyone</td></tr>
+    <tr><td><b style="color:var(--pumpkin)">Sakhi</b></td><td>The AI voice check-in (24 questions, rule-based risk screening)</td><td>ASHA worker, with the mother</td></tr>
+    <tr><td><b style="color:var(--cherry)">Ask Tara</b></td><td>The mother's question companion (text, voice input)</td><td>Mother</td></tr>
+    <tr><td><b style="color:var(--sage)">Care Circle</b></td><td>Her people: ASHA, PHC doctor, 108 ambulance</td><td>Mother</td></tr>
+  </table>
+  <p class="small muted" style="margin-top:2mm">Sub-brands never get their own logo or colour scheme. They are names inside tara, set in Anek with the shared palette.</p>
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<!-- 3 LOGO -->
+<section id="p4" class="page">
+  <p class="eyebrow">02 · Logo</p>
+  <h1>The logo</h1>
+  <p class="lead">A lowercase wordmark that grows into a woman's figure and a single blush leaf: care that is personal, rooted and growing.</p>
+  <div class="grid2" style="margin-top:5mm;align-items:stretch">
+    <div class="card" style="display:flex;align-items:center;justify-content:center;padding:8mm"><img src="../assets/images/tara-logo.png" style="width:100%" alt="tara logo"></div>
+    <div>
+      <h3 style="margin-top:0">Anatomy</h3>
+      <ul class="rule">
+        <li><b>Wordmark "tara"</b>: always lowercase, in Rose <code>#A9636D</code>. Soft, high-contrast serifless letters.</li>
+        <li><b>The figure</b>: a woman with eyes closed, face lifted, at peace. She rises from the last "a".</li>
+        <li><b>The leaf</b>: one blush leaf <code>#E8B4BC</code>, the seed of care. It is also tara's symbol on its own.</li>
+      </ul>
+      <h3>The leaf mark</h3>
+      <div style="display:flex;gap:4mm;align-items:center">
+        <div style="width:18mm;height:18mm;border-radius:5mm;background:var(--porcelain);border:1px solid var(--band-line);display:flex;align-items:center;justify-content:center"><img src="../assets/images/logo-layers/tara-leaf.png" style="height:12mm" alt="leaf"></div>
+        <p class="small muted" style="margin:0">Used alone for the splash screen, the loading pulse and small spaces. It "plants", breathes and travels into the wordmark in the brand intro.</p>
+      </div>
+    </div>
+  </div>
+
+  <h2>Clear space and minimum size</h2>
+  <div class="grid3">
+    <div class="card"><b>Clear space</b><p class="small muted">Keep empty space on every side equal to the height of the letter "a". Nothing (text, edges, other marks) enters it.</p></div>
+    <div class="card"><b>Minimum size</b><p class="small muted">Full logo: 96 pt (25 mm print) wide. Leaf mark: 16 pt. Below that, use the leaf alone.</p></div>
+    <div class="card"><b>Backgrounds</b><p class="small muted">Porcelain <code>#FEFAF4</code>, White, Cherry mist <code>#F7E4E8</code> or Shell. Never on photos or busy art.</p></div>
+  </div>
+
+  <h2>Misuse</h2>
+  <div class="grid4">
+    <div class="card"><span class="dont">Don't</span><p class="small">Recolour the wordmark (no cherry, black or gradients).</p></div>
+    <div class="card"><span class="dont">Don't</span><p class="small">Stretch, rotate, skew or re-space the letters.</p></div>
+    <div class="card"><span class="dont">Don't</span><p class="small">Add shadows, outlines, glows or 3D effects.</p></div>
+    <div class="card"><span class="dont">Don't</span><p class="small">Separate the figure from the wordmark, or capitalise "Tara" in the logo.</p></div>
+  </div>
+  <p class="small muted" style="margin-top:4mm">In running text the product name is written <b>tara</b> in brand moments and <b>Tara</b> at the start of a sentence or as the assistant's name ("Ask Tara"). The ASHA voice assistant is always <b>Sakhi</b>.</p>
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<!-- 4 COLOUR -->
+<section id="p5" class="page">
+  <p class="eyebrow">03 · Colour</p>
+  <h1>Colour</h1>
+  <p class="lead">Built from the logo itself: its cream paper, its rose wordmark and its blush leaf, with one deep cherry reserved for actions.</p>
+
+  <h2>Core palette</h2>
+  <div class="grid4">
+    <div class="sw"><div class="chip big" style="background:#FEFAF4;border-bottom:1px solid var(--band-line)"></div><div class="info"><b>Porcelain</b><span class="mono">#FEFAF4</span><br>App canvas, every screen</div></div>
+    <div class="sw"><div class="chip big" style="background:#A9636D"></div><div class="info"><b>Rose</b><span class="mono">#A9636D</span><br>Wordmark, orb. Decorative, never text</div></div>
+    <div class="sw"><div class="chip big" style="background:#E8B4BC"></div><div class="info"><b>Blush</b><span class="mono">#E8B4BC</span><br>Leaf, accents, rings. Never text</div></div>
+    <div class="sw"><div class="chip big" style="background:#A11D44"></div><div class="info"><b>Cherry</b><span class="mono">#A11D44</span><br>Primary actions. White on it 7.6:1 (AAA)</div></div>
+  </div>
+
+  <h2>Accents (one per topic)</h2>
+  <div class="grid4">
+    <div class="sw"><div class="chip" style="background:#C84B00"></div><div class="info"><b>Pumpkin</b><span class="mono">#C84B00</span><br>Maternity, warm 2nd accent. 4.9:1</div></div>
+    <div class="sw"><div class="chip" style="background:#5B2A86"></div><div class="info"><b>Plum</b><span class="mono">#5B2A86</span><br>Reproductive health, next visit</div></div>
+    <div class="sw"><div class="chip" style="background:#2F6B4F"></div><div class="info"><b>Sage</b><span class="mono">#2F6B4F</span><br>Fertility, "all good", done. 6.3:1</div></div>
+    <div class="sw"><div class="chip" style="background:#861636"></div><div class="info"><b>Cherry pressed</b><span class="mono">#861636</span><br>Pressed state of primary</div></div>
+  </div>
+
+  <h2>Contrast (WCAG 2.2)</h2>
+  <table>
+    <tr><th>Pair</th><th>Ratio</th><th>Use</th></tr>
+    <tr><td><span class="pill" style="background:#FEFAF4;color:#2B1B21;border:1px solid var(--band-line)">Ink on Porcelain</span></td><td><b>15.8 : 1</b></td><td>All headings and body (AAA)</td></tr>
+    <tr><td><span class="pill" style="background:#A11D44;color:#fff">White on Cherry</span></td><td><b>7.6 : 1</b></td><td>Primary buttons (AAA)</td></tr>
+    <tr><td><span class="pill" style="background:#fff;color:#2F6B4F;border:1px solid var(--band-line)">Sage on White</span></td><td><b>6.3 : 1</b></td><td>"All good", done states (AA)</td></tr>
+    <tr><td><span class="pill" style="background:#FEFAF4;color:#6F5A61;border:1px solid var(--band-line)">Muted on Porcelain</span></td><td><b>6.1 : 1</b></td><td>Secondary text (AA)</td></tr>
+    <tr><td><span class="pill" style="background:#fff;color:#C84B00;border:1px solid var(--band-line)">Pumpkin on White</span></td><td><b>4.9 : 1</b></td><td>Reminders, labels (AA)</td></tr>
+    <tr><td><span class="pill" style="background:#FEFAF4;color:#9A858C;border:1px solid var(--band-line)">Outline on Porcelain</span></td><td><b>3.3 : 1</b></td><td>Control borders only (non-text 3:1)</td></tr>
+  </table>
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<section id="p6" class="page">
+  <p class="eyebrow">03 · Colour</p>
+  <h1>Colour in use</h1>
+  <h2 style="margin-top:2mm">Surfaces and tints</h2>
+  <div class="grid4" style="grid-template-columns:repeat(8,1fr);gap:2mm">
+    <div class="sw"><div class="chip" style="background:#FFFFFF;height:12mm"></div><div class="info small"><b style="font-size:8pt">Surface</b><span class="mono">#FFFFFF</span></div></div>
+    <div class="sw"><div class="chip" style="background:#FBF4F1;height:12mm"></div><div class="info small"><b style="font-size:8pt">Shell</b><span class="mono">#FBF4F1</span></div></div>
+    <div class="sw"><div class="chip" style="background:#F7E4E8;height:12mm"></div><div class="info small"><b style="font-size:8pt">Mist</b><span class="mono">#F7E4E8</span></div></div>
+    <div class="sw"><div class="chip" style="background:#FAF1EC;height:12mm"></div><div class="info small"><b style="font-size:8pt">Band</b><span class="mono">#FAF1EC</span></div></div>
+    <div class="sw"><div class="chip" style="background:#FFF5F0;height:12mm"></div><div class="info small"><b style="font-size:8pt">Orange</b><span class="mono">#FFF5F0</span></div></div>
+    <div class="sw"><div class="chip" style="background:#FDF0F5;height:12mm"></div><div class="info small"><b style="font-size:8pt">Rose</b><span class="mono">#FDF0F5</span></div></div>
+    <div class="sw"><div class="chip" style="background:#F4EEFA;height:12mm"></div><div class="info small"><b style="font-size:8pt">Lilac</b><span class="mono">#F4EEFA</span></div></div>
+    <div class="sw"><div class="chip" style="background:#EEF6F1;height:12mm"></div><div class="info small"><b style="font-size:8pt">Sage</b><span class="mono">#EEF6F1</span></div></div>
+  </div>
+
+  <h2>Mother's weekly grid (only here)</h2>
+  <div class="grid4">
+    <div class="sw"><div class="chip" style="background:#FCEEF2"></div><div class="info"><b>Blossom pink</b><span class="mono">#FCEEF2</span><br>Baby's senses</div></div>
+    <div class="sw"><div class="chip" style="background:#FDF0E6"></div><div class="info"><b>Peach nectar</b><span class="mono">#FDF0E6</span><br>Her body and comfort</div></div>
+    <div class="sw"><div class="chip" style="background:#F5EFFB"></div><div class="info"><b>Lavender milk</b><span class="mono">#F5EFFB</span><br>Nourishment</div></div>
+    <div class="sw"><div class="chip" style="background:#EEF6F0"></div><div class="info"><b>Pistachio cream</b><span class="mono">#EEF6F0</span><br>Clinic care</div></div>
+  </div>
+
+
+  <div class="grid2" style="margin-top:5mm">
+    <div>
+      <h3 style="margin-top:0">Text colours</h3>
+      <table>
+        <tr><td><span class="pill" style="background:#2B1B21;color:#fff">Ink #2B1B21</span></td><td class="small">Headings, body. 15.8:1</td></tr>
+        <tr><td><span class="pill" style="background:#6F5A61;color:#fff">Muted #6F5A61</span></td><td class="small">Secondary text. 6.1:1 (AA)</td></tr>
+        <tr><td><span class="pill" style="background:#A3929A;color:#fff">Subtle #A3929A</span></td><td class="small">Disabled, decoration only</td></tr>
+        <tr><td><span class="pill" style="background:#9A858C;color:#fff">Outline #9A858C</span></td><td class="small">Control borders. 3.3:1</td></tr>
+      </table>
+    </div>
+    <div>
+      <h3 style="margin-top:0">Proportion (60 / 30 / 10)</h3>
+      <div class="ratio"><div style="flex:60;background:#FEFAF4;border:1px solid var(--band-line)"></div><div style="flex:30;background:#FDF0F5"></div><div style="flex:10;background:#A11D44"></div></div>
+      <p class="small muted">60 % porcelain and white space, 30 % soft tints and cards, 10 % cherry, only on the one thing to do next.</p>
+      <ul class="rule small"><li>One primary (cherry) button per screen.</li><li>One accent hue per card, never two.</li><li>Rose and blush are never used for readable text.</li></ul>
+    </div>
+  </div>
+
+  <h2>Colour by meaning</h2>
+  <table class="small">
+    <tr><th>Meaning</th><th>Colour</th><th>Example</th></tr>
+    <tr><td>The next action</td><td><span class="pill" style="background:#A11D44;color:#fff">Cherry</span></td><td>"See my day", "Save", "Start check-in"</td></tr>
+    <tr><td>Done, healthy, all good</td><td><span class="pill" style="background:#EEF6F1;color:#2F6B4F">Sage</span></td><td>"All done for today", taken medicine</td></tr>
+    <tr><td>Time and dates</td><td><span class="pill" style="background:#F4EEFA;color:#5B2A86">Plum on Lilac</span></td><td>"Next visit · 22 Oct"</td></tr>
+    <tr><td>Gentle reminder</td><td><span class="pill" style="background:#fff;color:#C84B00;border:1px solid var(--band-line)">Pumpkin</span></td><td>"Refill soon · 3 days left", progress dots</td></tr>
+    <tr><td>Risk (ASHA and doctor only)</td><td><span class="pill" style="background:#F7E4E8;color:#A11D44;border:1.5px solid #A11D44">Cherry on Mist</span></td><td>"High risk", rule hits. Never shown to mothers</td></tr>
+    <tr><td>Selected</td><td><span class="pill" style="background:#FDF0F5;color:#2B1B21">Rose tint</span></td><td>Active tab capsule, selected rows</td></tr>
+  </table>
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<!-- 5 TYPOGRAPHY -->
+<section id="p7" class="page">
+  <p class="eyebrow">04 · Typography</p>
+  <h1>Typography</h1>
+  <p class="lead">Two families, chosen by how much attention a piece of text deserves. <b>Anek</b> carries everything people read or act on, in one design across English, ಕನ್ನಡ and हिंदी. <b>Parisienne</b> is ornament only.</p>
+
+  <div class="grid2" style="margin-top:5mm">
+    <div class="card">
+      <p class="eyebrow" style="color:var(--ink-muted)">Primary · Anek</p>
+      <div style="font-size:34pt;font-weight:700;line-height:1">Aa ಅಆ अआ</div>
+      <p class="small muted" style="margin-top:2mm">Anek Latin, Anek Kannada, Anek Devanagari · 400 Regular, 500 Medium, 600 SemiBold, 700 Bold · Google Fonts, OFL</p>
+      <div style="font-family:'Anek Kannada';font-size:13pt">ನಮಸ್ಕಾರ ಅಮ್ಮಾ, ಇದು ನಾನು</div>
+      <div style="font-family:'Anek Devanagari';font-size:13pt">नमस्ते अम्मा, यह मैं हूँ</div>
+    </div>
+    <div class="card">
+      <p class="eyebrow" style="color:var(--ink-muted)">Decorative · Parisienne</p>
+      <div style="font-family:'Parisienne';font-size:34pt;color:var(--rose);line-height:1.1">A lot of care</div>
+      <p class="small muted" style="margin-top:2mm">Parisienne 400 · Latin only · brand moments and taglines only, never information. Never smaller than 26 pt.</p>
+    </div>
+  </div>
+
+  <h2>One voice, three scripts</h2>
+  <div class="card" style="display:grid;grid-template-columns:24mm 1fr;gap:2mm 4mm;align-items:baseline">
+    <span class="small muted">English</span><span style="font-size:15pt;font-weight:700">Amma, this is me at week 30!</span>
+    <span class="small muted">ಕನ್ನಡ</span><span style="font-family:'Anek Kannada';font-size:15pt;font-weight:700">ಅಮ್ಮಾ, ಇದು 30ನೇ ವಾರದ ನಾನು!</span>
+    <span class="small muted">हिंदी</span><span style="font-family:'Anek Devanagari';font-size:15pt;font-weight:700">अम्मा, यह 30वें हफ़्ते का मैं हूँ!</span>
+  </div>
+  <p class="small muted" style="margin-top:2mm">Text is split into script runs automatically, so mixed lines ("Week 30 · ಕನ್ನಡ") always use the right Anek cut.</p>
+
+  <h2>Rules</h2>
+  <div class="grid2">
+    <ul class="rule small">
+      <li><b>Weight carries focus.</b> The more someone must see or act on it, the heavier it is (Act 600–700, Orient 700, Read 400–500, Glance 400–500).</li>
+      <li>Body text never below 17 pt for mothers; captions 14 pt minimum.</li>
+      <li>Indic line heights are generous (tall matras, below-base forms). Never track Kannada or Devanagari.</li>
+    </ul>
+    <ul class="rule small">
+      <li>Sentence case everywhere. UPPERCASE only for overlines with +1.2 tracking.</li>
+      <li>Titles wrap; they are never truncated. Card text may truncate with "…"; the full text lives in the sheet.</li>
+      <li>Numbers that matter (weeks, kg, dates) use Metric or Body strong.</li>
+    </ul>
+  </div>
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<section id="p8" class="page">
+  <p class="eyebrow">04 · Typography</p>
+  <h1>Type scale</h1>
+  <p class="lead">Sizes in pt · line height · weight · tracking. Line heights are tuned for Indic scripts.</p>
+  <h2>Scale</h2>
+  <div>
+    <div class="spec"><span class="role">Display</span><span style="font-size:22pt;font-weight:700;letter-spacing:-.02em;line-height:1.2">Care begins with you.</span><span class="m">32 / 40 · 700 · −0.64</span></div>
+    <div class="spec"><span class="role">Title (H1)</span><span style="font-size:18pt;font-weight:700;letter-spacing:-.015em">Your pregnancy</span><span class="m">26 / 34 · 700 · −0.4</span></div>
+    <div class="spec"><span class="role">Heading (H2)</span><span style="font-size:14pt;font-weight:700">Today's checklist</span><span class="m">19 / 26 · 700 · −0.2</span></div>
+    <div class="spec"><span class="role">Metric</span><span style="font-size:19pt;font-weight:700">Week 30</span><span class="m">28 / 34 · 700 · −0.3</span></div>
+    <div class="spec"><span class="role">Button</span><span style="font-size:12.5pt;font-weight:600">See my day</span><span class="m">18 / 24 · 600 · +0.1</span></div>
+    <div class="spec"><span class="role">Input</span><span style="font-size:12.5pt;font-weight:500">Type your question</span><span class="m">18 / 24 · 500</span></div>
+    <div class="spec"><span class="role">Body</span><span style="font-size:12pt">Rest on your left side after lunch.</span><span class="m">17 / 25 · 400</span></div>
+    <div class="spec"><span class="role">Body strong</span><span style="font-size:12pt;font-weight:700">Iron + Folic acid · 1 tablet</span><span class="m">17 / 25 · 700</span></div>
+    <div class="spec"><span class="role">Label</span><span style="font-size:10.5pt;font-weight:600">Phone number</span><span class="m">15 / 22 · 600</span></div>
+    <div class="spec"><span class="role">Caption</span><span style="font-size:10pt;font-weight:500;color:var(--ink-muted)">Hosahalli PHC · with Sunita</span><span class="m">14 / 20 · 500</span></div>
+    <div class="spec"><span class="role">Overline</span><span style="font-size:8.5pt;font-weight:600;letter-spacing:.12em;color:var(--ink-muted)">NEXT VISIT</span><span class="m">12 / 16 · 600 · +1.2</span></div>
+    <div class="spec"><span class="role">Tagline</span><span style="font-family:'Parisienne';font-size:20pt;color:var(--rose)">A little guidance.</span><span class="m">30 / 40 · Parisienne</span></div>
+  </div>
+
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<!-- 6 ICONOGRAPHY -->
+<section id="p9" class="page">
+  <p class="eyebrow">05 · Iconography</p>
+  <h1>Clay icons</h1>
+  <p class="lead">tara's icons are soft 3D clay objects: rounded, toy-like, lit gently from above, in coral, peach and cream. They feel friendly and tangible, never clinical. <b>Every meaningful icon in the product comes from this one family.</b></p>
+
+  <h2>The navigation set</h2>
+  <div class="tabbar">
+    <div class="tab on"><div class="cap"><img src="../assets/images/icons/home.webp" alt=""></div>Home</div>
+    <div class="tab off"><div class="cap"><img src="../assets/images/icons/pregnancy.webp" alt=""></div>Pregnancy</div>
+    <div class="tab off"><div class="cap"><img src="../assets/images/icons/talk.webp" alt=""></div>Talk</div>
+    <div class="tab off"><div class="cap"><img src="../assets/images/icons/history.webp" alt=""></div>History</div>
+  </div>
+  <p class="small muted" style="margin-top:2mm">Active tab: full colour, lifted 2 pt, in a Rose tint capsule (#FDF0F5), label in Ink 600. Idle tabs: icon at 55 % opacity, label in Muted.</p>
+
+  <h2>The full family (20)</h2>
+  <div class="icons">
+    <div class="ic"><div class="well" style="background:#FDF0F5"><img src="../assets/images/icons/home.webp"></div>home</div>
+    <div class="ic"><div class="well" style="background:#FDF0F5"><img src="../assets/images/icons/pregnancy.webp"></div>pregnancy</div>
+    <div class="ic"><div class="well" style="background:#FDF0F5"><img src="../assets/images/icons/talk.webp"></div>talk</div>
+    <div class="ic"><div class="well" style="background:#FDF0F5"><img src="../assets/images/icons/history.webp"></div>history</div>
+    <div class="ic"><div class="well" style="background:#FCEEF2"><img src="../assets/images/icons/senses.webp"></div>senses</div>
+    <div class="ic"><div class="well" style="background:#FDF0E6"><img src="../assets/images/icons/rest.webp"></div>rest</div>
+    <div class="ic"><div class="well" style="background:#F5EFFB"><img src="../assets/images/icons/food.webp"></div>food</div>
+    <div class="ic"><div class="well" style="background:#EEF6F0"><img src="../assets/images/icons/clinic.webp"></div>clinic</div>
+    <div class="ic"><div class="well" style="background:#F4EEFA"><img src="../assets/images/icons/calendar.webp"></div>calendar</div>
+    <div class="ic"><div class="well" style="background:#FFF5F0"><img src="../assets/images/icons/checklist.webp"></div>checklist</div>
+    <div class="ic"><div class="well" style="background:#FFF5F0"><img src="../assets/images/icons/medicine.webp"></div>medicine</div>
+    <div class="ic"><div class="well" style="background:#FDF0E6"><img src="../assets/images/icons/kicks.webp"></div>kicks</div>
+    <div class="ic"><div class="well" style="background:#FDF0F5"><img src="../assets/images/icons/maternity.webp"></div>maternity</div>
+    <div class="ic"><div class="well" style="background:#EEF6F1"><img src="../assets/images/icons/fertility.webp"></div>fertility</div>
+    <div class="ic"><div class="well" style="background:#F4EEFA"><img src="../assets/images/icons/reproductive.webp"></div>reproductive</div>
+    <div class="ic"><div class="well" style="background:#FFF5F0"><img src="../assets/images/icons/ask.webp"></div>ask</div>
+    <div class="ic"><div class="well" style="background:#FFF5F0"><img src="../assets/images/icons/asha.webp"></div>asha</div>
+    <div class="ic"><div class="well" style="background:#FBF4F1"><img src="../assets/images/icons/ambulance.webp"></div>ambulance</div>
+    <div class="ic"><div class="well" style="background:#FBF4F1"><img src="../assets/images/icons/prescription.webp"></div>prescription</div>
+    <div class="ic"><div class="well" style="background:#FBF4F1"><img src="../assets/images/icons/report.webp"></div>report</div>
+  </div>
+
+  <div class="grid2" style="margin-top:5mm">
+    <div>
+      <span class="do">Do</span>
+      <ul class="rule small">
+        <li>Sit an icon in a soft well: radius ≈ 30 % of the well, in the card's tint (or Porcelain/White on tinted cards).</li>
+        <li>Sizes: tab bar 28 pt · list rows 34–40 pt in a 52 pt well · grid badge 32 pt in a 38 pt well · inline 18–20 pt.</li>
+        <li>One icon per card or row. Name the icon after the action or topic, not the object.</li>
+        <li>Small utility glyphs (chevron, close, check, download, phone) may be thin line icons, ≤ 20 pt, in Cherry or Muted. They are affordances, not illustrations.</li>
+      </ul>
+    </div>
+    <div>
+      <span class="dont">Don't</span>
+      <ul class="rule no small">
+        <li>Mix in emoji (🌸 ⚠️ 🪷) or flat/line pictograms for features and navigation.</li>
+        <li>Show pregnant-woman figures in the mother's app (they are reserved for ASHA materials).</li>
+        <li>Use alarm imagery (red warning triangles, sirens) on mother screens.</li>
+        <li>Recolour, outline, add drop shadows or place clay icons on dark backgrounds.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<!-- 7 ICON RECIPE -->
+<section id="p10" class="page">
+  <p class="eyebrow">06 · Icon creation recipe</p>
+  <h1>Making a new icon</h1>
+  <p class="lead">Every icon was generated with Canva AI and finished the same way. Follow this recipe so a new icon is indistinguishable from the existing twenty.</p>
+
+  <h2>1 · Prompt template</h2>
+  <div class="prompt">Cute soft 3D clay render of <b>[ONE OBJECT, e.g. "a baby bottle with a small heart"]</b>,
+rounded chunky toy-like shapes, matte clay texture,
+colour palette: <b>coral rose #E9707A, soft peach #F4B39A, warm cream #F6E7D7</b>
+(+ one small leaf-green or lavender detail only if the object needs it),
+single object, centered, three-quarter front view, gentle soft studio light from top-left,
+subtle soft shadow on the object only, no text, no letters, no people,
+plain white background, minimal, modern 2026 app icon style</div>
+
+  <div class="grid2" style="margin-top:4mm">
+    <div class="card">
+      <h3 style="margin-top:0">Prompt rules</h3>
+      <ul class="rule small">
+        <li>One object only, and one idea: "clipboard with three ticks", not "a health dashboard".</li>
+        <li>Prefer objects from Indian daily life (dal bowl, steel tiffin, rattle) over Western symbols.</li>
+        <li>No faces on objects; babies only in the baby art set (section 07).</li>
+        <li>Medical objects stay friendly: a stethoscope, not a syringe; a pill pair, not a pill bottle full of pills.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">Review checklist</h3>
+      <ul class="rule small">
+        <li>Reads at 28 pt (squint test on a phone).</li>
+        <li>Dominant colour is coral/rose, secondary peach/cream.</li>
+        <li>Same light direction and softness as "home" and "checklist".</li>
+        <li>Nothing scary, nothing clinical, nothing gendered beyond the brand palette.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>2 · Production pipeline</h2>
+  <table>
+    <tr><th>Step</th><th>Tool</th><th>Output</th></tr>
+    <tr><td>1 Generate (square 1:1)</td><td>Canva AI image generator</td><td>Clay render on white</td></tr>
+    <tr><td>2 Remove background</td><td>Canva background remover</td><td>Transparent image</td></tr>
+    <tr><td>3 Place full-size</td><td>Canva asset sheet "Tara app illustrations", 512 × 512 page</td><td>One page per icon</td></tr>
+    <tr><td>4 Export</td><td>PNG, transparent background, 512 px</td><td>Full-resolution master</td></tr>
+    <tr><td>5 Finish</td><td>Trim transparent margins, pad 8 % on each side, square</td><td>Even optical size</td></tr>
+    <tr><td>6 Ship</td><td>WebP q88: icons 192 px (5–10 KB) · art 400–480 px (12–27 KB)</td><td><code>assets/images/icons/&lt;name&gt;.webp</code></td></tr>
+    <tr><td>7 Register</td><td><code>APP_ICONS</code> in <code>src/components/system/app-icon.tsx</code></td><td><code>&lt;AppIcon name="…" /&gt;</code></td></tr>
+  </table>
+
+  <h2>Naming</h2>
+  <p class="small">Lowercase single words describing the meaning: <code>checklist</code>, <code>kicks</code>, <code>clinic</code>. Art uses <code>w&lt;week&gt;-&lt;fruit&gt;</code> for size art and <code>baby-&lt;stage&gt;</code> for baby art.</p>
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<!-- 8 IMAGERY -->
+<section id="p11" class="page">
+  <p class="eyebrow">07 · Illustration and imagery</p>
+  <h1>Illustration</h1>
+  <p class="lead">The same clay world as the icons, a little larger and more emotional. Two families: <b>the baby</b>, who speaks to the mother, and <b>the size fruit</b>, which makes growth concrete.</p>
+
+  <h2>The baby, by stage</h2>
+  <div class="babies">
+    <figure><img src="../assets/images/art/baby-1.webp"><b>Weeks 4–13</b><br><span class="muted">Curled up, fast asleep</span></figure>
+    <figure><img src="../assets/images/art/baby-2.webp"><b>Weeks 14–23</b><br><span class="muted">Sucking my thumb</span></figure>
+    <figure><img src="../assets/images/art/baby-3.webp"><b>Weeks 24–33</b><br><span class="muted">Eyes open, waving</span></figure>
+    <figure><img src="../assets/images/art/baby-4.webp"><b>Weeks 34–40</b><br><span class="muted">Cosy, almost ready</span></figure>
+  </div>
+  <p class="small muted" style="margin-top:2mm">Always on a cream cloud, inside a Rose tint disc (#FDF0F5). The baby speaks in first person ("Amma, this is me at week 30!").</p>
+
+  <h2>Size fruit (local produce, by week)</h2>
+  <div class="art">
+    <figure><img src="../assets/images/art/w04-poppy.webp">4 · poppy seed</figure>
+    <figure><img src="../assets/images/art/w08-bean.webp">8 · rajma bean</figure>
+    <figure><img src="../assets/images/art/w12-lime.webp">12 · lime</figure>
+    <figure><img src="../assets/images/art/w16-mango.webp">16 · mango</figure>
+    <figure><img src="../assets/images/art/w20-banana.webp">20 · banana</figure>
+    <figure><img src="../assets/images/art/w24-corn.webp">24 · corn cob</figure>
+    <figure><img src="../assets/images/art/w28-brinjal.webp">28 · brinjal</figure>
+    <figure><img src="../assets/images/art/w32-coconut.webp">32 · coconut</figure>
+    <figure><img src="../assets/images/art/w36-papaya.webp">36 · papaya</figure>
+    <figure><img src="../assets/images/art/w40-watermelon.webp">40 · watermelon</figure>
+  </div>
+
+  <h2>Baby art prompt</h2>
+  <div class="prompt">Adorable soft 3D clay toy figure of <b>[a tiny baby curled up asleep | a baby sucking its thumb |
+a baby with big open eyes waving one hand | a chubby happy baby under a soft rose blanket]</b>,
+lying on a cream cloud cushion, pastel peach skin, rose and cream colour palette,
+minimal cute character design, centered, plain white background, soft studio lighting</div>
+  <p class="small muted" style="margin-top:2mm">Avoid the words "pregnancy", "foetus", "womb" and "born" in prompts (they trigger safety filters and medical-looking results). Keep babies cute and toy-like, never anatomical.</p>
+
+  <div class="grid2" style="margin-top:3mm">
+    <div><span class="do">Do</span><ul class="rule small"><li>Warm, toy-like, rounded, softly lit.</li><li>Local food and objects.</li><li>Plenty of porcelain space around art.</li></ul></div>
+    <div><span class="dont">Don't</span><ul class="rule no small"><li>Stock photos of patients, hospitals or needles.</li><li>Pregnant-body imagery for mothers.</li><li>Realistic or medical renders of the baby.</li></ul></div>
+  </div>
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<!-- 9 LAYOUT & COMPONENTS -->
+<section id="p12" class="page">
+  <p class="eyebrow">08 · Layout and components</p>
+  <h1>Layout</h1>
+  <div class="grid4" style="margin-top:3mm">
+    <div class="card"><b style="font-size:16pt">24 pt</b><p class="small muted">Side gutter (32 on tablets)</p></div>
+    <div class="card"><b style="font-size:16pt">520 pt</b><p class="small muted">Max column (720 on tablets ≥ 768)</p></div>
+    <div class="card"><b style="font-size:16pt">16–20 pt</b><p class="small muted">Gap between sections</p></div>
+    <div class="card"><b style="font-size:16pt">56 / 44</b><p class="small muted">Primary button height / min touch</p></div>
+  </div>
+  <table style="margin-top:4mm">
+    <tr><th>Radius</th><th>Used for</th></tr>
+    <tr><td><b>14–16 pt</b></td><td>Small wells, chips, date tiles, buttons inside cards</td></tr>
+    <tr><td><b>18 pt</b></td><td>Grid tiles, list rows, topic cards</td></tr>
+    <tr><td><b>20–24 pt</b></td><td>Main cards, story banner, bottom sheets (top corners), speech bubbles</td></tr>
+    <tr><td><b>28 pt (pill)</b></td><td>Primary 56 pt button, pills, capsules</td></tr>
+  </table>
+  <p class="small muted" style="margin-top:2mm">Separation by whitespace and 1 px hairlines (#E5D8D0 or ink at 10 %). Shadows are rare and very soft (ink, 4 % opacity, 12 pt blur).</p>
+
+  <h2>Core components</h2>
+  <div class="grid2">
+    <div>
+      <div class="btn" style="background:var(--cherry);color:#fff">See my day, Lakshmi</div>
+      <p class="small muted" style="margin:1.5mm 0 3mm">Primary: Cherry, white 600 text, 56 pt, full width, sticky at the bottom. One per screen.</p>
+      <div class="btn" style="background:#fff;color:var(--cherry);border:1.5px solid var(--cherry);height:10mm;width:40mm;font-size:10pt">Call</div>
+      <p class="small muted" style="margin:1.5mm 0 3mm">Secondary: White with a 1.5 pt Cherry outline.</p>
+      <div class="datecard">
+        <div class="datetile" style="background:#FDF0F5;color:var(--cherry)"><b>21</b><span>OCT</span></div>
+        <div style="flex:1"><b>Doctor visit</b><div class="small muted">Dr. Anand Kumar · Hosahalli PHC</div></div>
+        <span class="pill" style="background:var(--cherry);color:#fff">PDF</span>
+      </div>
+      <p class="small muted" style="margin-top:1.5mm">History card: a fixed date tile anchors every record; no icons, no readings. Medical values live in the PDF.</p>
+    </div>
+    <div>
+      <div class="grid2" style="gap:3mm">
+        <div class="tile" style="background:var(--g-blossom)"><div style="display:flex;gap:2mm;align-items:center"><div class="badge"><img src="../assets/images/icons/senses.webp"></div><span class="lab">BABY'S SENSES</span></div><div><b>Sees the light</b><div class="small muted">Baby blinks toward light.</div></div></div>
+        <div class="tile" style="background:var(--g-peach)"><div style="display:flex;gap:2mm;align-items:center"><div class="badge"><img src="../assets/images/icons/rest.webp"></div><span class="lab">YOUR BODY</span></div><div><b>Rest on left side</b><div class="small muted">Helps blood flow.</div></div></div>
+        <div class="tile" style="background:var(--g-lavender)"><div style="display:flex;gap:2mm;align-items:center"><div class="badge"><img src="../assets/images/icons/food.webp"></div><span class="lab">NUTRITION</span></div><div><b>One extra meal</b><div class="small muted">Ragi, dal, banana.</div></div></div>
+        <div class="tile" style="background:var(--g-pistachio)"><div style="display:flex;gap:2mm;align-items:center"><div class="badge"><img src="../assets/images/icons/clinic.webp"></div><span class="lab">CLINIC CARE</span></div><div><b>Third check-up</b><div class="small muted">At your clinic.</div></div></div>
+      </div>
+      <p class="small muted" style="margin-top:1.5mm">Weekly grid: strictly 2 × 2 equal tiles (164 pt high), identical anatomy, text never resizes a tile. Tap opens a bottom sheet.</p>
+    </div>
+  </div>
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<!-- 10 MOTION -->
+<section id="p13" class="page">
+  <p class="eyebrow">09 · Motion and haptics</p>
+  <h1>Motion</h1>
+  <p class="lead">Botanical: things grow and settle like a leaf. Springs overshoot a few percent and come to rest; nothing snaps, flashes or bounces hard.</p>
+
+  <h2>Tokens</h2>
+  <table>
+    <tr><th>Token</th><th>Value</th><th>Used for</th></tr>
+    <tr><td><b>Tactile spring</b></td><td class="mono">stiffness 300 · damping 25 · mass 0.8</td><td>Button press, entrances, toggles</td></tr>
+    <tr><td><b>Glide spring</b></td><td class="mono">stiffness 280 · damping 28</td><td>Page and tab slides, the baby's arrival</td></tr>
+    <tr><td><b>Leaf spring</b></td><td class="mono">stiffness 140 · damping 15</td><td>Brand intro: the leaf travels into the logo</td></tr>
+    <tr><td><b>Settle curve</b></td><td class="mono">cubic-bezier(0.22, 1, 0.36, 1)</td><td>Fades and reveals</td></tr>
+    <tr><td><b>Breathe curve</b></td><td class="mono">ease-in-out sine, 3000 ms</td><td>Idle loops (scale 1 ↔ 1.03, y 0 ↔ −4 pt)</td></tr>
+    <tr><td><b>Press</b></td><td class="mono">scale 0.97 (tiles 0.96)</td><td>Every tappable surface</td></tr>
+    <tr><td><b>Stagger</b></td><td class="mono">60 ms per item, y 24 → 0</td><td>Lists and grids entering</td></tr>
+    <tr><td><b>Sheet</b></td><td class="mono">y 100 % → 0, background scale 0.96</td><td>Bottom sheets and pickers</td></tr>
+  </table>
+
+  <h2>Signature moments</h2>
+  <div class="grid2">
+    <div class="card"><b>Brand intro</b><p class="small muted">The leaf breathes as a pre-loader, pops, travels into the wordmark; letters t-a-r-a rise in 70 ms steps; the figure draws upward; a bloom wipe reveals Welcome.</p></div>
+    <div class="card"><b>"Amma, this is me"</b><p class="small muted">The week's baby glides in from the right, the halo ripples once, the speech bubble pops, the size fruit springs in. Swipe or Next; then fade to the dashboard.</p></div>
+    <div class="card"><b>Week story</b><p class="small muted">Fruit glides between weeks; the quote rewrites word by word with a light shimmer. Future weeks stay locked.</p></div>
+    <div class="card"><b>Small wins</b><p class="small muted">A fully ticked day releases a 10-particle burst (720 ms, one value drives all) and "All done for today".</p></div>
+  </div>
+
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<section id="p14" class="page">
+  <p class="eyebrow">09 · Motion and haptics</p>
+  <h1>Haptics and performance</h1>
+  <p class="lead">Every primary gesture is paired with a haptic, and every animation is built to stay smooth on a low-cost Android phone.</p>
+  <h2>Haptics</h2>
+  <table>
+    <tr><th>Strength</th><th>When</th></tr>
+    <tr><td><b>Light / select</b></td><td>Toggles, ticks, tab switch, week step, chips</td></tr>
+    <tr><td><b>Medium</b></td><td>Primary buttons, "Next", opening a call or a session</td></tr>
+    <tr><td><b>Success</b></td><td>Saving, finishing the intro, completing the day</td></tr>
+    <tr><td><b>Warning</b></td><td>Validation errors (ASHA/doctor flows only, never to alarm a mother)</td></tr>
+  </table>
+
+  <h2>Performance and access rules</h2>
+  <ul class="rule">
+    <li>Animate only <b>transform</b> and <b>opacity</b>, on the UI thread (Reanimated). Never width, height or margin.</li>
+    <li>Infinite loops pause when their screen is hidden; one-shot animations snap to their final state on blur and repaint on focus, so a screen can never be left blank.</li>
+    <li>Respect Reduce Motion: no travel or scaling, only short cross-fades.</li>
+    <li>Art and icons ship as small WebP files (5–27 KB) and are preloaded around the current week only, keeping memory low.</li>
+    <li>One shared value drives a whole effect (e.g. all 10 burst particles) instead of one animation per element.</li>
+  </ul>
+
+  <h2>Accessibility checklist</h2>
+  <div class="grid2">
+    <ul class="rule small">
+      <li>Touch targets at least 44 × 44 pt; primary button 56 pt.</li>
+      <li>Every icon-only control has a spoken label ("Call Sunita", "Skip to my dashboard").</li>
+      <li>Text scales with the phone setting; layouts wrap instead of clipping.</li>
+    </ul>
+    <ul class="rule small">
+      <li>Meaning never relies on colour alone: always a word or icon too.</li>
+      <li>Live updates (Tara's status, the intro bubble) are announced politely.</li>
+      <li>Works in Kannada, Hindi and English, and with Reduce Motion on.</li>
+    </ul>
+  </div>
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<!-- 11 VOICE -->
+<section id="p15" class="page">
+  <p class="eyebrow">10 · Voice and tone</p>
+  <h1>How tara speaks</h1>
+  <p class="lead">Like a kind, well-informed elder sister: short sentences, everyday words, one action at a time. Kannada, Hindi and English carry the same warmth.</p>
+
+  <div class="grid3" style="margin-top:4mm">
+    <div class="card"><b style="color:var(--cherry)">To the mother</b><p class="small muted">Warm, personal, reassuring. "Amma", her name, her baby in first person. Never risk scores, never "danger", never readings out of context.</p></div>
+    <div class="card"><b style="color:var(--pumpkin)">To the ASHA</b><p class="small muted">Practical and direct. What to do, for whom, by when. Risk is named clearly so she can act.</p></div>
+    <div class="card"><b style="color:var(--plum)">To the doctor</b><p class="small muted">Clinical and precise. Rule codes, values, thresholds, transcripts.</p></div>
+  </div>
+
+  <h2>Write it like this</h2>
+  <table>
+    <tr><th style="width:50%">Instead of</th><th>tara says</th></tr>
+    <tr><td class="muted">⚠️ CLINIC VISIT NEEDED TODAY: danger signs found.</td><td><b>Next visit · Today, 14:00</b> · Hosahalli PHC · with Sunita</td></tr>
+    <tr><td class="muted">Referral</td><td><b>Doctor visit</b></td></tr>
+    <tr><td class="muted">Your baby can tell light from dark.</td><td><b>Amma, I can tell light from dark!</b> (the baby speaking)</td></tr>
+    <tr><td class="muted">Fetal weight estimate: 1.6 kg.</td><td><b>I'm about the size of a brinjal, ~1.6 kg.</b></td></tr>
+    <tr><td class="muted">Error: record not found.</td><td><b>We couldn't load your details.</b> Your records are safe. Tap below to load them again.</td></tr>
+    <tr><td class="muted">Task completed successfully.</td><td><b>All done for today</b> · 4-day streak</td></tr>
+  </table>
+
+  <h2>Principles</h2>
+  <div class="grid2">
+    <ul class="rule small">
+      <li><b>Plain words.</b> "Tablet", "check-up", "baby kicks"; not "IFA supplementation".</li>
+      <li><b>One idea per line.</b> If it needs two sentences, the second is the action.</li>
+      <li><b>Local and kind.</b> Brinjal, ragi, dal; Amma; the ASHA's first name.</li>
+      <li><b>No emoji in the interface.</b> Warmth comes from words, art and colour.</li>
+    </ul>
+    <ul class="rule small">
+      <li><b>Privacy first.</b> Medicine names and readings stay inside PDFs on a shared phone.</li>
+      <li><b>Never frighten.</b> Safety guidance (call 108, call your ASHA) is calm and specific.</li>
+      <li><b>Guidance, not diagnosis.</b> "Tara gives general guidance, not a diagnosis."</li>
+      <li><b>Voice belongs to Sakhi.</b> Read-aloud lives in the ASHA's Sakhi session.</li>
+    </ul>
+  </div>
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<!-- 12 IN USE -->
+<section id="p16" class="page">
+  <p class="eyebrow">11 · Brand in use</p>
+  <h1>The mother's app</h1>
+  <p class="lead">Every rule in one place: porcelain canvas, one cherry action, clay icons in tinted wells, Anek type, calm words.</p>
+  <div class="phones" style="margin-top:6mm">
+    <figure style="margin:0"><div class="phone"><img src="brand-assets/app-hello.png"></div><figcaption>Intro · "Amma, this is me"</figcaption></figure>
+    <figure style="margin:0"><div class="phone"><img src="brand-assets/app-home.png"></div><figcaption>Home · week story + grid</figcaption></figure>
+    <figure style="margin:0"><div class="phone"><img src="brand-assets/app-pregnancy.png"></div><figcaption>Pregnancy · checklist + medicines</figcaption></figure>
+    <figure style="margin:0"><div class="phone"><img src="brand-assets/app-history.png"></div><figcaption>History · date-first cards</figcaption></figure>
+  </div>
+  <h2>What makes it tara</h2>
+  <div class="grid3">
+    <div class="card"><b>1 · Calm canvas</b><p class="small muted">Porcelain everywhere; tints only to group; cherry only on the next action.</p></div>
+    <div class="card"><b>2 · Friendly objects</b><p class="small muted">Clay icons and a clay baby instead of medical symbols.</p></div>
+    <div class="card"><b>3 · Kind words</b><p class="small muted">Her name, her baby's voice, her ASHA's name, never alarm.</p></div>
+  </div>
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+<!-- 13 QUICK REFERENCE -->
+<section id="p17" class="page">
+  <p class="eyebrow">12 · Quick reference</p>
+  <h1>Cheat sheet</h1>
+  <div class="grid2" style="margin-top:4mm">
+    <div class="card">
+      <h3 style="margin-top:0">Colour tokens</h3>
+      <table class="small">
+        <tr><td>porcelain</td><td class="mono">#FEFAF4</td><td>cherry</td><td class="mono">#A11D44</td></tr>
+        <tr><td>shell</td><td class="mono">#FBF4F1</td><td>cherryPressed</td><td class="mono">#861636</td></tr>
+        <tr><td>cherryMist</td><td class="mono">#F7E4E8</td><td>rose</td><td class="mono">#A9636D</td></tr>
+        <tr><td>surface</td><td class="mono">#FFFFFF</td><td>blush</td><td class="mono">#E8B4BC</td></tr>
+        <tr><td>band</td><td class="mono">#FAF1EC</td><td>pumpkin</td><td class="mono">#C84B00</td></tr>
+        <tr><td>bandLine</td><td class="mono">#E5D8D0</td><td>plum</td><td class="mono">#5B2A86</td></tr>
+        <tr><td>ink</td><td class="mono">#2B1B21</td><td>sage</td><td class="mono">#2F6B4F</td></tr>
+        <tr><td>inkMuted</td><td class="mono">#6F5A61</td><td>outline</td><td class="mono">#9A858C</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">Type</h3>
+      <table class="small">
+        <tr><td>Display</td><td class="mono">32/40 700</td><td>Body</td><td class="mono">17/25 400</td></tr>
+        <tr><td>Title</td><td class="mono">26/34 700</td><td>Label</td><td class="mono">15/22 600</td></tr>
+        <tr><td>Heading</td><td class="mono">19/26 700</td><td>Caption</td><td class="mono">14/20 500</td></tr>
+        <tr><td>Button</td><td class="mono">18/24 600</td><td>Overline</td><td class="mono">12/16 600</td></tr>
+        <tr><td>Metric</td><td class="mono">28/34 700</td><td>Tagline</td><td class="mono">Parisienne 30</td></tr>
+      </table>
+      <p class="small muted" style="margin-top:2mm">Anek Latin / Kannada / Devanagari · Parisienne (decorative)</p>
+    </div>
+  </div>
+  <div class="grid2" style="margin-top:4mm">
+    <div class="card">
+      <h3 style="margin-top:0">Shape and space</h3>
+      <p class="small">Gutter 24 · column 520 · gaps 16–20 · button 56 · touch 44 · radius 16 / 18 / 20–24 / pill</p>
+      <h3>Motion</h3>
+      <p class="small">Tactile 300/25/0.8 · Glide 280/28 · press 0.97 · stagger 60 ms · breathe 3 s · transform + opacity only</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">Source of truth in code</h3>
+      <table class="small">
+        <tr><td>Colours</td><td class="mono">src/constants/brand.ts</td></tr>
+        <tr><td>Type</td><td class="mono">src/constants/typography.ts</td></tr>
+        <tr><td>Motion</td><td class="mono">src/constants/motion.ts</td></tr>
+        <tr><td>Layout</td><td class="mono">src/constants/theme.ts</td></tr>
+        <tr><td>Icons</td><td class="mono">src/components/system/app-icon.tsx</td></tr>
+        <tr><td>Art</td><td class="mono">assets/images/art, icons</td></tr>
+        <tr><td>Logo</td><td class="mono">assets/images/tara-logo.png</td></tr>
+      </table>
+    </div>
+  </div>
+  <div style="text-align:center;margin-top:16mm">
+    <img src="../assets/images/tara-logo.png" style="width:52mm" alt="tara">
+    <div style="font-family:'Parisienne';font-size:22pt;color:var(--rose);margin-top:3mm">A little guidance. A lot of care.</div>
+  </div>
+  <div class="folio"><span>tara · Brand identity</span><span class="num"></span></div>
+</section>
+
+</body>
+</html>

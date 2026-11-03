@@ -1,0 +1,57 @@
+<template>
+  <style>
+    @font-face { font-family: 'Baloo 2'; font-weight: 500; src: url('assets/fonts/Baloo2_500Medium.ttf'); }
+    @font-face { font-family: 'Baloo 2'; font-weight: 700; src: url('assets/fonts/Baloo2_700Bold.ttf'); }
+    #root {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      background: #05070d;
+      font-family: 'Baloo 2', sans-serif;
+      color: #fff;
+    }
+    /* real satellite imagery, baked camera move (tools/bake-basemap.mjs) */
+    #s1-map { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; object-fit: cover; }
+    .place { position: absolute; font-weight: 700; letter-spacing: -0.01em; text-shadow: 0 2px 14px rgba(0, 0, 0, 0.55); white-space: nowrap; }
+    .place small { display: block; font-size: 0.42em; font-weight: 500; letter-spacing: 0.02em; opacity: 0.92; }
+    #s1-india { left: 1030px; top: 300px; font-size: 92px; }
+    #s1-karnataka { left: 560px; top: 640px; font-size: 84px; }
+    /* Bidar is the exact centre of the final view (960, 540): the pin's tip sits there */
+    #s1-pin { position: absolute; left: 928px; top: 456px; width: 64px; height: 84px; transform-origin: 50% 100%; }
+    #s1-shadow { position: absolute; left: 936px; top: 532px; width: 48px; height: 14px; border-radius: 50%; background: rgba(0, 0, 0, 0.35); }
+    #s1-ripple { position: absolute; left: 920px; top: 520px; width: 80px; height: 40px; border-radius: 50%; border: 3px solid #fff; }
+    #s1-bidar { left: 1010px; top: 440px; font-size: 78px; }
+    #s1-credit {
+      position: absolute; right: 120px; bottom: 112px; padding: 4px 12px; border-radius: 8px;
+      background: rgba(0, 0, 0, 0.42); font-size: 18px; font-weight: 500; color: rgba(255, 255, 255, 0.9);
+    }
+  </style>
+  <div id="root" data-composition-id="s1-globe" data-width="1920" data-height="1080">
+    <video id="s1-map" class="clip" src="assets/map/globe-to-bidar.mp4" data-start="0" data-duration="8" data-track-index="0" muted playsinline></video>
+    <div id="s1-india" class="place">India</div>
+    <div id="s1-karnataka" class="place">Karnataka</div>
+    <div id="s1-shadow"></div>
+    <div id="s1-ripple"></div>
+    <svg id="s1-pin" viewBox="0 0 64 84" aria-hidden="true">
+      <path d="M32 82C32 82 4 50 4 30a28 28 0 0 1 56 0c0 20-28 52-28 52z" fill="#A11D44" stroke="#fff" stroke-width="3" />
+      <circle cx="32" cy="30" r="11" fill="#fff" />
+    </svg>
+    <div id="s1-bidar" class="place">Bidar<small>district · Karnataka · India</small></div>
+    <div id="s1-credit" data-layout-ignore>Imagery: Esri, Maxar, Earthstar Geographics</div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    // place names land as the camera reaches each one; dead still, then leave
+    tl.fromTo('#s1-india', { opacity: 0, filter: 'blur(8px)' }, { opacity: 1, filter: 'blur(0px)', duration: 0.2, ease: 'power4.out' }, 2.3);
+    tl.to('#s1-india', { opacity: 0, filter: 'blur(8px)', duration: 0.18, ease: 'power3.in' }, 3.85);
+    tl.fromTo('#s1-karnataka', { opacity: 0, filter: 'blur(8px)' }, { opacity: 1, filter: 'blur(0px)', duration: 0.2, ease: 'power4.out' }, 4.3);
+    tl.to('#s1-karnataka', { opacity: 0, filter: 'blur(8px)', duration: 0.18, ease: 'power3.in' }, 5.7);
+    // 6.6 the camera holds on Bidar: the pin drops (spring ~0.75) and lands on its shadow
+    tl.fromTo('#s1-pin', { y: -110, opacity: 0 }, { y: 0, opacity: 1, duration: 0.55, ease: 'back.out(1.6)' }, 6.0);
+    tl.fromTo('#s1-shadow', { opacity: 0, scale: 0.4 }, { opacity: 1, scale: 1, duration: 0.5, ease: 'expo.out' }, 6.15);
+    tl.fromTo('#s1-ripple', { opacity: 0.9, scale: 0.3 }, { opacity: 0, scale: 2.2, duration: 0.7, ease: 'power2.out' }, 6.35);
+    tl.fromTo('#s1-bidar', { opacity: 0, filter: 'blur(8px)' }, { opacity: 1, filter: 'blur(0px)', duration: 0.2, ease: 'power4.out' }, 6.3);
+    tl.fromTo('#s1-credit', { opacity: 0 }, { opacity: 1, duration: 0.3 }, 0.2);
+    window.__timelines['s1-globe'] = tl;
+  </script>
+</template>

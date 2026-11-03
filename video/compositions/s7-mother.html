@@ -1,0 +1,53 @@
+<template>
+  <style>
+    @font-face { font-family: 'Baloo 2'; font-weight: 500; src: url('assets/fonts/Baloo2_500Medium.ttf'); }
+    @font-face { font-family: 'Baloo 2'; font-weight: 700; src: url('assets/fonts/Baloo2_700Bold.ttf'); }
+    #root {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      background: radial-gradient(1200px 900px at 62% 40%, #fbeff2 0%, #f7e4e8 60%);
+      font-family: 'Baloo 2', sans-serif;
+      color: #2b1b21;
+    }
+    .phone {
+      position: absolute; top: 61px; width: 444px; height: 957px; padding: 12px;
+      border-radius: 62px; background: #1b1316; box-shadow: 0 40px 80px rgba(43, 27, 33, 0.28);
+    }
+    .phone .screen { position: relative; width: 420px; height: 933px; border-radius: 50px; overflow: hidden; background: #fff; }
+    .phone .screen img { position: absolute; left: 0; top: 0; width: 420px; height: 933px; }
+    #s7-doc { left: 1176px; }
+    #s7-mom { left: 300px; }
+    /* the doctor's advice card on her Home (screen 25,362 / 370 x 295) */
+    #s7-mark { position: absolute; left: 22px; top: 359px; width: 376px; height: 301px; border-radius: 16px; border: 3px solid #a11d44; }
+    #s7-copy { position: absolute; left: 900px; top: 400px; width: 900px; }
+    #s7-kicker { font-size: 34px; font-weight: 500; color: #5a464d; }
+    #s7-title { font-size: 76px; font-weight: 700; line-height: 1.08; letter-spacing: -0.01em; }
+    #s7-title .w { display: inline-block; }
+    #s7-title .accent { color: #a11d44; }
+  </style>
+  <div id="root" data-composition-id="s7-mother" data-width="1920" data-height="1080">
+    <div id="s7-doc" class="phone"><div class="screen"><img src="assets/app/doctor-case.png" alt="" /></div></div>
+    <div id="s7-mom" class="phone">
+      <div class="screen">
+        <img src="assets/app/mother-advice.png" alt="" />
+        <div id="s7-mark"></div>
+      </div>
+    </div>
+    <div id="s7-copy">
+      <div id="s7-kicker">Lakshmi’s own phone</div>
+      <div id="s7-title"><span class="w">The</span> <span class="w">advice</span> <span class="w">reaches</span> <span class="w accent">her</span></div>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    // 0.0 whip: the doctor's phone leaves right, hers arrives from the left, landing blurred and sharpening
+    tl.fromTo('#s7-doc', { x: 0, filter: 'blur(0px)' }, { x: 900, filter: 'blur(14px)', duration: 0.28, ease: 'power3.in' }, 0);
+    tl.fromTo('#s7-mom', { x: -700, filter: 'blur(14px)' }, { x: 0, filter: 'blur(0px)', duration: 0.42, ease: 'expo.out' }, 0.16);
+    tl.fromTo('#s7-mark', { opacity: 0 }, { opacity: 1, duration: 0.2, ease: 'power2.out' }, 0.7);
+    tl.fromTo('#s7-kicker', { opacity: 0, filter: 'blur(6px)' }, { opacity: 1, filter: 'blur(0px)', duration: 0.2, ease: 'power4.out' }, 0.45);
+    tl.fromTo('#s7-title .w', { opacity: 0, filter: 'blur(6px)' }, { opacity: 1, filter: 'blur(0px)', duration: 0.18, ease: 'power4.out', stagger: 0.067 }, 0.55);
+    tl.to('#s7-copy', { opacity: 0, filter: 'blur(8px)', duration: 0.18, ease: 'power3.in' }, 2.3);
+    window.__timelines['s7-mother'] = tl;
+  </script>
+</template>

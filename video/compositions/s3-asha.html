@@ -1,0 +1,107 @@
+<template>
+  <style>
+    @font-face { font-family: 'Baloo 2'; font-weight: 500; src: url('assets/fonts/Baloo2_500Medium.ttf'); }
+    @font-face { font-family: 'Baloo 2'; font-weight: 700; src: url('assets/fonts/Baloo2_700Bold.ttf'); }
+    #root {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      background: radial-gradient(1200px 900px at 62% 40%, #fbeff2 0%, #f7e4e8 60%);
+      font-family: 'Baloo 2', sans-serif;
+      color: #2b1b21;
+    }
+    /* The phone: a 420 x 933 screen (the 1236 x 2745 capture at 0.3398) in a 12 px bezel. */
+    #s3-phone {
+      position: absolute;
+      left: 300px;
+      top: 61px;
+      width: 444px;
+      height: 957px;
+      padding: 12px;
+      border-radius: 62px;
+      background: #1b1316;
+      box-shadow: 0 40px 80px rgba(43, 27, 33, 0.28);
+    }
+    #s3-phone .screen {
+      position: relative;
+      width: 420px;
+      height: 933px;
+      border-radius: 50px;
+      overflow: hidden;
+      background: #fff;
+    }
+    #s3-phone .screen img {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 420px;
+      height: 933px;
+    }
+    #s3-phone .screen #s3-today { opacity: 0; }
+    .touch {
+      position: absolute;
+      width: 56px;
+      height: 56px;
+      margin: -28px 0 0 -28px;
+      border-radius: 50%;
+      background: rgba(43, 27, 33, 0.18);
+      border: 2px solid #fff;
+      opacity: 0;
+    }
+    #s3-copy {
+      position: absolute;
+      left: 900px;
+      top: 380px;
+      width: 860px;
+    }
+    #s3-kicker {
+      font-size: 34px;
+      font-weight: 500;
+      color: #5a464d;
+    }
+    #s3-title {
+      font-size: 76px;
+      font-weight: 700;
+      line-height: 1.08;
+      letter-spacing: -0.01em;
+    }
+    #s3-title .w { display: inline-block; }
+    #s3-title .accent { color: #a11d44; }
+  </style>
+  <div id="root" data-composition-id="s3-asha" data-width="1920" data-height="1080">
+    <div id="s3-phone">
+      <div class="screen">
+        <img id="s3-home" src="assets/app/asha-home.png" alt="" />
+        <img id="s3-today" src="assets/app/asha-today.png" alt="" />
+        <!-- touch points, in screen pixels (capture x 0.3398) -->
+        <div id="s3-tap1" class="touch" style="left: 210px; top: 172px"></div>
+        <div id="s3-tap2" class="touch" style="left: 125px; top: 489px"></div>
+      </div>
+    </div>
+    <div id="s3-copy">
+      <div id="s3-kicker">Bidar · Kamthana village</div>
+      <div id="s3-title">
+        <span class="w">Sunita</span> <span class="w">visits</span> <span class="w accent">Lakshmi,</span><br />
+        <span class="w">7</span> <span class="w">months</span> <span class="w">pregnant</span>
+      </div>
+    </div>
+  </div>
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    // 0.0 phone rises in (carried from the logo); home screen
+    tl.fromTo('#s3-phone', { y: 260, opacity: 0 }, { y: 0, opacity: 1, duration: 0.8, ease: 'expo.out' }, 0);
+    // title, per word: blur 6 -> 0, 0.067 s apart, no translate
+    tl.fromTo('#s3-kicker', { opacity: 0, filter: 'blur(6px)' }, { opacity: 1, filter: 'blur(0px)', duration: 0.2, ease: 'power4.out' }, 0.45);
+    tl.fromTo('#s3-title .w', { opacity: 0, filter: 'blur(6px)' }, { opacity: 1, filter: 'blur(0px)', duration: 0.18, ease: 'power4.out', stagger: 0.067 }, 0.6);
+    // 1.3 tap "Today's visits" -> the list
+    tl.fromTo('#s3-tap1', { opacity: 0, scale: 1 }, { opacity: 1, scale: 0.86, duration: 0.12, ease: 'power2.out' }, 1.25);
+    tl.to('#s3-tap1', { opacity: 0, scale: 1, duration: 0.15, ease: 'power2.in' }, 1.4);
+    tl.fromTo('#s3-today', { opacity: 0, x: 40 }, { opacity: 1, x: 0, duration: 0.35, ease: 'expo.out' }, 1.37);
+    // 3.3 tap "Start check-in" on Lakshmi D.
+    tl.fromTo('#s3-tap2', { opacity: 0, scale: 1 }, { opacity: 1, scale: 0.86, duration: 0.12, ease: 'power2.out' }, 3.3);
+    tl.to('#s3-tap2', { opacity: 0, scale: 1, duration: 0.15, ease: 'power2.in' }, 3.45);
+    // exit: the title leaves word by word before the session takes the phone
+    tl.to('#s3-copy', { opacity: 0, filter: 'blur(6px)', duration: 0.2, ease: 'power3.in' }, 4.15);
+    window.__timelines['s3-asha'] = tl;
+  </script>
+</template>

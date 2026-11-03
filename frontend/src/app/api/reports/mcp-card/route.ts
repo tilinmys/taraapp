@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { workerHeaders } from "@/lib/worker";
 
 const WORKER_STATUS_URL = process.env.WORKER_STATUS_URL || "http://localhost:8080";
 
@@ -19,6 +20,7 @@ export async function GET(req: NextRequest) {
   try {
     const res = await fetch(`${WORKER_STATUS_URL}/reports/mcp-card?${params.toString()}`, {
       cache: "no-store",
+      headers: workerHeaders(),
     });
     return NextResponse.json(await res.json(), { status: res.status });
   } catch (error: any) {

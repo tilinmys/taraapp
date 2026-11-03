@@ -179,7 +179,9 @@ async def stream_tests() -> None:
     # drug name split across LLM token deltas must still be caught
     result = await run_stream(["You can take paraceta", "mol for the fever, ", "it is quite safe."])
     check("split drug word blocked in stream", "paracetamol" not in result.lower())
-    check("replacement script spoken instead", "doctors are the right people" in result)
+    # The approved refusal in the call's language (Kannada by default), never an English booking offer.
+    check("replacement script spoken instead", guardrails.script_for("medical_advice", "kn") in result)
+    check("no English appointment offer", "appointment" not in result.lower())
 
     # dosage split across a word boundary ("500 " then "mg")
     result = await run_stream(["Take 500 ", "mg twice ", "daily."])

@@ -1,0 +1,14 @@
+{
+  "name": "mystree-sakhi-workspace",
+  "private": true,
+  "description": "Repo-root shortcuts. The real projects live in app/ (tara UI, Expo Go), mobile/ (voice scaffold) and frontend/ (web dashboard).",
+  "scripts": {
+    "start": "npm --prefix app run start",
+    "lan": "npm --prefix app run lan",
+    "tunnel": "npm --prefix app run tunnel",
+    "web": "npm --prefix app run web",
+    "lint": "npm --prefix app run lint",
+    "typecheck": "npm --prefix app run typecheck",
+    "app:install": "npm --prefix app install"
+  }
+}

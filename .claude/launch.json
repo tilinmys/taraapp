@@ -4,28 +4,59 @@
     {
       "name": "frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "frontend", "run", "dev", "--", "--port", "3100"],
+      "runtimeArgs": [
+        "--prefix",
+        "frontend",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "3100"
+      ],
       "port": 3100
     },
     {
       "name": "worker",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["agent.py", "dev"],
+      "runtimeArgs": [
+        "agent.py",
+        "dev"
+      ],
       "port": 8080,
       "url": "http://localhost:8080"
     },
     {
       "name": "dashboard-demo-api",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["scripts/dashboard_demo_server.py"],
+      "runtimeArgs": [
+        "scripts/dashboard_demo_server.py"
+      ],
       "port": 8095,
       "url": "http://localhost:8095"
     },
     {
       "name": "dashboard-demo-ui",
       "runtimeExecutable": "cmd",
-      "runtimeArgs": ["/c", "set WORKER_STATUS_URL=http://127.0.0.1:8095&& npm --prefix frontend run build && npm --prefix frontend run start -- --port 3105"],
+      "runtimeArgs": [
+        "/c",
+        "set WORKER_STATUS_URL=http://127.0.0.1:8095&& npm --prefix frontend run build && npm --prefix frontend run start -- --port 3105"
+      ],
       "port": 3105
+    },
+    {
+      "name": "app-docs",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8097", "--bind", "127.0.0.1", "--directory", "app"],
+      "port": 8097
+    },
+    {
+      "name": "mobile-web",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "cd mobile && npx expo start --web --port 8099"
+      ],
+      "port": 8099
     }
   ]
 }
