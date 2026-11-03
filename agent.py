@@ -3406,6 +3406,24 @@ _VAD_QUESTION_RE = re.compile(
 )
 
 
+# Zero-TTS escape hatch: the ASHA asked something or asked to pause, instead
+# of answering the armed question ("ಬಿಪಿ ಯಾಕೆ ಮುಖ್ಯ?", "ಸ್ವಲ್ಪ ತಾಳಿ",
+# "रुकिए"). One pre-compiled pass, O(n) in the transcript. Question and pause
+# MARKERS only, never topic words alone: "ಕಬ್ಬಿಣ ಮಾತ್ರೆ" (iron tablets),
+# "ಡಾಕ್ಟರ್ ನರ್ಸ್ ಇದ್ದಾರೆ", "ಎಲ್ಲಾ ನಾರ್ಮಲ್" are ANSWERS to the medication, birth
+# plan and history questions. "ಯಾವ" (which) must not match "ಯಾವುದೂ" (none).
+_QUERY_OR_DIVERSION_RE = re.compile(
+    r"\?"
+    r"|\b(?:why|what|how|when|where|which|who|whose|should\s+(?:i|we)|can\s+(?:i|we|you)"
+    r"|could\s+you|is\s+(?:it|that|this)|wait|hold\s+on|one\s+minute|a\s+minute)\b"
+    r"|ಯಾಕೆ|ಏಕೆ|ಏನು|ಹೇಗೆ|ಯಾವಾಗ|ಎಲ್ಲಿ|ಯಾವ(?!ುದ)|ಯಾರು"
+    r"|ಮಾಡಬೇಕು|ಮಾಡಲಿ|ಕೊಡಬೇಕು|ಕೊಡಲಿ|ಸರಿನಾ|ಸರಿಯಾ"
+    r"|ತಾಳಿ|ನಿಲ್ಲಿಸಿ|ನಿಮಿಷ"
+    r"|क्यों|क्या|कैसे|कब|कहाँ|कहां|कौन|करें|चाहिए|रुकिए|रुको|ठहरो|ठहरिए|मिनट",
+    re.IGNORECASE,
+)
+
+
 class _SlowTriggerMatcher:
     """Slow window only when Sakhi asks something that needs recall.
 
@@ -4841,6 +4859,28 @@ class SakhiAgent(Agent):
 
         started = time.perf_counter()
         slots = extract_all(raw_speech, expecting=qid)
+        heard = detect_symptoms(canon, qid)
+        # Escape hatch: she asked something, or asked to wait, and gave nothing
+        # this question can use. Do not re-ask the recording or spend a stall:
+        # hand the turn to the full pipeline (LLM, input guardrails - no
+        # prescribing - and streaming TTS), which answers in one line and
+        # steers back. The question stays armed. NEVER when what she said is a
+        # danger sign that escalates: that stays on the deterministic
+        # emergency path below, with no model in the loop ("ಫಿಟ್ಸ್ ಬಂದಿದೆ ಏನು
+        # ಮಾಡಬೇಕು?" refers at once, it is not answered).
+        if not slots and _QUERY_OR_DIVERSION_RE.search(raw_speech):
+            engine = getattr(self, "_triage", None) or TRIAGE
+            escalates = heard.any_present and engine.assess(
+                state.blood_pressure, state.symptoms.merged_with(heard),
+                gestational_weeks=state.gestational_weeks,
+            ).requires_escalation
+            if not escalates:
+                pipeline_event(
+                    "turn", "info", "Conversational diversion escaped to LLM",
+                    f"{len(raw_speech.strip())} chars asked or paused; {qid} stays armed",
+                    event="zero_tts_escaped_to_llm", question_id=qid, turn_id=turn_id,
+                )
+                return False
         complete, wav = intake.ingest_slots(qid, slots, text=raw_speech, language=lang)
 
         # Readings into call state (the only inputs triage reads).
@@ -4865,7 +4905,6 @@ class SakhiAgent(Agent):
                     intake.answered.pop("q06", None)
                     intake.pending_id = "q06"
                     complete, wav = False, localized("assets/audio/prompts/kn/q06_full.wav", lang)
-        heard = detect_symptoms(canon, qid)
         if heard.any_present:
             state.record_symptoms(heard)
         if new.get("bp") or heard.any_present:

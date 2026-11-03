@@ -61,7 +61,7 @@ export default function Welcome() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Get started"
-              android_ripple={{ color: 'rgba(255,255,255,0.18)' }}
+              android_ripple={{ color: 'rgba(255,255,255,0.18)', borderless: false }}
               style={({ pressed }) => [styles.primary, pressed && styles.primaryPressed]}
             >
               <Text style={styles.primaryLabel}>Get started</Text>
@@ -83,9 +83,15 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingHorizontal: 24,
     alignItems: 'center',
+    justifyContent: 'space-between',
   },
   column: {
-    flex: 1,
+    // flexGrow, not flex: 1. Inside a ScrollView `flex: 1` (basis 0, may
+    // shrink) let Yoga clamp the column below its content on Android: on a
+    // short phone or a large font the headline and button overlapped instead
+    // of scrolling. flexGrow fills the screen when there is room and keeps
+    // the content's own height when there is not.
+    flexGrow: 1,
     width: '100%',
     maxWidth: MAX_CONTENT_WIDTH,
     justifyContent: 'space-between',

@@ -111,7 +111,9 @@ export default function Splash() {
           {
             width: SPLASH_LOGO_WIDTH,
             height: LOGO_HEIGHT,
-            transformOrigin: `${LOGO_ZOOM_ORIGIN.x * 100}% ${LOGO_ZOOM_ORIGIN.y * 100}%`,
+            // Array form ([x, y]): the pivot is parsed the same on Android
+            // (Fabric) and iOS; the zoom goes through the stem of the "r".
+            transformOrigin: [`${(LOGO_ZOOM_ORIGIN.x * 100).toFixed(1)}%`, `${(LOGO_ZOOM_ORIGIN.y * 100).toFixed(1)}%`],
           },
           logoStyle,
         ]}

@@ -432,3 +432,68 @@ def test_and_between_implausible_numbers_is_not_a_bp():
     # Diastolic above systolic, or out of range: never a reading.
     assert "diastolic" not in extract_all("ಬಿಪಿ 90 ಮತ್ತು 140", "q06")
     assert "diastolic" not in extract_all("ವಯಸ್ಸು 24 ಮತ್ತು 30 ವಾರ", "q01")
+
+
+# --- conversational escape hatch (2026-11-03) ---------------------------------------
+
+@pytest.mark.parametrize("doubt", [
+    "ಬಿಪಿ ಯಾಕೆ ಮುಖ್ಯ?",          # why is BP important?
+    "ಸ್ವಲ್ಪ ತಾಳಿ",               # wait a little
+    "ಎರಡು ನಿಮಿಷ",                # two minutes
+    "why is bp important",
+    "बीपी क्यों जरूरी है",
+])
+def test_conversational_query_escapes_to_llm(zero_tts, doubt):
+    sakhi, session, state = zero_tts("q06")
+    # Not an answer: hand the turn to the full pipeline (LLM + input guardrails + TTS).
+    assert sakhi._zero_tts_turn(state, doubt, "turn-doubt-1") is False
+    # The question stays armed, no stall spent, no recording re-played.
+    assert state.intake.pending_id == "q06"
+    assert state.intake._stall_counts.get("q06", 0) == 0
+    session.say.assert_not_called()
+
+
+@pytest.mark.parametrize("danger", [
+    "ಫಿಟ್ಸ್ ಬಂದಿದೆ ಏನು ಮಾಡಬೇಕು?",               # fits - what should we do?
+    "ತುಂಬಾ ರಕ್ತಸ್ರಾವ ಆಗುತ್ತಿದೆ ಏನು ಮಾಡಲಿ?",       # heavy bleeding - what do I do?
+    # Fever escalates in the triage engine, so a fever question is referred at
+    # once too: a danger sign is never handed to the model to "answer".
+    "ಅಕ್ಕ ಜ್ವರ ಇದೆ ಏನು ಮಾಡಬೇಕು?",
+])
+def test_danger_sign_during_query_halts_immediately(zero_tts, danger):
+    sakhi, session, state = zero_tts("q06")
+    assert sakhi._zero_tts_turn(state, danger, "turn-emergency-1") is True
+    assert state.intake_locked is True
+    assert state.risk_level == RiskLevel.HIGH_RISK
+    assert sakhi._zt_last_wav == EMERGENCY_WAV
+
+
+@pytest.mark.asyncio
+async def test_slot_answer_with_question_intonation_does_not_escape(zero_tts):
+    sakhi, session, state = zero_tts("q06")
+    # A reading spoken with a questioning tone ("120 over 80?")
+    with pytest.raises(agent.StopResponse):
+        await sakhi.on_user_turn_completed(MagicMock(items=[]), _message("120 ಮೇಲೆ 80?"))
+    assert str(state.blood_pressure) == "120/80"
+    assert state.intake.pending_id == "q07"
+
+
+@pytest.mark.parametrize("pending, answer", [
+    ("q20", "ಕಬ್ಬಿಣ ಮಾತ್ರೆ ತೆಗೆದುಕೊಳ್ಳುತ್ತಿದ್ದಾಳೆ"),   # medication: "iron tablets" is an answer
+    ("q20", "ಯಾವುದೂ ಇಲ್ಲ"),                        # "none" - not "ಯಾವ" (which)
+    ("q19", "ಎಲ್ಲಾ ನಾರ್ಮಲ್"),                      # history: "all normal"
+    ("q15", "ಡಾಕ್ಟರ್ ನರ್ಸ್ ಇದ್ದಾರೆ"),               # birth plan: "doctor and nurse are there"
+])
+def test_topic_words_in_an_answer_do_not_escape(zero_tts, pending, answer):
+    sakhi, session, state = zero_tts(pending)
+    assert sakhi._zero_tts_turn(state, answer, "turn-answer-1") is True
+    assert pending in state.intake.answered
+    session.say.assert_called_once()
+
+
+def test_diversion_regex_is_linear():
+    text = " ".join(["ಕಬ್ಬಿಣ ಮಾತ್ರೆ ತೆಗೆದುಕೊಳ್ಳುತ್ತಿದ್ದಾಳೆ"] * 400)
+    started = time.perf_counter()
+    for _ in range(20):
+        agent._QUERY_OR_DIVERSION_RE.search(text)
+    assert (time.perf_counter() - started) * 1000 < 200
