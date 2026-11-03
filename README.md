@@ -1,5 +1,16 @@
 # ಸಖಿ · Sakhi — Maternal Health Voice Agent
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Digital Public Good](https://img.shields.io/badge/DPG-Candidate-green.svg)](https://digitalpublicgoods.net/)
+[![SDG 3](https://img.shields.io/badge/SDG-3.1%20%26%203.2%20Good%20Health-orange.svg)](https://sdgs.un.org/goals/goal3)
+[![DPDP Act 2023](https://img.shields.io/badge/Privacy-DPDP%20Act%202023%20aligned-success.svg)](#privacy--data-protection)
+
+> **Digital Public Good notice:**
+> Sakhi (Tara) is developed as open-source software, a candidate Digital Public Good, to support **UN Sustainable Development Goal 3 (Good Health and Well-Being)** by reducing maternal and newborn deaths in low-resource settings.
+>
+> **Clinical AI & medical disclaimer (following WHO guidance on AI for health):**
+> Sakhi is **clinical decision support** built for trained community health workers (ASHAs). **Sakhi is not a medical practitioner, does not diagnose, and never names a medicine or a dose.** When a danger sign is reported, Sakhi stops the questions and refers the mother to a doctor or the nearest facility; the mother's SOS alerts her nearest ASHAs and offers a direct call to 108.
+
 A real-time, Kannada-first voice assistant that helps **ASHA workers** screen
 pregnant mothers for **pre-eclampsia** in rural Bidar, Karnataka.
 
@@ -278,6 +289,23 @@ audio-only.
 - Risk status **ratchets upward only** — a later normal reading cannot silently
   clear a red alert already acted on.
 - Every escalation writes an immutable audit entry with the reasons behind it.
+
+---
+
+## Privacy & data protection
+
+Aligned with the India DPDP Act 2023; the full policy, and what is not built
+yet, is in [`SECURITY.md`](SECURITY.md#data-protection-principles).
+
+- Turn logs and pipeline events carry lengths and states, never the mother's words.
+- Aadhaar, PAN, phone and bank numbers are masked before a transcript is stored.
+- Patient-level dashboard routes need a bearer token; the speech gateway refuses
+  requests without its token.
+- An append-only DPDP consent table exists
+  ([`deploy/supabase/20261102_dpdp_consent.sql`](deploy/supabase/20261102_dpdp_consent.sql));
+  recording consent from the app, and an erasure workflow, are not built yet.
+
+Report a vulnerability privately: see [`SECURITY.md`](SECURITY.md).
 
 ---
 

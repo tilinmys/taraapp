@@ -22,7 +22,7 @@
 Sakhi (Tara) demonstrates exceptional low-latency real-time voice orchestration, advanced bilingual turn-taking heuristics, and an exemplary mathematical rule engine for antenatal triage in [`sakhi_triage.py`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/sakhi_triage.py). 
 
 However, from a regulatory, data protection, and open-source licensing perspective, **the repository fails core compliance gates for UNICEF Venture Fund investment and DPGA endorsement**. The application cannot be deployed or certified in its current state due to five catastrophic blockers:
-1. **Live AWS IAM Credentials Stored on Disk:** Plaintext active credentials for `sakhi-egress-uploader` (`AKIASEU6STPHPWJAAIXD`) are stored in [`deploy/aws/.deploy-state/egress-access-key.json`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/deploy/aws/.deploy-state/egress-access-key.json#L1-L9).
+1. **Live AWS IAM Credentials Stored on Disk:** Plaintext active credentials for `sakhi-egress-uploader` (`AKIA...[REDACTED]`) are stored in [`deploy/aws/.deploy-state/egress-access-key.json`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/deploy/aws/.deploy-state/egress-access-key.json#L1-L9).
 2. **Systemic PII Leakage Prior to Sanitization:** Caller speech and names are logged into standard output, written to persistent pipeline event logs, and broadcast over unauthenticated Server-Sent Events (SSE) before guardrails are executed.
 3. **Absence of DPDP-Compliant Digital Consent:** Health intake begins immediately at question `q01` without verifiable, timestamped, multilingual digital consent.
 4. **Unauthenticated Health API Endpoints & IDOR:** The telemetry and status server exposes patient medical records, risk assessments, and live session turns without authentication or access control.
@@ -165,7 +165,7 @@ However, from a regulatory, data protection, and open-source licensing perspecti
   {
       "AccessKey": {
           "UserName": "sakhi-egress-uploader",
-          "AccessKeyId": "AKIASEU6STPHPWJAAIXD",
+          "AccessKeyId": "AKIA...[REDACTED]",
           "Status": "Active",
           "SecretAccessKey": "<redacted: never publish a secret key>",
           "CreateDate": "2026-09-02T17:28:35+00:00"
@@ -254,11 +254,11 @@ However, from a regulatory, data protection, and open-source licensing perspecti
 ### Blocker 1: Plaintext AWS IAM Secret Stored on Disk
 * **File:** [`deploy/aws/.deploy-state/egress-access-key.json:1-9`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/deploy/aws/.deploy-state/egress-access-key.json#L1-L9)
 * **Standard Violated:** ISO/IEC 27001 A.9.4, UNICEF Venture Fund Cybersecurity Guidelines, DPGA Indicator 6.
-* **Flaw:** Plaintext AWS IAM access key ID `AKIASEU6STPHPWJAAIXD` and secret access key are committed to filesystem storage.
+* **Flaw:** Plaintext AWS IAM access key ID `AKIA...[REDACTED]` and secret access key are committed to filesystem storage.
 * **Remediation Steps:**
   1. Revoke the access key immediately in AWS IAM console or CLI:
      ```bash
-     aws iam delete-access-key --user-name sakhi-egress-uploader --access-key-id AKIASEU6STPHPWJAAIXD
+     aws iam delete-access-key --user-name sakhi-egress-uploader --access-key-id AKIA...[REDACTED]
      ```
   2. Refactor [`deploy/aws/push_secrets.sh:135`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/deploy/aws/push_secrets.sh#L135) to eliminate local `.deploy-state/*.json` credential dumping; use IAM Instance Profiles (`AmazonSSMManagedInstanceCore`) and AWS Secrets Manager directly.
 
@@ -454,7 +454,7 @@ The following 6 remediation tasks can be applied immediately with zero risk of b
 
 1. **Adopt Root Open-Source License:** Place an OSI-approved `Apache-2.0` license in the root [`LICENSE`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/LICENSE) file.
 2. **Add Governance Standards:** Add standard [`CONTRIBUTING.md`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/CONTRIBUTING.md) and [`CODE_OF_CONDUCT.md`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/CODE_OF_CONDUCT.md) referencing the Contributor Covenant.
-3. **Deactivate and Purge IAM Key:** Revoke `AKIASEU6STPHPWJAAIXD` in the AWS console and remove [`deploy/aws/.deploy-state/egress-access-key.json`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/deploy/aws/.deploy-state/egress-access-key.json).
+3. **Deactivate and Purge IAM Key:** Revoke `AKIA...[REDACTED]` in the AWS console and remove [`deploy/aws/.deploy-state/egress-access-key.json`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/deploy/aws/.deploy-state/egress-access-key.json).
 4. **Fix Output Guard Script:** In [`guardrails.py:287-290`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/guardrails.py#L287-L290), replace the English receptionist string with the localized Kannada script:
    ```python
    OUTPUT_REPLACEMENT = "ನಮ್ಮ ವೈದ್ಯರು ನಿಮಗೆ ಸೂಕ್ತ ಮಾರ್ಗದರ್ಶನ ನೀಡುತ್ತಾರೆ. ದಯವಿಟ್ಟು ಹತ್ತಿರದ ಆಸ್ಪತ್ರೆಗೆ ಸಂಪರ್ಕಿಸಿ."

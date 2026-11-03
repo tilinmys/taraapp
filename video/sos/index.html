@@ -1,0 +1,55 @@
+<!doctype html>
+<html
+  lang="en"
+  data-resolution="landscape"
+  data-composition-variables='[
+    {"id":"color-ground","type":"color","label":"Ground (blush)","default":"#F7E4E8"},
+    {"id":"color-ink","type":"color","label":"Text","default":"#2B1B21"},
+    {"id":"color-accent","type":"color","label":"Accent (SOS red)","default":"#B3122C"}
+  ]'
+>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>Tara SOS · 9.9 s</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
+    <style>
+      :root {
+        --color-ground: #f7e4e8;
+        --color-ink: #2b1b21;
+        --color-accent: #b3122c;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: var(--color-ground);
+      }
+      #root {
+        position: relative;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Tara SOS, 9.9 s: the mother's SOS from one tap to "Sunita is coming".
+         One scene: the phone is continuous. The overlay is rebuilt from
+         app/src/components/mother/sos.tsx (sizes, colours, timings); every
+         word, name, distance and time comes from the app's own capture
+         (tools/capture-sos.mjs -> assets/app). -->
+    <div data-hf-id="hf-63qc" id="root" data-composition-id="main" data-start="0" data-duration="9.9" data-width="1920" data-height="1080">
+      <div data-hf-id="hf-uj97" id="sos" class="clip" data-composition-id="sos" data-composition-src="compositions/sos.html" data-start="0" data-duration="9.9" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+    </div>
+    <script>
+      window.__timelines = window.__timelines || {};
+      window.__timelines["main"] = gsap.timeline({ paused: true });
+    </script>
+  </body>
+</html>

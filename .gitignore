@@ -86,3 +86,9 @@ docs/*.patch
 
 # Rendered videos (rebuild with: cd video && npm run render)
 video/renders/
+
+# Video generation caches and render outputs
+video/**/renders/
+video/**/snapshots/
+**/.hyperframes/
+**/.thumbnails/

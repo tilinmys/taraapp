@@ -11,24 +11,17 @@ Apache License 2.0 (see [LICENSE](LICENSE)).
 ## Reporting a security vulnerability
 
 **Do not open a public issue for a security problem.** Report it privately
-through the repository's **Security** tab, using **Report a vulnerability**
-(GitHub private vulnerability reporting). Include:
-
-- what an attacker could do, and which data or component is affected;
-- steps to reproduce, or a proof of concept;
-- the commit or release you tested.
-
-What happens next:
-
-- We acknowledge the report within **3 working days**.
-- We give a first assessment and a fix plan within **10 working days**.
-- We agree a disclosure date with you once a fix is released. We credit
-  reporters who want to be credited.
+through the repository's **Security** tab (**Report a vulnerability**) or to
+security@mystree.org. [`SECURITY.md`](SECURITY.md) has what to include, the
+response times (acknowledgment within 48 hours, a fix plan within 7 business
+days) and how health data is protected.
 
 Treat anything that could expose a mother's health record, an ASHA's
 identity, a call recording, or a provider credential as **critical**. If you
 come across real personal data while testing, stop, do not keep a copy, and
 tell us in the report.
+
+Everyone taking part agrees to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Reporting a bug
 

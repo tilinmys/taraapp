@@ -1,7 +1,24 @@
 {
   "name": "mystree-sakhi-workspace",
+  "version": "1.0.0",
   "private": true,
-  "description": "Repo-root shortcuts. The real projects live in app/ (tara UI, Expo Go), mobile/ (voice scaffold) and frontend/ (web dashboard).",
+  "license": "Apache-2.0",
+  "description": "Sakhi (Tara): an open-source Kannada/Hindi voice agent that helps ASHA workers screen pregnant women for pre-eclampsia and other danger signs (SDG 3.1 and 3.2). Repo-root shortcuts; the projects live in app/ (tara app), mobile/ and frontend/ (web dashboard).",
+  "keywords": [
+    "digital-public-good",
+    "unicef-venture-fund",
+    "maternal-health",
+    "asha-worker",
+    "voice-agent",
+    "pre-eclampsia",
+    "indic-nlp",
+    "kannada",
+    "hindi"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tilinmys/taraapp.git"
+  },
   "scripts": {
     "start": "npm --prefix app run start",
     "lan": "npm --prefix app run lan",

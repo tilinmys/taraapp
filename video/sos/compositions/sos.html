@@ -1,0 +1,271 @@
+<template>
+  <style>
+    @font-face { font-family: 'Baloo 2'; font-weight: 400; src: url('assets/fonts/Baloo2_400Regular.ttf'); }
+    @font-face { font-family: 'Baloo 2'; font-weight: 500; src: url('assets/fonts/Baloo2_500Medium.ttf'); }
+    @font-face { font-family: 'Baloo 2'; font-weight: 600; src: url('assets/fonts/Baloo2_600SemiBold.ttf'); }
+    @font-face { font-family: 'Baloo 2'; font-weight: 700; src: url('assets/fonts/Baloo2_700Bold.ttf'); }
+    @font-face { font-family: 'Baloo Tamma 2'; font-weight: 400; src: url('assets/fonts/BalooTamma2_400Regular.ttf'); }
+    @font-face { font-family: 'Baloo Tamma 2'; font-weight: 500; src: url('assets/fonts/BalooTamma2_500Medium.ttf'); }
+    @font-face { font-family: 'Baloo Tamma 2'; font-weight: 600; src: url('assets/fonts/BalooTamma2_600SemiBold.ttf'); }
+    #root {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      background: radial-gradient(1200px 900px at 62% 40%, #fbeff2 0%, #f7e4e8 60%);
+      font-family: 'Baloo 2', 'Baloo Tamma 2', sans-serif;
+      color: #2b1b21;
+    }
+
+    /* ---- the phone (same frame as the Sakhi film) ---------------------- */
+    #phone {
+      position: absolute; left: 300px; top: 61px; width: 444px; height: 957px; padding: 12px;
+      border-radius: 62px; background: #1b1316; box-shadow: 0 40px 80px rgba(43, 27, 33, 0.28);
+    }
+    .screen { position: relative; width: 420px; height: 933px; border-radius: 50px; overflow: hidden; background: #fff; }
+    /* The app's own 412 x 915 pt layout, scaled to the 420 px screen. Static:
+       GSAP never transforms this box, only what is inside it. */
+    #app { position: absolute; left: 0; top: 0; width: 412px; height: 915px; transform: scale(1.0194); transform-origin: 0 0; }
+    #home { position: absolute; left: 0; top: 0; width: 412px; height: 915px; }
+
+    /* ---- the red SOS tab on the right edge (sos.tsx SosTab) ------------- */
+    #halo { position: absolute; left: 360px; top: 378px; width: 58px; height: 92px; border-radius: 30px; background: #e5243f; }
+    #tab {
+      position: absolute; left: 366px; top: 384px; width: 46px; height: 80px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+      border-radius: 23px 0 0 23px; background: #b3122c; box-shadow: -2px 3px 8px rgba(126, 10, 29, 0.35);
+    }
+    #tab-deep { position: absolute; inset: 0; border-radius: 23px 0 0 23px; background: #7e0a1d; opacity: 0; }
+    #tab span { position: relative; color: #fff; font-weight: 600; font-size: 15px; line-height: 22px; letter-spacing: 1px; }
+    #tab svg { position: relative; }
+    #touch { position: absolute; left: 361px; top: 396px; width: 56px; height: 56px; border-radius: 50%; background: rgba(43, 27, 33, 0.22); border: 2px solid #fff; opacity: 0; }
+
+    /* ---- the overlay (sos.tsx SosOverlay) ------------------------------- */
+    #ov { position: absolute; inset: 0; background: #b3122c; opacity: 0; color: #fff; }
+    .kn-overline { position: absolute; left: 0; right: 0; top: 16px; text-align: center; font-weight: 600; font-size: 12px; line-height: 21px; color: rgba(255, 255, 255, 0.82); }
+    /* the stage: 260 pt tall under the overline, disc centred at (206, 181) */
+    .center { position: absolute; left: 206px; top: 181px; }
+    .ring { position: absolute; left: -75px; top: -75px; width: 150px; height: 150px; border-radius: 50%; border: 3px solid #fff; opacity: 0; }
+    #radar { position: absolute; left: -130px; top: -130px; width: 260px; height: 260px; opacity: 0; }
+    .rr { position: absolute; left: 0; top: 0; width: 260px; height: 260px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.35); }
+    #beam { position: absolute; left: 0; top: 0; width: 260px; height: 260px; }
+    .bm { position: absolute; left: 128.5px; top: 0; width: 3px; height: 130px; border-radius: 2px; background: rgba(255, 255, 255, 0.85); transform-origin: 50% 100%; }
+    #disc {
+      position: absolute; left: -75px; top: -75px; width: 150px; height: 150px; border-radius: 50%;
+      background: #fff; box-shadow: 0 0 24px rgba(126, 10, 29, 0.5);
+    }
+    .disc-face { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; opacity: 0; }
+    .disc-face span { color: #b3122c; font-weight: 600; font-size: 48px; line-height: 56px; letter-spacing: 2px; }
+
+    /* each stage's words, list and buttons: the RN column (padding 16/20/24, gap 14) */
+    .page { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 14px; padding: 16px 20px 24px; opacity: 0; }
+    .page > .spacer-top { height: 21px; flex: none; }   /* the overline's line */
+    .page > .spacer-stage { height: 260px; flex: none; }
+    .page > .grow { flex: 1; }
+    .words { display: flex; flex-direction: column; gap: 6px; align-items: center; text-align: center; }
+    .t-title { font-weight: 600; font-size: 26px; line-height: 46px; }
+    .t-body { font-weight: 400; font-size: 17px; line-height: 30px; color: rgba(255, 255, 255, 0.82); }
+    .list { display: flex; flex-direction: column; gap: 8px; }
+    .card { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.12); border: 1.5px solid transparent; }
+    .card.on { background: rgba(255, 255, 255, 0.22); border-color: #fff; }
+    .avatar { flex: none; width: 38px; height: 38px; border-radius: 50%; background: #fff; display: flex; align-items: center; justify-content: center; color: #b3122c; font-weight: 600; font-size: 19px; line-height: 27px; }
+    .who { flex: 1; min-width: 0; }
+    .who b { display: block; font-weight: 600; font-size: 17px; line-height: 30px; white-space: nowrap; }
+    .who i { display: block; font-style: normal; font-weight: 500; font-size: 14px; line-height: 25px; color: rgba(255, 255, 255, 0.82); }
+    .chip { position: relative; flex: none; display: grid; }
+    .chip > span { grid-area: 1 / 1; justify-self: end; padding: 4px 10px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.6); font-weight: 600; font-size: 15px; line-height: 27px; white-space: nowrap; color: #fff; opacity: 0; }
+    .chip > span.strong { background: #fff; border-color: #fff; color: #b3122c; }
+    .actions { display: flex; flex-direction: column; gap: 10px; }
+    .row { display: flex; gap: 10px; }
+    .big { flex: 1; min-height: 56px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 14px; border-radius: 28px; font-weight: 600; font-size: 18px; line-height: 32px; white-space: nowrap; overflow: hidden; }
+    .big.small { min-height: 48px; border-radius: 24px; font-size: 16px; line-height: 28px; }
+    .solid { background: #fff; color: #b3122c; }
+    .outline { border: 2px solid #fff; color: #fff; }
+
+    /* ---- the copy beside the phone ---------------------------------------- */
+    .copy { position: absolute; left: 860px; top: 400px; width: 960px; }
+    .kicker { font-size: 34px; font-weight: 500; color: #5a464d; }
+    .line { font-size: 76px; font-weight: 700; line-height: 1.08; letter-spacing: -0.01em; }
+    .line .w { display: inline-block; }
+    .accent { color: #b3122c; }
+    .small-line { margin-top: 22px; font-size: 34px; font-weight: 500; color: #5a464d; }
+  </style>
+
+  <div data-hf-id="hf-xdou" id="root" data-composition-id="sos" data-width="1920" data-height="1080">
+    <div data-hf-id="hf-5iuv" id="phone">
+      <div data-hf-id="hf-cdmk" class="screen">
+        <div data-hf-id="hf-9gvy" id="app">
+          <img data-hf-id="hf-rhjl" id="home" src="assets/app/mother-home.png" alt="" />
+          <div data-hf-id="hf-tyg7" id="halo"></div>
+          <div data-hf-id="hf-fikd" id="tab" data-layout-ignore>
+            <div data-hf-id="hf-esm1" id="tab-deep"></div>
+            <svg data-hf-id="hf-sber" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path data-hf-id="hf-web8" d="M12 2.5 1.5 21h21L12 2.5z" fill="#fff" /><path data-hf-id="hf-s3kv" d="M12 9.5v5M12 17.5v.6" stroke="#b3122c" stroke-width="2.4" stroke-linecap="round" /></svg>
+            <span data-hf-id="hf-s2t4">SOS</span>
+          </div>
+          <div data-hf-id="hf-ktmq" id="touch"></div>
+
+          <div data-hf-id="hf-uhq3" id="ov" data-layout-ignore>
+            <div data-hf-id="hf-ff4x" class="kn-overline">ತುರ್ತು ಸಹಾಯ</div>
+
+            <!-- countdown: 3 s to cancel a pocket press -->
+            <div data-hf-id="hf-2txv" id="p-count" class="page">
+              <div data-hf-id="hf-1gim" class="spacer-top"></div>
+              <div data-hf-id="hf-fk3h" class="spacer-stage"></div>
+              <div data-hf-id="hf-m60b" class="words">
+                <div data-hf-id="hf-8b1f" class="t-title"><span data-hf-id="hf-irrr" class="n" id="n3">3</span><span data-hf-id="hf-558v" class="n" id="n2" style="display:none">2</span><span data-hf-id="hf-w9l5" class="n" id="n1" style="display:none">1</span> ಸೆಕೆಂಡಿನಲ್ಲಿ ಹತ್ತಿರದ ಆಶಾ ಕಾರ್ಯಕರ್ತೆಯರಿಗೆ ತಿಳಿಸಲಾಗುತ್ತದೆ</div>
+              </div>
+              <div data-hf-id="hf-fk21" class="grow"></div>
+              <div data-hf-id="hf-thy4" class="row">
+                <div data-hf-id="hf-d8ic" class="big outline">ರದ್ದು</div>
+                <div data-hf-id="hf-khl3" class="big solid">ಈಗಲೇ ಕಳುಹಿಸಿ</div>
+              </div>
+            </div>
+
+            <!-- alerting: wave 1, the three nearest ASHAs -->
+            <div data-hf-id="hf-rdbk" id="p-alert" class="page">
+              <div data-hf-id="hf-xxvm" class="spacer-top"></div>
+              <div data-hf-id="hf-nf69" class="spacer-stage"></div>
+              <div data-hf-id="hf-m3m3" class="words">
+                <div data-hf-id="hf-fv0r" class="t-title">ಹತ್ತಿರದ ಆಶಾ ಕಾರ್ಯಕರ್ತೆಯರಿಗೆ ತಿಳಿಸಲಾಗುತ್ತಿದೆ</div>
+                <div data-hf-id="hf-kl5f" class="t-body">ಸೂಚನೆ 1 · ಹತ್ತಿರದ 3 ಜನ</div>
+              </div>
+              <div data-hf-id="hf-33o8" class="list">
+                <div data-hf-id="hf-berk" class="card a-row"><div data-hf-id="hf-zhig" class="avatar">S</div><div data-hf-id="hf-xhzk" class="who"><b data-hf-id="hf-afr2">Sunita · ನಿಮ್ಮ ಆಶಾ</b><i data-hf-id="hf-1jxb">0.8 ಕಿಮೀ · 3 ನಿಮಿಷ</i></div>
+                  <div data-hf-id="hf-sqmm" class="chip"><span data-hf-id="hf-mc11" class="c-alerting">ತಿಳಿಸುತ್ತಿದೆ…</span><span data-hf-id="hf-05st" class="c-alerted">ತಿಳಿಸಲಾಗಿದೆ</span><span data-hf-id="hf-471v" class="c-seen strong" id="seen-0">ನೋಡಿದ್ದಾರೆ</span></div></div>
+                <div data-hf-id="hf-p188" class="card a-row"><div data-hf-id="hf-z37f" class="avatar">R</div><div data-hf-id="hf-e2p4" class="who"><b data-hf-id="hf-m8wq">Rehana</b><i data-hf-id="hf-rxbi">3.4 ಕಿಮೀ · 12 ನಿಮಿಷ</i></div>
+                  <div data-hf-id="hf-gk42" class="chip"><span data-hf-id="hf-i9x5" class="c-alerting">ತಿಳಿಸುತ್ತಿದೆ…</span><span data-hf-id="hf-nfch" class="c-alerted">ತಿಳಿಸಲಾಗಿದೆ</span><span data-hf-id="hf-mdfy" class="c-seen strong" id="seen-1">ನೋಡಿದ್ದಾರೆ</span></div></div>
+                <div data-hf-id="hf-nub5" class="card a-row"><div data-hf-id="hf-vecg" class="avatar">S</div><div data-hf-id="hf-cvs1" class="who"><b data-hf-id="hf-icu8">Shobha</b><i data-hf-id="hf-g0kf">7.7 ಕಿಮೀ · 27 ನಿಮಿಷ</i></div>
+                  <div data-hf-id="hf-gyf3" class="chip"><span data-hf-id="hf-jgu8" class="c-alerting">ತಿಳಿಸುತ್ತಿದೆ…</span><span data-hf-id="hf-om9k" class="c-alerted">ತಿಳಿಸಲಾಗಿದೆ</span><span data-hf-id="hf-1nfx" class="c-seen strong" id="seen-2">ನೋಡಿದ್ದಾರೆ</span></div></div>
+              </div>
+              <div data-hf-id="hf-61x9" class="grow"></div>
+              <div data-hf-id="hf-zgc1" class="actions">
+                <div data-hf-id="hf-ee11" class="big solid"><svg data-hf-id="hf-w2ax" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path data-hf-id="hf-l1e1" d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1L6.6 10.8z" fill="#b3122c" /></svg>108 ಆಂಬ್ಯುಲೆನ್ಸ್‌ಗೆ ಕರೆ ಮಾಡಿ</div>
+                <div data-hf-id="hf-lt04" class="row"><div data-hf-id="hf-td6z" class="big small outline">ನಾನು ಸುರಕ್ಷಿತ, ರದ್ದು ಮಾಡಿ</div></div>
+              </div>
+            </div>
+
+            <!-- coming: Sunita accepted -->
+            <div data-hf-id="hf-no5i" id="p-come" class="page">
+              <div data-hf-id="hf-yc6n" class="spacer-top"></div>
+              <div data-hf-id="hf-om3c" class="spacer-stage"></div>
+              <div data-hf-id="hf-lpb2" class="words">
+                <div data-hf-id="hf-f47x" class="t-title">Sunita ಬರುತ್ತಿದ್ದಾರೆ</div>
+                <div data-hf-id="hf-rwee" class="t-body">ಸುಮಾರು 3 ನಿಮಿಷ. ಇದ್ದಲ್ಲೇ ಇರಿ, ಎಡಮಗ್ಗುಲಲ್ಲಿ ಮಲಗಿ.</div>
+              </div>
+              <div data-hf-id="hf-wzhs" class="list">
+                <div data-hf-id="hf-w4vt" class="card on"><div data-hf-id="hf-u7fd" class="avatar">S</div><div data-hf-id="hf-da32" class="who"><b data-hf-id="hf-k5ya">Sunita · ನಿಮ್ಮ ಆಶಾ</b><i data-hf-id="hf-qylb">0.8 ಕಿಮೀ · 3 ನಿಮಿಷ</i></div><div data-hf-id="hf-hcq4" class="chip"><span data-hf-id="hf-j8ru" class="strong" style="opacity:1">ಬರುತ್ತಿದ್ದಾರೆ</span></div></div>
+                <div data-hf-id="hf-vn2y" class="card"><div data-hf-id="hf-sgjf" class="avatar">R</div><div data-hf-id="hf-c35z" class="who"><b data-hf-id="hf-wczi">Rehana</b><i data-hf-id="hf-prw2">3.4 ಕಿಮೀ · 12 ನಿಮಿಷ</i></div><div data-hf-id="hf-hr15" class="chip"><span data-hf-id="hf-wvqi" class="strong" style="opacity:1">ನೋಡಿದ್ದಾರೆ</span></div></div>
+                <div data-hf-id="hf-i08u" class="card"><div data-hf-id="hf-ulqe" class="avatar">S</div><div data-hf-id="hf-chh0" class="who"><b data-hf-id="hf-vu60">Shobha</b><i data-hf-id="hf-pba7">7.7 ಕಿಮೀ · 27 ನಿಮಿಷ</i></div><div data-hf-id="hf-i5c6" class="chip"><span data-hf-id="hf-18j2" class="strong" style="opacity:1">ನೋಡಿದ್ದಾರೆ</span></div></div>
+              </div>
+              <div data-hf-id="hf-78uc" class="grow"></div>
+              <div data-hf-id="hf-woyt" class="actions">
+                <div data-hf-id="hf-pkwo" class="big solid"><svg data-hf-id="hf-5evx" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path data-hf-id="hf-05kt" d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1L6.6 10.8z" fill="#b3122c" /></svg>Sunita ಅವರಿಗೆ ಕರೆ ಮಾಡಿ</div>
+                <div data-hf-id="hf-y5xm" class="big outline"><svg data-hf-id="hf-6lt0" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path data-hf-id="hf-443y" d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1L6.6 10.8z" fill="#fff" /></svg>108 ಆಂಬ್ಯುಲೆನ್ಸ್‌ಗೆ ಕರೆ ಮಾಡಿ</div>
+                <div data-hf-id="hf-km31" class="row"><div data-hf-id="hf-9yl9" class="big small outline">ನಾನು ಸುರಕ್ಷಿತ, ರದ್ದು…</div><div data-hf-id="hf-gcbq" class="big small outline">ಸಹಾಯ ಬಂದಿದೆ</div></div>
+              </div>
+            </div>
+
+            <!-- the shared stage: ripples (countdown), radar (alerting), the disc -->
+            <div data-hf-id="hf-0oij" class="center">
+              <div data-hf-id="hf-9kqu" class="ring" id="ring0"></div><div data-hf-id="hf-diuv" class="ring" id="ring1"></div><div data-hf-id="hf-2nd8" class="ring" id="ring2"></div>
+              <div data-hf-id="hf-5mmt" class="ring" id="ring3"></div><div data-hf-id="hf-m6qq" class="ring" id="ring4"></div>
+              <div data-hf-id="hf-bgy3" id="radar">
+                <div data-hf-id="hf-zte4" class="rr"></div>
+                <div data-hf-id="hf-r7vm" class="rr" style="transform: scale(0.72)"></div>
+                <div data-hf-id="hf-op93" class="rr" style="transform: scale(0.44)"></div>
+                <div data-hf-id="hf-tgow" id="beam">
+                  <div data-hf-id="hf-4vln" class="bm"></div>
+                  <div data-hf-id="hf-uxdj" class="bm" style="opacity: 0.35; transform: rotate(-10deg)"></div>
+                  <div data-hf-id="hf-31ig" class="bm" style="opacity: 0.15; transform: rotate(-20deg)"></div>
+                </div>
+              </div>
+              <div data-hf-id="hf-6jju" id="disc">
+                <div data-hf-id="hf-zwaa" class="disc-face" id="d3"><span data-hf-id="hf-hs2e">3</span></div>
+                <div data-hf-id="hf-3ueb" class="disc-face" id="d2"><span data-hf-id="hf-hdrd">2</span></div>
+                <div data-hf-id="hf-v6ig" class="disc-face" id="d1"><span data-hf-id="hf-ikog">1</span></div>
+                <div data-hf-id="hf-yuoo" class="disc-face" id="dsos"><span data-hf-id="hf-407k">SOS</span></div>
+                <div data-hf-id="hf-7o41" class="disc-face" id="dok"><svg data-hf-id="hf-t0m1" width="64" height="64" viewBox="0 0 24 24" aria-hidden="true"><circle data-hf-id="hf-x3oe" cx="12" cy="12" r="11" fill="#b3122c" /><path data-hf-id="hf-gekv" d="m7 12.3 3.3 3.2L17 8.8" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" /></svg></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div data-hf-id="hf-o6dt" class="copy" id="c1"><div data-hf-id="hf-12vw" class="kicker">Lakshmi’s own phone</div><div data-hf-id="hf-np12" class="line"><span data-hf-id="hf-7bm4" class="w">Something</span> <span data-hf-id="hf-57ba" class="w">wrong?</span> <span data-hf-id="hf-bjle" class="w accent">One</span> <span data-hf-id="hf-cg7r" class="w accent">tap.</span></div></div>
+    <div data-hf-id="hf-uc3m" class="copy" id="c2"><div data-hf-id="hf-s0y2" class="kicker">SOS</div><div data-hf-id="hf-sogq" class="line"><span data-hf-id="hf-6769" class="w">3</span> <span data-hf-id="hf-ns79" class="w">seconds</span> <span data-hf-id="hf-z575" class="w">to</span> <span data-hf-id="hf-bofs" class="w accent">cancel</span> <span data-hf-id="hf-b7a3" class="w">a</span> <span data-hf-id="hf-clbu" class="w">pocket</span> <span data-hf-id="hf-khrz" class="w">press</span></div></div>
+    <div data-hf-id="hf-ya7n" class="copy" id="c3"><div data-hf-id="hf-gzdm" class="kicker">Alert 1, at once</div><div data-hf-id="hf-t2rr" class="line"><span data-hf-id="hf-p3d1" class="w">3</span> <span data-hf-id="hf-ghnu" class="w">nearest</span> <span data-hf-id="hf-r0wg" class="w">ASHAs</span> <span data-hf-id="hf-z2c9" class="w accent">alerted</span></div></div>
+    <div data-hf-id="hf-asq4" class="copy" id="c4"><div data-hf-id="hf-cyxa" class="kicker">Her own ASHA accepted</div><div data-hf-id="hf-th2s" class="line"><span data-hf-id="hf-w1rf" class="w">Help</span> <span data-hf-id="hf-fj2o" class="w">is</span> <span data-hf-id="hf-1ykb" class="w accent">3</span> <span data-hf-id="hf-snon" class="w accent">minutes</span> <span data-hf-id="hf-jasy" class="w">away</span></div><div data-hf-id="hf-ntvj" class="small-line">Sunita · 0.8 km away</div></div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    const T = { tap: 1.9, ov: 1.92, count: 2.1, alert: 5.1, come: 7.3 };
+    const showWords = (sel, at) =>
+      tl.fromTo(`${sel} .w`, { opacity: 0, filter: 'blur(6px)' }, { opacity: 1, filter: 'blur(0px)', duration: 0.18, ease: 'power4.out', stagger: 0.06 }, at);
+    const fadeIn = (sel, at, extra = {}) => tl.fromTo(sel, { opacity: 0, filter: 'blur(6px)' }, { opacity: 1, filter: 'blur(0px)', duration: 0.2, ease: 'power4.out', ...extra }, at);
+    const clear = (sel, at) => tl.to(sel, { opacity: 0, filter: 'blur(8px)', duration: 0.18, ease: 'power3.in' }, at);
+
+    // ---- 0.0 her home; the SOS tab breathes (SosTab: 1.6 s sine glow) ----
+    tl.fromTo('#halo', { opacity: 0.25, scale: 1 }, { opacity: 0.6, scale: 1.12, duration: 0.8, ease: 'sine.inOut', yoyo: true, repeat: 1 }, 0.2);
+    fadeIn('#c1 .kicker', 0.1);
+    showWords('#c1', 0.2);
+    // 1.0 one tap (pressed: RED_DEEP)
+    tl.fromTo('#touch', { opacity: 0, scale: 1 }, { opacity: 1, scale: 0.86, duration: 0.12, ease: 'power2.out' }, T.tap - 0.12);
+    tl.fromTo('#tab-deep', { opacity: 0 }, { opacity: 1, duration: 0.06 }, T.tap - 0.06);
+    tl.to('#touch', { opacity: 0, scale: 1, duration: 0.15, ease: 'power2.in' }, T.tap + 0.02);
+    clear('#c1', T.tap + 0.05);
+
+    // ---- 1.0 the overlay (FadeIn 180 ms) ----
+    tl.fromTo('#ov', { opacity: 0 }, { opacity: 1, duration: 0.18, ease: 'none' }, T.ov);
+    tl.fromTo('#p-count', { opacity: 0 }, { opacity: 1, duration: 0.01 }, T.ov);
+
+    // ---- 1.2 countdown: 3, 2, 1 -- one beat a second (160 ms out, 840 ms back) ----
+    tl.fromTo('#d3', { opacity: 0 }, { opacity: 1, duration: 0.01 }, T.ov);
+    [0, 1, 2].forEach((k) => {
+      tl.fromTo('#disc', { scale: 1 }, { scale: 1.07, duration: 0.16, ease: 'power1.out', immediateRender: false }, T.count + k);
+      tl.to('#disc', { scale: 1, duration: 0.84, ease: 'power1.inOut' }, T.count + k + 0.16);
+    });
+    tl.set('#d3', { opacity: 0 }, T.count + 1); tl.set('#d2', { opacity: 1 }, T.count + 1);
+    tl.set('#n3', { display: 'none' }, T.count + 1); tl.set('#n2', { display: 'inline' }, T.count + 1);
+    tl.set('#d2', { opacity: 0 }, T.count + 2); tl.set('#d1', { opacity: 1 }, T.count + 2);
+    tl.set('#n2', { display: 'none' }, T.count + 2); tl.set('#n1', { display: 'inline' }, T.count + 2);
+    // ripples: three rings 600 ms apart, each 1.8 s (out-quad), until the alert goes
+    [[0, 0], [1, 0.6], [2, 1.2], [3, 1.8], [4, 2.4]].forEach(([i, d]) => {
+      tl.fromTo(`#ring${i}`, { opacity: 0.55, scale: 1 }, { opacity: 0, scale: 2.4, duration: 1.8, ease: 'power1.out' }, T.count + d);
+    });
+    tl.set('.ring', { opacity: 0 }, T.alert);
+    fadeIn('#c2 .kicker', T.count + 0.1);
+    showWords('#c2', T.count + 0.2);
+    clear('#c2', T.alert - 0.2);
+
+    // ---- 4.2 alerting: radar sweep (2.2 s a turn), wave 1 rows ----
+    tl.set('#p-count', { opacity: 0 }, T.alert);
+    tl.set('#p-alert', { opacity: 1 }, T.alert);
+    tl.set('#d1', { opacity: 0 }, T.alert); tl.set('#dsos', { opacity: 1 }, T.alert);
+    tl.set('#radar', { opacity: 1 }, T.alert);
+    tl.fromTo('#beam', { rotation: 0 }, { rotation: ((T.come - T.alert) / 2.2) * 360, duration: T.come - T.alert, ease: 'none' }, T.alert);
+    tl.fromTo('.a-row', { opacity: 0, y: -25 }, { opacity: 1, y: 0, duration: 0.22, ease: 'power2.out', stagger: 0.09 }, T.alert);
+    tl.set('#p-alert .c-alerting', { opacity: 1 }, T.alert);
+    // "alerted" after 600 ms; "seen" one by one (app: 1.8 / 2.7 / 3.6 s, compressed)
+    tl.set('#p-alert .c-alerting', { opacity: 0 }, T.alert + 0.6);
+    tl.set('#p-alert .c-alerted', { opacity: 1 }, T.alert + 0.6);
+    [0, 1, 2].forEach((i) => {
+      const at = T.alert + 1.0 + i * 0.35;
+      tl.set(`#p-alert .a-row:nth-child(${i + 1}) .c-alerted`, { opacity: 0 }, at);
+      tl.fromTo(`#seen-${i}`, { opacity: 0, scale: 0.9 }, { opacity: 1, scale: 1, duration: 0.18, ease: 'back.out(2)' }, at);
+    });
+    fadeIn('#c3 .kicker', T.alert + 0.1);
+    showWords('#c3', T.alert + 0.2);
+    clear('#c3', T.come - 0.2);
+
+    // ---- 6.6 Sunita accepted: she is coming ----
+    tl.set('#p-alert', { opacity: 0 }, T.come);
+    tl.set('#p-come', { opacity: 1 }, T.come);
+    tl.set('#dsos', { opacity: 0 }, T.come); tl.set('#dok', { opacity: 1 }, T.come);
+    fadeIn('#c4 .kicker', T.come + 0.1);
+    showWords('#c4', T.come + 0.2);
+    fadeIn('#c4 .small-line', T.come + 0.5);
+
+    window.__timelines['sos'] = tl;
+  </script>
+</template>

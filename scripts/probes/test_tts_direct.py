@@ -1,3 +1,11 @@
+# Manual live probe (network / paid providers): run from anywhere, e.g.
+#   python scripts/probes/test_tts_direct.py
+# Kept out of tests/ on purpose (see pytest.ini). It works from the repo root.
+import os as _os, sys as _sys
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+_sys.path.insert(0, _ROOT)
+_os.chdir(_ROOT)
+
 import argparse
 import asyncio
 import os
