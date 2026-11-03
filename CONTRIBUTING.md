@@ -5,8 +5,9 @@ danger signs, in Kannada and Hindi. It handles maternal health data, so a few
 rules here are stricter than in most projects. Please read them before you
 open a pull request.
 
-By contributing you agree that your contribution is licensed under the
-Apache License 2.0 (see [LICENSE](LICENSE)).
+By contributing you agree that your code is licensed under the MIT License
+(see [LICENSE](LICENSE)) and your design and content under CC BY 4.0
+(see [LICENSE-CONTENT.md](LICENSE-CONTENT.md)).
 
 ## Reporting a security vulnerability
 

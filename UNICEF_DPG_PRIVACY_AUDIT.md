@@ -443,7 +443,7 @@ mystree-sakhi/
 ├── Dockerfile.web
 ├── CONTRIBUTING.md                      # Open-source governance and code guidelines
 ├── CODE_OF_CONDUCT.md                   # Contributor Covenant v2.1
-└── LICENSE                              # Apache License 2.0 (OSI-approved)
+└── LICENSE                              # MIT (code) + LICENSE-CONTENT.md: CC BY 4.0 (content), per the UNICEF REOI
 ```
 
 ---
@@ -452,7 +452,7 @@ mystree-sakhi/
 
 The following 6 remediation tasks can be applied immediately with zero risk of breaking existing clinical audio pipelines:
 
-1. **Adopt Root Open-Source License:** Place an OSI-approved `Apache-2.0` license in the root [`LICENSE`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/LICENSE) file.
+1. **Adopt Root Open-Source License:** Resolved. The code is MIT ([`LICENSE`](LICENSE)) and the project's design and content CC BY 4.0 ([`LICENSE-CONTENT.md`](LICENSE-CONTENT.md)), the licences the UNICEF Innovation Fund REOI names; third-party material is listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 2. **Add Governance Standards:** Add standard [`CONTRIBUTING.md`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/CONTRIBUTING.md) and [`CODE_OF_CONDUCT.md`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/CODE_OF_CONDUCT.md) referencing the Contributor Covenant.
 3. **Deactivate and Purge IAM Key:** Revoke `AKIA...[REDACTED]` in the AWS console and remove [`deploy/aws/.deploy-state/egress-access-key.json`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/deploy/aws/.deploy-state/egress-access-key.json).
 4. **Fix Output Guard Script:** In [`guardrails.py:287-290`](file:///c:/Users/Tilin%20Bijoy/Desktop/mystreevoiceagent/mystreevoiceagentiog/guardrails.py#L287-L290), replace the English receptionist string with the localized Kannada script:

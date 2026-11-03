@@ -1,6 +1,7 @@
 # ಸಖಿ · Sakhi — Maternal Health Voice Agent
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Code: MIT](https://img.shields.io/badge/Code-MIT-blue.svg)](LICENSE)
+[![Content: CC BY 4.0](https://img.shields.io/badge/Content-CC%20BY%204.0-lightgrey.svg)](LICENSE-CONTENT.md)
 [![Digital Public Good](https://img.shields.io/badge/DPG-Candidate-green.svg)](https://digitalpublicgoods.net/)
 [![SDG 3](https://img.shields.io/badge/SDG-3.1%20%26%203.2%20Good%20Health-orange.svg)](https://sdgs.un.org/goals/goal3)
 [![DPDP Act 2023](https://img.shields.io/badge/Privacy-DPDP%20Act%202023%20aligned-success.svg)](#privacy--data-protection)

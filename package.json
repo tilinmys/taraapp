@@ -2,7 +2,7 @@
   "name": "mystree-sakhi-workspace",
   "version": "1.0.0",
   "private": true,
-  "license": "Apache-2.0",
+  "license": "MIT",
   "description": "Sakhi (Tara): an open-source Kannada/Hindi voice agent that helps ASHA workers screen pregnant women for pre-eclampsia and other danger signs (SDG 3.1 and 3.2). Repo-root shortcuts; the projects live in app/ (tara app), mobile/ and frontend/ (web dashboard).",
   "keywords": [
     "digital-public-good",
