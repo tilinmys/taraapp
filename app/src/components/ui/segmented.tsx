@@ -5,7 +5,8 @@ import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withSprin
 import { AppText } from '@/components/ui/app-text';
 import { Colors, Haptic, Physics } from '@/constants/theme';
 
-// Two-option segmented toggle (e.g. Create Account / Sign In). The active
+// Segmented toggle of two or three options (Create Account / Sign In; first /
+// second / third visit). The active
 // pill (Cherry Mist + 2 pt Cherry border) springs between the options;
 // light haptic on change.
 
@@ -16,18 +17,19 @@ export function Segmented<T extends string>({
   value,
   onChange,
 }: {
-  options: [Option<T>, Option<T>];
+  options: [Option<T>, Option<T>] | [Option<T>, Option<T>, Option<T>];
   value: T;
   onChange: (id: T) => void;
 }) {
   const reduceMotion = useReducedMotion();
   const [width, setWidth] = useState(0);
+  const n = options.length;
   const index = options.findIndex((o) => o.id === value);
   const x = useSharedValue(index);
 
   const thumbStyle = useAnimatedStyle(() => ({
-    width: width / 2 - 4,
-    transform: [{ translateX: (x.get() * width) / 2 }],
+    width: width / n - 4,
+    transform: [{ translateX: (x.get() * width) / n }],
   }));
 
   const choose = (i: number) => {

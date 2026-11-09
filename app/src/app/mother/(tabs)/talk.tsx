@@ -20,7 +20,9 @@ import { Colors, Haptic } from '@/constants/theme';
 import { fontFor } from '@/constants/typography';
 import { useMother } from '@/data/store';
 import { SUGGESTED, taraAnswer } from '@/data/tara-replies';
-import { useOnboarding } from '@/features/onboarding/context';
+import { useOnboarding, useT } from '@/features/onboarding/context';
+import { TARA_FALLBACK, tx } from '@/i18n/content';
+import { format } from '@/i18n/strings';
 
 // Speak to Tara: the MOTHER's companion (Sakhi is the ASHA's check-in voice;
 // they never share a screen or a look). Tara is drawn as the tara leaf in a
@@ -58,7 +60,8 @@ function TaraAvatar({ mode, size = 88 }: { mode: Mode; size?: number }) {
 }
 
 export default function Talk() {
-  const { demoMother } = useOnboarding();
+  const { demoMother, language } = useOnboarding();
+  const t = useT();
   const mother = useMother(demoMother);
   const reduceMotion = useReducedMotion();
   const [msgs, setMsgs] = useState<Msg[]>([]);
@@ -80,7 +83,9 @@ export default function Talk() {
     const q = text.trim();
     if (!q || mode === 'thinking') return;
     Haptic.light();
-    const reply = taraAnswer(q, mother.asha);
+    // Her own language in, her own language out (the fallback names her ASHA).
+    const r = taraAnswer(q, mother.asha);
+    const reply = { ...r, answer: r.keys.length ? tx(r.answer, language) : format(TARA_FALLBACK[language], { asha: mother.asha }) };
     setMsgs((m) => [...m, { id: m.length, from: 'me', text: q }]);
     setDraft('');
     setMode('thinking');
@@ -94,15 +99,15 @@ export default function Talk() {
     );
   };
 
-  const status = mode === 'thinking' ? 'Tara is thinking…' : 'Ask me anything';
+  const status = mode === 'thinking' ? t('taraThinking') : t('taraAsk');
   const canSend = !!draft.trim() && mode !== 'thinking';
 
   return (
     <Screen
       inTabs
       followContent
-      eyebrow="Your pregnancy companion"
-      title="Speak to Tara"
+      eyebrow={t('taraEyebrow')}
+      title={t('taraTitle')}
       titleVariant="greeting"
       compactTitle="Tara"
 
@@ -110,7 +115,7 @@ export default function Talk() {
       <View style={styles.hero}>
         <TaraAvatar mode={mode} />
         <View style={styles.flex}>
-          <AppText variant="heading">{`Hello ${first}, I'm Tara.`}</AppText>
+          <AppText variant="heading">{t('taraHello', { name: first })}</AppText>
           <AppText variant="caption" color={Colors.inkMuted} accessibilityLiveRegion="polite">
             {status}
           </AppText>
@@ -123,11 +128,11 @@ export default function Talk() {
             <Pressable
               key={s}
               accessibilityRole="button"
-              onPress={() => ask(s)}
+              onPress={() => ask(tx(s, language))}
               style={({ pressed }) => [styles.chip, pressed && styles.pressed]}
             >
               <AppText variant="buttonSmall" color={Colors.ink}>
-                {s}
+                {tx(s, language)}
               </AppText>
             </Pressable>
           ))}
@@ -140,7 +145,7 @@ export default function Talk() {
             key={m.id}
             entering={reduceMotion ? undefined : FadeInDown.springify().damping(25).stiffness(250)}
             style={[styles.bubble, m.from === 'me' ? styles.mine : styles.tara, m.urgent && styles.urgent]}
-            accessibilityLabel={`${m.from === 'me' ? 'You' : 'Tara'}: ${m.text}`}
+            accessibilityLabel={`${m.from === 'me' ? t('taraYou') : 'Tara'}: ${m.text}`}
           >
             <AppText variant={m.urgent ? 'bodyStrong' : 'body'} color={m.urgent ? Colors.cherry : Colors.ink}>
               {m.text}
@@ -153,18 +158,18 @@ export default function Talk() {
         <TextInput
           value={draft}
           onChangeText={setDraft}
-          placeholder="Type your question"
+          placeholder={t('taraPlaceholder')}
           placeholderTextColor={Colors.inkSubtle}
           selectionColor={Colors.cherry}
           returnKeyType="send"
           onSubmitEditing={() => ask(draft)}
-          accessibilityLabel="Your question for Tara"
+          accessibilityLabel={t('taraInputA11y')}
           style={[styles.input, fontFor('input')]}
           maxFontSizeMultiplier={1.4}
         />
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Send question"
+          accessibilityLabel={t('taraSend')}
           accessibilityState={{ disabled: !canSend }}
           disabled={!canSend}
           onPress={() => ask(draft)}
@@ -174,7 +179,7 @@ export default function Talk() {
         </Pressable>
       </View>
       <AppText variant="caption" color={Colors.inkMuted}>
-        Tara gives general guidance, not a diagnosis. In an emergency, call 108.
+        {t('taraNote')}
       </AppText>
     </Screen>
   );

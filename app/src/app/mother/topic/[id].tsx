@@ -11,6 +11,8 @@ import { StateView } from '@/components/system/state-view';
 import { AppText } from '@/components/ui/app-text';
 import { Colors, Haptic } from '@/constants/theme';
 import { TOPICS, type TopicCard, type TopicId } from '@/data/pregnancy';
+import { useT } from '@/features/onboarding/context';
+import { useTx } from '@/i18n/content';
 
 // Topic page (Maternity / Fertility / Reproductive health): the topic's
 // emblem on its own tint, then one calm list of short guides. A row shows
@@ -25,12 +27,14 @@ import { TOPICS, type TopicCard, type TopicId } from '@/data/pregnancy';
  */
 function Guide({ card, tone, open, onToggle, first }: { card: TopicCard; tone: keyof typeof TONES; open: boolean; onToggle: () => void; first: boolean }) {
   const t = TONES[tone];
+  const tr = useT();
+  const tx = useTx();
   return (
     <View style={[!first && styles.divider, card.urgent && styles.urgent]}>
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
-        accessibilityLabel={card.urgent ? `${card.title}, important` : card.title}
+        accessibilityLabel={card.urgent ? `${tx(card.title)}, ${tr('topicImportant')}` : tx(card.title)}
         onPress={() => {
           Haptic.light();
           onToggle();
@@ -41,7 +45,7 @@ function Guide({ card, tone, open, onToggle, first }: { card: TopicCard; tone: k
           <AppIcon name={card.icon} size={30} />
         </View>
         <AppText variant="bodyStrong" color={card.urgent ? Colors.cherry : Colors.ink} style={styles.flex}>
-          {card.title}
+          {tx(card.title)}
         </AppText>
         <View style={open && styles.flip}>
           <Icon name="down" size={20} color={card.urgent ? Colors.cherry : Colors.inkMuted} weight="bold" />
@@ -53,7 +57,7 @@ function Guide({ card, tone, open, onToggle, first }: { card: TopicCard; tone: k
             <View key={tip} style={styles.tip}>
               <View style={[styles.bullet, { backgroundColor: card.urgent ? Colors.cherry : t.fg }]} />
               <AppText variant="body" style={[styles.flex, styles.tipText]}>
-                {tip}
+                {tx(tip)}
               </AppText>
             </View>
           ))}
@@ -66,27 +70,29 @@ function Guide({ card, tone, open, onToggle, first }: { card: TopicCard; tone: k
 export default function TopicPage() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const topic = TOPICS[id as TopicId];
+  const tr = useT();
+  const tx = useTx();
   const [open, setOpen] = useState<string | null>(topic?.cards.find((c) => c.urgent)?.id ?? null);
-  const back = { label: 'Home', onPress: () => goBack('/mother') };
+  const back = { label: tr('topicHome'), onPress: () => goBack('/mother') };
 
   if (!topic) {
     return (
-      <Screen title="Not found" back={back}>
-        <StateView title="This guide has moved" body="Go back home to see all care topics." action={{ label: 'Go to home', onPress: back.onPress }} />
+      <Screen title={tr('topicNotFound')} back={back}>
+        <StateView title={tr('topicMoved')} body={tr('topicMovedBody')} action={{ label: tr('topicGoHome'), onPress: back.onPress }} />
       </Screen>
     );
   }
   return (
     <Screen
       band
-      eyebrow="Explore care"
-      title={topic.title}
+      eyebrow={tr('topicExplore')}
+      title={tx(topic.title)}
       back={back}
       accessory={
         <View style={styles.hero}>
           <Emblem icon={topic.icon} tone={topic.tone} size={64} />
           <AppText variant="body" color={Colors.inkMuted} style={styles.flex}>
-            {topic.blurb}
+            {tx(topic.blurb)}
           </AppText>
         </View>
       }
@@ -106,7 +112,7 @@ export default function TopicPage() {
       <View style={styles.privacy}>
         <AppIcon name="privacy" size={24} />
         <AppText variant="caption" color={Colors.inkMuted} style={styles.flex}>
-          Private: nothing you open here is saved or shared.
+          {tr('topicPrivate')}
         </AppText>
       </View>
     </Screen>

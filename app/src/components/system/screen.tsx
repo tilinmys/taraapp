@@ -1,7 +1,7 @@
 import { useFocusEffect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, type MutableRefObject, type ReactNode } from 'react';
-import { Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
+import { Pressable, StyleSheet, useWindowDimensions, View, type LayoutChangeEvent } from 'react-native';
 import Animated, {
   Easing,
   Extrapolation,
@@ -234,6 +234,11 @@ export function Screen({
     paddingLeft: Math.max(gutter, insets.left + 16),
     paddingRight: Math.max(gutter, insets.right + 16),
   };
+  // A width in points, not '100%': Android's sticky header wrapper has no
+  // width of its own, so a percentage there collapses to the content's
+  // natural width and a long line pushed the panel off both screen edges.
+  const { width: winW } = useWindowDimensions();
+  const colW = Math.min(maxWidth, winW - sidePad.paddingLeft - sidePad.paddingRight);
 
   return (
     <View style={styles.canvas}>
@@ -276,7 +281,7 @@ export function Screen({
               headerH.current = e.nativeEvent.layout.height;
             }}
           >
-            <View style={[styles.column, { maxWidth, gap: 16 }]}>
+            <View style={[styles.column, { width: colW, gap: 16 }]}>
               <Animated.View style={[styles.titleBlock, bigTitleStyle]}>
                 {!!eyebrow && (
                   <AppText variant="caption" color={Colors.inkMuted}>
@@ -296,8 +301,8 @@ export function Screen({
             </View>
           </View>
           {sticky && (
-            <View style={[styles.headerBlock, sidePad, styles.band, styles.stickyBar, hideTitle && styles.stickyTop]}>
-              <View style={[styles.column, { maxWidth }]}>{accessory}</View>
+            <View style={[styles.headerBlock, sidePad, styles.band, styles.stickyBar, hideTitle && styles.stickyTop, { width: winW }]}>
+              <View style={[styles.column, { width: colW }]}>{accessory}</View>
             </View>
           )}
           <View
@@ -311,7 +316,7 @@ export function Screen({
                 : undefined
             }
           >
-            <View style={[styles.column, { maxWidth, gap }]}>
+            <View style={[styles.column, { width: colW, gap }]}>
               {!band && accessory}
               {children}
             </View>

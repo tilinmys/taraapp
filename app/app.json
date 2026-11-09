@@ -42,7 +42,14 @@
       "expo-web-browser",
       "expo-sharing",
       "expo-sqlite",
-      "expo-audio"
+      "expo-audio",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Tara uses the camera to photograph lab reports for the mother's record.",
+          "photosPermission": "Tara uses your photos to attach lab reports to the mother's record."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

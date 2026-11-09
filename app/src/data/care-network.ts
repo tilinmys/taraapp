@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
+import type { AppIconName } from '@/components/system/app-icon';
 import { setSosNotifier } from '@/data/sos';
 import type { Lang, StringKey } from '@/i18n/strings';
 import { kv } from '@/lib/kv';
@@ -14,7 +15,19 @@ import { kv } from '@/lib/kv';
 // --- Places and people ------------------------------------------------------
 
 export type Zone = { id: string; phcId: string; name: string; kn: string; hi: string; ashaId: string };
-export type Staff = { id: string; role: 'asha' | 'doctor'; name: string; phone: string; phcId: string; title?: string };
+export type Staff = {
+  id: string;
+  role: 'asha' | 'doctor';
+  name: string;
+  phone: string;
+  phcId: string;
+  title?: string;
+  credentials?: string;
+  experience?: string;
+  specialty?: string;
+  languages?: string[];
+  bio?: string;
+};
 
 export const PHCS = { hosahalli: { id: 'hosahalli', name: 'Hosahalli PHC', district: 'Bidar' } } as const;
 
@@ -29,15 +42,41 @@ export const ZONES: Zone[] = [
 export const STAFF: Staff[] = [
   { id: 'sunita', role: 'asha', name: 'Sunita', phone: '+910000000001', phcId: 'hosahalli' },
   { id: 'parvati', role: 'asha', name: 'Parvati', phone: '+910000000003', phcId: 'hosahalli' },
-  { id: 'anand', role: 'doctor', name: 'Dr. Anand', phone: '+910000000002', phcId: 'hosahalli', title: 'Medical officer' },
-  { id: 'farzana', role: 'doctor', name: 'Dr. Farzana', phone: '+910000000004', phcId: 'hosahalli', title: 'Obstetrician · Tue & Thu' },
+  {
+    id: 'smitha',
+    role: 'doctor',
+    name: 'Dr. Smitha A.P',
+    phone: '+910000000002',
+    phcId: 'hosahalli',
+    title: 'Founder & High Risk Obstetrician',
+    credentials: 'MBBS, MS, DNB(OBG), FFM, FRM, MBA',
+    experience: '23 Years Experience (15 as specialist)',
+    specialty: 'High Risk Pregnancy, Fetal Programming & Endocrine Care',
+    languages: ['English', 'Kannada', 'Hindi'],
+    bio: 'Founder & High Risk Obstetrician specializing in High Risk Obstetrics and In-utero Fetal Programming with holistic, evidence-based care.',
+  },
+  {
+    id: 'surbhi',
+    role: 'doctor',
+    name: 'Dr. Surbhi Sinha',
+    phone: '+910000000004',
+    phcId: 'hosahalli',
+    title: 'Co-Founder & Fertility Specialist',
+    credentials: 'MBBS, MS, MD, MRCOG (UK), FRM',
+    experience: 'Expert in advanced surgical techniques & fertility solutions',
+    specialty: 'Advanced Surgical Techniques, Fertility Solutions & Rapid Recovery',
+    languages: ['English', 'Hindi'],
+    bio: 'Co-Founder & Fertility Specialist known for precision and empathy, combining cutting-edge technology with compassionate patient care.',
+  },
 ];
 
 /** The signed-in ASHA and doctor of this demo (real app: from the session). */
 export const ME_ASHA = 'sunita';
-export const ME_DOCTOR = 'anand';
+export const ME_DOCTOR = 'smitha';
 
-export const staff = (id: string) => STAFF.find((s) => s.id === id);
+export const staff = (id: string) =>
+  STAFF.find((s) => s.id === id) ??
+  (id === 'anand' ? STAFF.find((s) => s.id === 'smitha') : id === 'farzana' ? STAFF.find((s) => s.id === 'surbhi') : undefined);
 export const zone = (id: string | undefined) => ZONES.find((z) => z.id === id);
 export const zonesOf = (ashaId: string) => ZONES.filter((z) => z.ashaId === ashaId);
 /** Location rule: a mother's only point of contact is her zone's ASHA. */
@@ -102,6 +141,20 @@ export type NoticeKind =
   | 'appointment_update'
   | 'advice_sent'
   | 'sos';
+/** One icon per notice kind, the same in every inbox (doctor, mother, ASHA). */
+export const NOTICE_ICONS: Record<NoticeKind, AppIconName> = {
+  slots_published: 'calendar',
+  booking_confirmed: 'calendar',
+  booking_cancelled: 'calendar',
+  visit_reminder: 'calendar',
+  visit_comment: 'talk',
+  high_risk_flag: 'alert',
+  visit_today: 'ashaWorker',
+  checklist_updated: 'checklist',
+  appointment_update: 'calendar',
+  advice_sent: 'checklist',
+  sos: 'ambulance',
+};
 /**
  * What the notice says, as translation keys + values, so the ASHA and the
  * mother read it in THEIR language (lib/notice-text.ts). `when` (a time in
@@ -154,7 +207,7 @@ type State = { slots: Slot[]; bookings: Booking[]; notices: Notice[]; usual: Rec
 let seq = 1;
 const id = (p: string) => `${p}${seq++}`;
 
-/** Demo seed: Dr. Anand open tomorrow morning and in 3 days; Lakshmi booked. */
+/** Demo seed: Dr. Smitha open tomorrow morning and in 3 days; Lakshmi booked. */
 function seed(): State {
   const now = Date.now();
   const slots: Slot[] = [];
@@ -164,11 +217,11 @@ function seed(): State {
       slots.push({ id: id('s'), doctorId, start, minutes, status });
     }
   };
-  // Dr. Farzana visits on Tuesdays and Thursdays: her next such day.
-  const farzanaDay = [1, 2, 3, 4, 5, 6].find((i) => [2, 4].includes(new Date(dayStart(i, now)).getDay())) ?? 2;
-  mk('anand', 1, 10 * 60, 6, 30, 'open');
-  mk('anand', 3, 14 * 60, 6, 30, 'open');
-  mk('farzana', farzanaDay, 10 * 60, 8, 20, 'open');
+  // Dr. Surbhi visits on Tuesdays and Thursdays: her next such day.
+  const surbhiDay = [1, 2, 3, 4, 5, 6].find((i) => [2, 4].includes(new Date(dayStart(i, now)).getDay())) ?? 2;
+  mk('smitha', 1, 10 * 60, 6, 30, 'open');
+  mk('smitha', 3, 14 * 60, 6, 30, 'open');
+  mk('surbhi', surbhiDay, 10 * 60, 8, 20, 'open');
   const first = slots[0];
   first.status = 'booked';
   const bookings: Booking[] = [
@@ -185,13 +238,15 @@ function seed(): State {
     },
   ];
   const usual: Record<string, UsualWeek> = {
+    smitha: { weekdays: [1, 3, 5], session: 'morning', minutes: 30 },
+    surbhi: { weekdays: [2, 4], session: 'morning', minutes: 20 },
     anand: { weekdays: [1, 3, 5], session: 'morning', minutes: 30 },
     farzana: { weekdays: [2, 4], session: 'morning', minutes: 20 },
   };
   const notices: Notice[] = [
-    { id: id('n'), to: { kind: 'staff', id: 'sunita' }, kind: 'slots_published', title: 'Dr. Farzana opened 8 visit slots', body: `${fmtDay(dayStart(farzanaDay, now))} · 10:00-12:40`, msg: { title: 'aSlotsT', body: 'aSlotsB', p: { doctor: 'Dr. Farzana', n: 8 } }, at: now - 40 * MIN, read: false },
-    { id: id('n'), to: { kind: 'staff', id: 'sunita' }, kind: 'slots_published', title: 'Dr. Anand opened 12 visit slots', body: `${fmtDay(dayStart(1, now))} and ${fmtDay(dayStart(3, now))}`, msg: { title: 'aSlotsT', body: 'aSlotsB', p: { doctor: 'Dr. Anand', n: 12 } }, at: now - 5 * 60 * MIN, read: true },
-    { id: id('n'), to: { kind: 'mother', id: 'lakshmi' }, kind: 'booking_confirmed', title: 'Your doctor visit is booked', body: `Dr. Anand · ${fmtWhen(first.start)} · Sunita booked it for you`, msg: { title: 'nBookedT', body: 'nBookedB', p: { doctor: 'Dr. Anand', when: first.start, asha: 'Sunita' } }, ref: { bookingId: bookings[0].id }, at: now - 3 * 60 * MIN, read: false },
+    { id: id('n'), to: { kind: 'staff', id: 'sunita' }, kind: 'slots_published', title: 'Dr. Surbhi Sinha opened 8 visit slots', body: `${fmtDay(dayStart(surbhiDay, now))} · 10:00-12:40`, msg: { title: 'aSlotsT', body: 'aSlotsB', p: { doctor: 'Dr. Surbhi Sinha', n: 8 } }, at: now - 40 * MIN, read: false },
+    { id: id('n'), to: { kind: 'staff', id: 'sunita' }, kind: 'slots_published', title: 'Dr. Smitha A.P opened 12 visit slots', body: `${fmtDay(dayStart(1, now))} and ${fmtDay(dayStart(3, now))}`, msg: { title: 'aSlotsT', body: 'aSlotsB', p: { doctor: 'Dr. Smitha A.P', n: 12 } }, at: now - 5 * 60 * MIN, read: true },
+    { id: id('n'), to: { kind: 'mother', id: 'lakshmi' }, kind: 'booking_confirmed', title: 'Your doctor visit is booked', body: `Dr. Smitha A.P · ${fmtWhen(first.start)} · Sunita booked it for you`, msg: { title: 'nBookedT', body: 'nBookedB', p: { doctor: 'Dr. Smitha A.P', when: first.start, asha: 'Sunita' } }, ref: { bookingId: bookings[0].id }, at: now - 3 * 60 * MIN, read: false },
   ];
   return { slots, bookings, notices, usual };
 }

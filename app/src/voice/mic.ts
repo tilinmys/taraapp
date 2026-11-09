@@ -24,8 +24,8 @@ export const micSupported = true;
 /** Web needs the Start tap to unlock sound; phones do not. */
 export function unlockAudio() {}
 
-/** expo-audio deactivates the iOS session ~100 ms after a stream stops; speak after that. */
-export const AFTER_STOP_MS = Platform.OS === 'ios' ? 130 : 0;
+/** expo-audio / native audio HAL deactivates ~80-130 ms after a stream stops; speak after that. */
+export const AFTER_STOP_MS = Platform.OS === 'ios' ? 130 : 80;
 
 export async function micPermission(): Promise<boolean> {
   const res = await requestRecordingPermissionsAsync();

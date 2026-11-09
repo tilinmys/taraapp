@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { useWindowDimensions, type ImageSourcePropType } from 'react-native';
 
 import { weightAt } from '@/data/pregnancy';
+import { BABY_SAYS_I18N, FRUIT_I18N } from './week-i18n';
 
 // Canva media engine for the mother's weekly story.
 //
@@ -177,23 +178,26 @@ export type WeekInfo = {
   clinic: { title: string; long: string };
 };
 
-const weight = (w: number) => {
+const UNDER_1G = { en: 'under 1 g', kn: '1 ಗ್ರಾಂಗಿಂತ ಕಡಿಮೆ', hi: '1 ग्राम से कम' } as const;
+const weight = (w: number, lang: 'en' | 'kn' | 'hi' = 'en') => {
   const g = w >= 12 ? weightAt(w) : anchorFor(w).grams;
-  return g < 1 ? 'under 1 g' : g < 1000 ? `~${g < 20 ? Math.round(g) : Math.round(g / 10) * 10} g` : `~${(g / 1000).toFixed(1)} kg`;
+  return g < 1 ? UNDER_1G[lang] : g < 1000 ? `~${g < 20 ? Math.round(g) : Math.round(g / 10) * 10} g` : `~${(g / 1000).toFixed(1)} kg`;
 };
 
-export function weekInfo(week: number): WeekInfo {
+/** The week's story, in her language (Kannada / Hindi from services/week-i18n.ts). */
+export function weekInfo(week: number, lang: 'en' | 'kn' | 'hi' = 'en'): WeekInfo {
   const w = clampWeek(week);
   const a = anchorFor(w);
+  const fruit = lang === 'en' ? null : FRUIT_I18N[a.name]?.[lang];
   return {
     week: w,
     trimester: w <= 12 ? 1 : w <= 26 ? 2 : 3,
-    like: a.like,
-    fruit: a.name,
+    like: fruit ?? a.like,
+    fruit: fruit ?? a.name,
     cm: a.cm,
-    weightLabel: weight(w),
+    weightLabel: weight(w, lang),
     milestone: MILESTONES[w],
-    quote: BABY_SAYS[w],
+    quote: (lang === 'en' ? undefined : BABY_SAYS_I18N[lang][w]) ?? BABY_SAYS[w],
     art: a.src,
     senses: pick(SENSES, w),
     body: pick(BODY, w),

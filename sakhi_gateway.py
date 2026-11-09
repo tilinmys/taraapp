@@ -19,20 +19,13 @@ Providers (measured live from this repo, 2026-10-26):
   sarvam  (when SARVAM_API_KEY is set and SAKHI_APP_PROVIDER=sarvam)
           transcribe + translate in parallel, so "en" is filled.
 
-Standard library only (urllib + a thread pool): no extra dependencies for
-the Vercel function. Every call has a hard timeout; errors come back as JSON
-with a status the app's retry logic understands (5xx / 429 retry, 4xx not).
-Provider requests carry a User-Agent: Gnani's Cloudflare edge rejects
-Python's default one (HTTP 403, "error code: 1010").
-
-ONE request at a time: Gnani allows a single active request per key, shared
-by STT and TTS ("Only 1 active request is allowed at a time", HTTP 429,
-measured). Every Gnani call goes through one priority lane: an answer's STT
-first, then the line Sakhi is saying now, then the next question, then
-warm-up downloads. A 429 that still gets through (another process on the
-same key) is retried briefly. GNANI_CONCURRENCY raises the lane for a plan
-that allows more. On Vercel each instance has its own lane, so production
-with several phones needs a plan with more concurrent requests.
+STT: ONLY the self-hosted open-source model (stt_service/, bodhan-ai/
+  indic-transcribe-flex on a GPU, port 8795, INDIC_STT_URL). Gnani / Sarvam
+  are NOT used for speech-to-text (only for Sakhi's voice, TTS). Kannada /
+  Hindi come back in native script with numbers as WORDS (the app parses
+  them); English in mixed mode. Reply: {text, en, ms, provider: "indic",
+  lang, lid_confidence}. Service down -> 502 / 504 (the app retries, then
+  keeps the answer in its offline outbox).
 """
 
 from __future__ import annotations
@@ -67,7 +60,6 @@ GNANI_MODEL = os.getenv("SAKHI_APP_GNANI_MODEL", "timbre-v2.5")
 SARVAM_BASE = os.getenv("SARVAM_BASE_URL", "https://api.sarvam.ai").rstrip("/")
 SARVAM_TTS_MODEL = os.getenv("SAKHI_APP_TTS_MODEL", "bulbul:v3")
 SARVAM_SPEAKER = os.getenv("SAKHI_APP_TTS_SPEAKER", "shreya")
-SARVAM_STT_MODEL = os.getenv("SAKHI_APP_STT_MODEL", "saaras:v3")
 
 _pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 _tts_cache: "collections.OrderedDict[tuple[str, str, str], bytes]" = collections.OrderedDict()
@@ -236,7 +228,7 @@ def lang_code(lang: str) -> str:
 
 def health() -> dict:
     p = provider()
-    return {"stt": bool(p), "tts": bool(p), "provider": p, "translate": p == "sarvam"}
+    return {"stt": bool(indic_url()), "tts": bool(p), "provider": p, "translate": False, "stt_provider": "indic"}
 
 
 def _request(url: str, body: bytes, headers: dict[str, str], timeout: float) -> bytes:
@@ -272,43 +264,55 @@ def _multipart(fields: dict[str, str], file_field: str, file_bytes: bytes) -> tu
 
 
 # --- STT ----------------------------------------------------------------------
+#
+# Speech-to-text is ONLY the self-hosted open-source model (stt_service/,
+# bodhan-ai/indic-transcribe-flex, INDIC_STT_URL). Gnani / Sarvam are not
+# used for STT at all (they remain Sakhi's voice: TTS). When the service is
+# down or slow the app gets a retryable error (502 / 504) and keeps the
+# answer in its offline outbox until the service is back: no answer is
+# silently sent to another provider.
+
+INDIC_STT_TIMEOUT_S = float(os.getenv("INDIC_STT_TIMEOUT", "6"))
 
 
-def _gnani_stt(wav: bytes, code: str) -> str:
-    # format=transcribe: numbers come back as digits (148 ಬೈ 96), and it is
-    # the faster mode (~220-250 ms vs ~280-320 ms verbatim, measured).
-    body, ctype = _multipart({"language_code": code, "format": "transcribe"}, "audio_file", wav)
-    data = json.loads(_request(f"{GNANI_BASE}/stt/v3", body, {"X-API-Key-ID": os.environ["GNANI_API_KEY"], "Content-Type": ctype}, STT_TIMEOUT_S))
-    return (data.get("transcript") or "").strip()
+def indic_url() -> str:
+    """The self-hosted Indic STT service (stt_service/)."""
+    return os.getenv("INDIC_STT_URL", "").strip().rstrip("/")
 
 
-def _sarvam_stt(wav: bytes, code: str, mode: str) -> str:
-    fields = {"model": SARVAM_STT_MODEL, "mode": mode}
-    if mode != "translate":
-        fields["language_code"] = code
-    body, ctype = _multipart(fields, "file", wav)
-    data = json.loads(_request(f"{SARVAM_BASE}/speech-to-text", body, {"api-subscription-key": os.environ["SARVAM_API_KEY"], "Content-Type": ctype}, STT_TIMEOUT_S))
-    return (data.get("transcript") or "").strip()
+def _indic_stt(wav: bytes, lang: str) -> dict:
+    """One answer through the Indic STT service: {text, en, ms, provider, lang, lid_confidence}."""
+    started = time.perf_counter()
+    raw = _request(f"{indic_url()}/api/stt/raw?lang={lang}", wav, {"Content-Type": "audio/wav"}, INDIC_STT_TIMEOUT_S)
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise GatewayError(502, "Speech service returned an invalid reply.") from exc
+    text = (data.get("text") or "").strip()
+    return {
+        "text": text,
+        "en": (data.get("en") or "").strip() or (text if lang == "en" else ""),
+        "ms": round((time.perf_counter() - started) * 1000),
+        "provider": "indic",
+        "lang": data.get("lang") or lang,
+        "lid_confidence": data.get("lid_confidence"),
+    }
 
 
 def stt(wav: bytes, lang: str) -> dict:
-    """One answer -> native transcript (+ English when the provider can)."""
+    """One answer -> transcript, by the open-source Indic model only."""
     if not wav or len(wav) < 44 or wav[:4] != b"RIFF":
         raise GatewayError(400, "Body must be a WAV file.")
     if len(wav) > MAX_AUDIO_BYTES:
         raise GatewayError(413, "Answer too long (max 25 s).")
-    code = lang_code(lang)
-    p = _require()
-    started = time.perf_counter()
-    if p == "gnani":
-        text = _gnani_call("stt", lambda: _gnani_stt(wav, code))
-        en = text if code == "en-IN" else ""
-    else:
-        native = _pool.submit(_sarvam_stt, wav, code, "transcribe")
-        english = _pool.submit(_sarvam_stt, wav, code, "translate") if code != "en-IN" else None
-        text = native.result()
-        en = english.result() if english else text
-    return {"text": text, "en": en, "ms": round((time.perf_counter() - started) * 1000), "provider": p}
+    lang_code(lang)  # kn / hi / en only
+    if not indic_url():
+        raise GatewayError(503, "Speech-to-text is not configured on the server (set INDIC_STT_URL).")
+    try:
+        return _indic_stt(wav, lang.strip().lower())
+    except OSError as exc:  # connection reset mid-reply
+        log.warning("indic stt failed: %s", exc)
+        raise GatewayError(504, "Speech service unreachable.") from exc
 
 
 # --- TTS ----------------------------------------------------------------------

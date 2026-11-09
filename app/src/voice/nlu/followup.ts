@@ -4,7 +4,7 @@ import { QUESTION_SIGNS, type FollowUp, type Sign } from './intake';
 
 // The words of a follow-up, in the language Sakhi speaks to her.
 // Danger signs she has not answered yet are asked together, in the
-// question's own order: "ಮತ್ತು ಕಣ್ಣು ಮಂಜಾಗುವುದು ಅಥವಾ ಮುಖ ಅಥವಾ ಕೈ ಊತ ಇದೆಯಾ?".
+// question's own order: "ಮತ್ತು ಕಣ್ಣು ಮಂಜಾಗುವುದು ಅಥವಾ ಮುಖ ಕೈಗಳಲ್ಲಿ ಊತ ಇದೆಯಾ?".
 // Every possible line is listed by allFollowUps(), so all of them are
 // recorded in Sakhi's voice (scripts/prerecord_sakhi.py builds the same
 // texts; voice/__tests__/prerecorded.test.ts fails if one is missing).
@@ -22,6 +22,10 @@ const SIGN_WORD: Record<Sign, StringKey> = {
   fever: 'sgFever',
   vomiting: 'sgVomiting',
   breathless: 'sgBreathless',
+  discharge: 'sgDischarge',
+  tired: 'sgTired',
+  palpitations: 'sgPalpitations',
+  reducedMovement: 'sgReducedMovement',
 };
 
 export function signsLine(lang: Lang, signs: Sign[]) {
@@ -42,7 +46,7 @@ function leftovers(signs: Sign[]): Sign[][] {
 
 /** All follow-up lines a check-in can say, in this language. */
 export function allFollowUps(lang: Lang): string[] {
-  const keys: StringKey[] = ['vAskName', 'vAskAge', 'vAskDiastolic', 'vAskPara', 'vAskAllergy', 'vAskMeds', 'vAskHb', 'vAskSugar'];
+  const keys: StringKey[] = ['vAskHowMany', 'vAskDate'];
   const lines = keys.map((k) => STRINGS[lang][k]);
   for (const signs of Object.values(QUESTION_SIGNS)) for (const rest of leftovers(signs)) lines.push(signsLine(lang, rest));
   return [...new Set(lines)];

@@ -46,7 +46,15 @@
     {
       "name": "app-docs",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8097", "--bind", "127.0.0.1", "--directory", "app"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8097",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "app"
+      ],
       "port": 8097
     },
     {
@@ -57,6 +65,15 @@
         "cd mobile && npx expo start --web --port 8099"
       ],
       "port": 8099
+    },
+    {
+      "name": "app-web",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "cd app && npx expo start --web --port 8082"
+      ],
+      "port": 8082
     }
   ]
 }

@@ -1,11 +1,10 @@
-import { router, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
+import { router } from 'expo-router';
+import { useEffect, useState } from 'react';
 import { Linking, Pressable, StyleSheet, View } from 'react-native';
-import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated, { cancelAnimation, useAnimatedStyle, useSharedValue, withRepeat, withSpring, withTiming } from 'react-native-reanimated';
 
 import { MissingMother } from '@/components/mother/missing-mother';
-import { ChecklistCard, ChecklistSheet, MedicinesCard } from '@/components/mother/today-cards';
-import { WeeklyStoryHero } from '@/components/mother/weekly-story-hero';
+import { ChecklistCard, MedicinesCard, MotherChecklistSheet } from '@/components/mother/today-cards';
 import { AppIcon, type AppIconName } from '@/components/system/app-icon';
 import { Icon } from '@/components/system/icon';
 import { Rise } from '@/components/system/rise';
@@ -20,10 +19,13 @@ import { useMother, type MotherRecord } from '@/data/store';
 import { useOnboarding, useT } from '@/features/onboarding/context';
 import { STATUS_PILL } from '@/lib/appt-status';
 import { whenLabel } from '@/lib/day-label';
+import { useSpeech } from '@/hooks/use-speech';
+import { tx } from '@/i18n/content';
+import type { Lang } from '@/i18n/strings';
 
 // Mother home, "Care begins with you." Built for a first-time, rural user:
 // big pictures, one idea per card, the same card shape everywhere.
-//   1 Weekly story   fruit reveal + the baby's words (this week and past)
+//   (The weekly story card is removed: her week is in the header.)
 //   2 Talk to Tara   THE main action: one big card, the talk icon
 //   3 Quick tiles    three equal picture tiles: My health · Book doctor ·
 //                    Kicks, so her readings are never more than one tap away
@@ -128,12 +130,35 @@ function NextVisit({ mother }: { mother: MotherRecord }) {
 }
 
 /** The doctor's advice, once he sent it: numbered steps, who, when. */
+/** The language a text is written in (the doctor writes in English, or in her language). */
+const scriptLang = (text: string, fallback: Lang): Lang => (/[ಀ-೿]/.test(text) ? 'kn' : /[ऀ-ॿ]/.test(text) ? 'hi' : /[a-z]/i.test(text) ? 'en' : fallback);
+
 function DoctorAdvice({ mother }: { mother: MotherRecord }) {
   const t = useT();
   const { language } = useOnboarding();
+  // In her language when the advice is one of the known lines; a doctor's own words as he wrote them.
+  const advice = (mother.advice ?? []).map((a) => tx(a, mother.language ?? language));
+  const text = advice.map((a, i) => `${i + 1}. ${a}`).join(' ');
+  // Read in the language the advice is written in, so the voice says the words right.
+  const speech = useSpeech(scriptLang(text, mother.language ?? language));
+  const playing = speech.speakingId === 'advice';
+  const pulse = useSharedValue(1);
+  const pulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulse.get() }] }));
+  // The icon pulses while she listens, and rests when the reading ends (or is stopped).
+  useEffect(() => {
+    if (playing) pulse.set(withRepeat(withTiming(1.18, { duration: 600 }), -1, true));
+    else {
+      cancelAnimation(pulse);
+      pulse.set(withTiming(1));
+    }
+  }, [playing, pulse]);
   if (!mother.advice?.length || !mother.adviceAt) return null;
+  const toggle = () => {
+    Haptic.light();
+    speech.speak('advice', text);
+  };
   return (
-    <View style={styles.advice} accessible accessibilityLabel={`${t('doctorAdvice')}. ${mother.advice.join('. ')}`}>
+    <View style={styles.advice} accessible={false} accessibilityLabel={`${t('doctorAdvice')}. ${advice.join('. ')}`}>
       <View style={styles.adviceHead}>
         <AppIcon name="doctor" size={36} />
         <View style={styles.flex}>
@@ -143,7 +168,22 @@ function DoctorAdvice({ mother }: { mother: MotherRecord }) {
           </AppText>
         </View>
       </View>
-      {mother.advice.map((a, i) => (
+      {/* Listen: the phone reads the advice aloud (she may not read). */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ selected: playing }}
+        accessibilityLabel={playing ? t('stopListening') : t('listenResults')}
+        onPress={toggle}
+        style={({ pressed }) => [styles.listen, playing && styles.listenOn, pressed && styles.pressedSoft]}
+      >
+        <Animated.View style={pulseStyle}>
+          <Icon name={playing ? 'close' : 'speaker'} size={18} color={playing ? Colors.onCherry : Colors.cherry} />
+        </Animated.View>
+        <AppText variant="buttonSmall" color={playing ? Colors.onCherry : Colors.cherry}>
+          {playing ? t('stopListening') : t('listenResults')}
+        </AppText>
+      </Pressable>
+      {advice.map((a, i) => (
         <View key={`${i}-${a}`} style={styles.adviceRow}>
           <AppText variant="label" color={Colors.cherry} style={styles.adviceNum}>
             {`${i + 1}.`}
@@ -161,30 +201,29 @@ type Contact = { id: string; name: string; role: string; icon: AppIconName; acti
 type T = ReturnType<typeof useT>;
 
 /** Her Care Circle: HER village's ASHA (call), her PHC's doctors (book), 108 (call). */
-function careCircle(mother: MotherRecord, t: T): Contact[] {
+function careCircle(mother: MotherRecord, t: T, lang: Lang): Contact[] {
   const asha = ashaForZone(mother.zoneId);
   const phc = zone(mother.zoneId)?.phcId ?? 'hosahalli';
   return [
     ...(asha ? [{ id: asha.id, name: asha.name, role: t('yourAsha'), phone: asha.phone, icon: 'ashaWorker' as const, action: 'call' as const }] : []),
-    ...doctorsOf(phc).map((d) => ({ id: d.id, name: d.name, role: d.title ?? 'Doctor', icon: 'doctor' as const, action: 'book' as const })),
+    ...doctorsOf(phc).map((d) => ({ id: d.id, name: d.name, role: tx(d.title ?? 'Doctor', lang), icon: 'doctor' as const, action: 'book' as const })),
     { id: '108', name: '108', role: t('ambulance'), phone: '108', icon: 'ambulance' as const, action: 'call' as const },
   ];
 }
 
 export default function MotherHome() {
   const { demoMother } = useOnboarding();
-  const { story } = useLocalSearchParams<{ story?: string }>();
   const mother = useMother(demoMother);
   if (!mother) return <MissingMother />;
   // The baby's hello plays over these tabs (see (tabs)/_layout.tsx).
-  // Keyed by mother so the week and the story reset when the mother changes.
-  return <Dashboard key={mother.id} mother={mother} skipStory={story === 'skip'} />;
+  // Keyed by mother so everything resets when the mother changes.
+  return <Dashboard key={mother.id} mother={mother} />;
 }
 
-function Dashboard({ mother, skipStory }: { mother: MotherRecord; skipStory: boolean }) {
-  const realWeek = weekOf(mother.weeksLabel);
-  const [week, setWeek] = useState(realWeek);
+function Dashboard({ mother }: { mother: MotherRecord }) {
+  const week = weekOf(mother.weeksLabel);
   const t = useT();
+  const { language } = useOnboarding();
   const net = useNetwork();
   const unread = inbox(net, { kind: 'mother', id: mother.id }).filter((n) => !n.read).length;
   const plan = useCarePlan(mother.id);
@@ -206,7 +245,7 @@ function Dashboard({ mother, skipStory }: { mother: MotherRecord; skipStory: boo
       overlay={
         <BottomSheet open={checklist} onClose={() => setChecklist(false)} progress={sheet} title={t('todayChecklist')} closeLabel={t('close')}>
           {checklist && (
-            <ChecklistSheet
+            <MotherChecklistSheet
               plan={plan}
               asha={mother.asha}
               onSaved={(allDone) => {
@@ -218,13 +257,8 @@ function Dashboard({ mother, skipStory }: { mother: MotherRecord; skipStory: boo
         </BottomSheet>
       }
     >
-      {/* 1 Weekly story */}
-      <Rise index={0}>
-        <WeeklyStoryHero realWeek={realWeek} week={week} onWeekChange={setWeek} skipStory={skipStory} />
-      </Rise>
-
       {/* 2 Talk to Tara: the main action */}
-      <Rise index={1}>
+      <Rise index={0}>
         <PressCard label={`${t('talkTara')}. ${t('talkTaraHint')}`} onPress={() => router.navigate('/mother/talk')} style={styles.talk}>
           <View style={styles.talkWell}>
             <AppIcon name="talk" size={52} />
@@ -244,14 +278,14 @@ function Dashboard({ mother, skipStory }: { mother: MotherRecord; skipStory: boo
       </Rise>
 
       {/* 3 Quick tiles: three equal pictures */}
-      <Rise index={2} style={styles.tiles}>
+      <Rise index={1} style={styles.tiles}>
         <QuickTile icon="scan" label={t('myHealth')} hint={t('myHealthHint')} onPress={() => router.push('/mother/health')} />
         <QuickTile icon="doctor" label={t('bookDoctor')} hint={t('bookDoctorHint')} onPress={() => router.push('/mother/doctors')} />
         <QuickTile icon="kicks" label={t('countKicks')} hint={t('countKicksHint')} onPress={() => router.navigate({ pathname: '/mother/pregnancy', params: { open: 'kicks' } })} />
       </Rise>
 
       {/* 4 Today */}
-      <Rise index={3} style={styles.section}>
+      <Rise index={2} style={styles.section}>
         <AppText variant="heading" accessibilityRole="header">
           {t('today')}
         </AppText>
@@ -262,12 +296,12 @@ function Dashboard({ mother, skipStory }: { mother: MotherRecord; skipStory: boo
       </Rise>
 
       {/* 5 Care Circle */}
-      <Rise index={4} style={styles.section}>
+      <Rise index={3} style={styles.section}>
         <AppText variant="heading" accessibilityRole="header">
           {t('careCircle')}
         </AppText>
         <View style={styles.circle}>
-          {careCircle(mother, t).map((c, i) => (
+          {careCircle(mother, t, language).map((c, i) => (
             <View key={c.id} style={[styles.contact, i > 0 && styles.divider]}>
               <AppIcon name={c.icon} size={40} />
               <View style={styles.flex}>
@@ -314,6 +348,9 @@ const styles = StyleSheet.create({
   visit: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 14, borderRadius: 18, backgroundColor: Colors.band, borderWidth: 1, borderColor: Colors.bandLine },
   advice: { gap: 10, padding: 14, borderRadius: 18, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.bandLine },
   adviceHead: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  listen: { alignSelf: 'flex-start', minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, borderRadius: 22, borderWidth: 1.5, borderColor: Colors.cherry, backgroundColor: Colors.surface },
+  listenOn: { backgroundColor: Colors.cherry },
+  pressedSoft: { opacity: 0.8 },
   adviceRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   adviceNum: { width: 22, paddingTop: 2 },
   visitBooked: { backgroundColor: Colors.sageTint, borderColor: `${Colors.sage}33` },

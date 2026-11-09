@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { useSharedValue } from 'react-native-reanimated';
 
@@ -13,8 +13,12 @@ import { carePlanStore } from '@/data/care-plan';
 import { dayPlanStore } from '@/data/day-plan';
 import { doctorReview } from '@/data/doctor-review';
 import { store } from '@/data/store';
-import { useOnboarding, type Role } from '@/features/onboarding/context';
+import { useOnboarding, useT, type Role } from '@/features/onboarding/context';
 import { LANGUAGES } from '@/i18n/strings';
+import { voiceDb } from '@/voice/db';
+import type { Diagnostics } from '@/voice/db-types';
+import { gateway } from '@/voice/gateway';
+import { flushOfflineOutbox } from '@/voice/outbox-worker';
 
 // Profile: the same screen for every role, reached from the top-right icon
 // of each workspace. Who you are, your language, demo controls (until the
@@ -123,6 +127,8 @@ export default function Profile() {
         </View>
       </View>
 
+      {role === 'asha' && <DiagnosticsCard />}
+
       <View style={styles.section}>
         <AppText variant="overline" color={Colors.inkMuted}>
           DEMO CONTROLS
@@ -170,7 +176,84 @@ export default function Profile() {
   );
 }
 
+/**
+ * Diagnostics & sync (ASHA, or a supervisor holding her phone): how many
+ * answers wait in the offline outbox, how fast speech-to-text answers, the
+ * audio engine, and "Sync now". Counts and timings only: never an answer,
+ * a name or her voice (voice/db getDiagnostics).
+ */
+function DiagnosticsCard() {
+  const t = useT();
+  const [d, setD] = useState<Diagnostics | null>(null);
+  const [sync, setSync] = useState<{ busy: boolean; note: string | null }>({ busy: false, note: null });
+  const load = useCallback(() => voiceDb.getDiagnostics().then(setD, () => setD(null)), []);
+  useEffect(() => {
+    load();
+  }, [load]);
+  const syncNow = async () => {
+    Haptic.light();
+    if (gateway.offline) {
+      setSync({ busy: false, note: t('diagNoNet') });
+      return;
+    }
+    setSync({ busy: true, note: null });
+    const n = await flushOfflineOutbox().catch(() => 0);
+    await load();
+    setSync({ busy: false, note: t('diagSynced', { n }) });
+  };
+  const owed = d?.owedOutbox ?? 0;
+  const lines: { label: string; value: string; warn?: boolean }[] = [
+    { label: t('diagOutbox'), value: owed ? t('diagOutboxN', { n: owed }) : t('diagOutboxNone'), warn: owed > 0 },
+    { label: t('diagAvgStt'), value: d?.avgLatencyMs ? `${(d.avgLatencyMs / 1000).toFixed(1)} s` : t('diagAvgNone') },
+    { label: t('diagEngine'), value: 'PCM16 16 kHz · VAD' },
+    { label: t('diagSessions'), value: t('diagSessionsN', { n: d?.totalSessions ?? 0, d: d?.completedTurns ?? 0 }) },
+  ];
+  return (
+    <View style={styles.section}>
+      <AppText variant="overline" color={Colors.inkMuted}>
+        {t('diagTitle')}
+      </AppText>
+      <View style={[styles.group, styles.diag]}>
+        {lines.map((l) => (
+          <View key={l.label} style={styles.diagRow}>
+            <AppText variant="caption" color={Colors.inkMuted}>
+              {l.label}
+            </AppText>
+            <AppText variant="label" color={l.warn ? Colors.pumpkinInk : Colors.ink}>
+              {l.value}
+            </AppText>
+          </View>
+        ))}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ busy: sync.busy }}
+          disabled={sync.busy}
+          onPress={syncNow}
+          style={({ pressed }) => [styles.syncBtn, (pressed || sync.busy) && styles.rowPressed]}
+        >
+          <Icon name="reset" size={18} color={Colors.cherry} />
+          <AppText variant="buttonSmall" color={Colors.cherry}>
+            {sync.busy ? t('diagSyncing') : t('diagSync')}
+          </AppText>
+        </Pressable>
+        {!!sync.note && (
+          <AppText variant="caption" color={Colors.inkMuted} align="center" accessibilityLiveRegion="polite">
+            {sync.note}
+          </AppText>
+        )}
+        <AppText variant="caption" color={Colors.inkSubtle}>
+          {t('diagPrivacy')}
+        </AppText>
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  diag: { gap: 10, padding: 16 },
+  // Label above value: long Kannada / Hindi values wrap at full width, never squeezed.
+  diagRow: { gap: 2 },
+  syncBtn: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 24, borderWidth: 1.5, borderColor: Colors.cherry, backgroundColor: Colors.surface },
   identity: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16, borderRadius: Layout.radius, backgroundColor: Colors.shell },
   section: { gap: 8 },
   group: { borderRadius: Layout.radius, backgroundColor: Colors.shell, overflow: 'hidden' },

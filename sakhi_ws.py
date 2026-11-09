@@ -13,7 +13,8 @@ Roles (the same split as Live Sakhi, docs/VOICE_IN_APP_DESIGN.md 10/11):
       and on iOS a recording session mutes playback anyway).
   this SERVER is the ears and the mouth: Gnani's voice (Kaveri) for lines,
       Silero VAD on the streamed audio to find where the answer starts and
-      ends, Gnani STT for the words. Provider keys never leave it.
+      ends, the self-hosted Indic STT model for the words (sakhi_gateway.stt).
+      Provider keys never leave it.
 
 Protocol. Text frames are JSON; binary frames are audio.
   app -> server

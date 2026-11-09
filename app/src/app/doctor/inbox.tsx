@@ -11,29 +11,14 @@ import { StateView } from '@/components/system/state-view';
 import { AppText } from '@/components/ui/app-text';
 import { BottomSheet } from '@/components/ui/bottom-sheet';
 import { Colors } from '@/constants/theme';
-import { ME_DOCTOR, fmtWhen, inbox, isActive, network, useNetwork, type Notice } from '@/data/care-network';
+import { ME_DOCTOR, NOTICE_ICONS, fmtWhen, inbox, isActive, network, useNetwork, type Notice } from '@/data/care-network';
 import { useMothers } from '@/data/store';
-import type { AppIconName } from '@/components/system/app-icon';
 
 // Doctor: notifications (the bell on his home). Newest first; new ones are
 // highlighted until he leaves the page. One tap does the obvious thing:
 //   high-risk alert from an ASHA   -> opens that mother's case
 //   booking / ASHA message         -> opens the visit's message thread (reply)
 //   anything else                  -> nothing to open
-
-const ICON: Record<Notice['kind'], AppIconName> = {
-  high_risk_flag: 'alert',
-  visit_comment: 'talk',
-  booking_confirmed: 'calendar',
-  booking_cancelled: 'calendar',
-  slots_published: 'calendar',
-  visit_reminder: 'calendar',
-  visit_today: 'ashaWorker',
-  checklist_updated: 'checklist',
-  appointment_update: 'calendar',
-  advice_sent: 'checklist',
-  sos: 'ambulance',
-};
 
 export default function DoctorInbox() {
   const net = useNetwork();
@@ -72,7 +57,7 @@ export default function DoctorInbox() {
           {list.map((n) => (
             <NavCard
               key={n.id}
-              icon={ICON[n.kind]}
+              icon={NOTICE_ICONS[n.kind]}
               title={n.title}
               line={`${n.body.split('\n').join(' ')}\n${fmtWhen(n.at)}`}
               status={!n.read ? { label: 'New', tone: n.kind === 'high_risk_flag' ? 'alert' : 'info' } : undefined}

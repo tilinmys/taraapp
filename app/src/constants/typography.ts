@@ -106,8 +106,11 @@ const DEVANAGARI = /[ऀ-ॿ꣠-ꣿ]/;
 export function scriptOf(char: string): Script | null {
   if (KANNADA.test(char)) return 'kannada';
   if (DEVANAGARI.test(char)) return 'devanagari';
-  if (/[A-Za-z0-9]/.test(char)) return 'latin';
-  return null; // punctuation, spaces, symbols: join the neighbouring run
+  if (/[A-Za-z]/.test(char)) return 'latin';
+  // Digits, punctuation, spaces, symbols: join the neighbouring run. Baloo 2
+  // and Baloo Tamma 2 both carry ASCII digits, so "1. ತಾಯಿಯ ವಯಸ್ಸು 24" stays ONE
+  // Kannada run: one <Text>, no nested span for Android to mis-measure.
+  return null;
 }
 
 /** Split text into runs of a single script so each run gets the right Baloo cut. */
@@ -116,8 +119,14 @@ export function splitByScript(text: string): { text: string; script: Script }[] 
   let current: Script | null = null;
   let buffer = '';
   for (const ch of text) {
-    const s: Script = scriptOf(ch) ?? current ?? 'latin';
-    if (s !== current && buffer) {
+    const own = scriptOf(ch);
+    // Digits / punctuation before any letter ("1. ತಾಯಿ") wait for the first script.
+    if (own === null && current === null) {
+      buffer += ch;
+      continue;
+    }
+    const s: Script = own ?? current ?? 'latin';
+    if (s !== current && buffer && current !== null) {
       runs.push({ text: buffer, script: current ?? 'latin' });
       buffer = '';
     }
@@ -138,32 +147,58 @@ const INDIC_LINE: Record<Exclude<Script, 'latin'>, number> = {
   kannada: 1.75, // Baloo Tamma 2: 1078 + 673 per 1000
   devanagari: 1.6, // Baloo 2: 1078 + 524 per 1000
 };
+// The SAME visual size in every language: at one point size, Baloo Tamma 2
+// (Kannada) and Baloo 2's Devanagari draw bigger than its Latin, so a screen
+// switched to Kannada or Hindi looked like its text had grown, and cards
+// grew taller (grids broke unevenly, most on Android). Indic runs are set a
+// little smaller so they match the English size, and their line height
+// follows that size: a card keeps its height in every language.
+const INDIC_SIZE: Record<Exclude<Script, 'latin'>, number> = {
+  kannada: 0.86,
+  devanagari: 0.92,
+};
+
+/** The point size a role is set at in a script (Indic: scaled to look the same as Latin). */
+export function sizeFor(role: TypeRole, script: Script = 'latin', size: number = Type[role].size): number {
+  return script === 'latin' ? size : Math.round(size * INDIC_SIZE[script]);
+}
 
 /** The line height a role needs in a script (Latin: the scale's own). */
-export function lineHeightFor(role: TypeRole, script: Script = 'latin', size: number = Type[role].size): number {
+export function lineHeightFor(role: TypeRole, script: Script = 'latin', size: number = sizeFor(role, script)): number {
   const base = Type[role].lineHeight;
   return script === 'latin' ? base : Math.max(base, Math.ceil(size * INDIC_LINE[script]));
 }
 
+// Android adds the font's own top / bottom padding inside every text box, on
+// top of the line height: Baloo's tall ascenders then push text off-centre
+// in buttons and pills and clip Indic matras. The line heights above already
+// fit the glyphs, so that padding is switched off.
+const ANDROID_TEXT: TextStyle = Platform.OS === 'android' ? { includeFontPadding: false } : {};
+
 export function fontFor(role: TypeRole, script: Script = 'latin'): TextStyle {
   const r: Role = Type[role];
   if (r.script) {
-    return { fontFamily: Families.script, fontSize: r.size, lineHeight: r.lineHeight, letterSpacing: r.letterSpacing };
+    return { fontFamily: Families.script, fontSize: r.size, lineHeight: r.lineHeight, letterSpacing: r.letterSpacing, ...ANDROID_TEXT };
   }
   if (r.hand) {
-    if (script === 'latin') return { fontFamily: Families.hand, fontSize: r.size, lineHeight: r.lineHeight };
+    if (script === 'latin') return { fontFamily: Families.hand, fontSize: r.size, lineHeight: r.lineHeight, ...ANDROID_TEXT };
     // Satisfy has no Kannada / Devanagari: set that run in Baloo, sized to
     // sit with the script's smaller x-height.
     const size = Math.round(r.size * 0.78);
-    return { fontFamily: Families[script][r.weight], fontSize: size, lineHeight: lineHeightFor(role, script, size) };
+    return { fontFamily: Families[script][r.weight], fontSize: size, lineHeight: lineHeightFor(role, script, size), ...ANDROID_TEXT };
   }
+  const size = sizeFor(role, script);
   return {
     fontFamily: Families[script][r.weight],
-    fontSize: r.size,
-    lineHeight: lineHeightFor(role, script),
+    fontSize: size,
+    lineHeight: lineHeightFor(role, script, size),
     letterSpacing: script === 'latin' ? r.letterSpacing : 0, // never track Indic scripts
+    ...ANDROID_TEXT,
   };
 }
+
+/** The script her language is written in (for TextInputs: Kannada needs Baloo Tamma 2). */
+export const scriptForLang = (lang: string): Script => (lang === 'kn' ? 'kannada' : lang === 'hi' ? 'devanagari' : 'latin');
 
 /** Monospace for rule codes and audit traces (system face: always present). */
 export const MONO = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });

@@ -1,7 +1,8 @@
 import { useSyncExternalStore } from 'react';
 
-import { ANTENATAL_QUESTIONS, evaluate, isHighRisk, RULES, type AnswerRecord, type RuleHit } from '@/data/mockScreening';
-import { ME_DOCTOR, dayStart, network, zonesOf } from '@/data/care-network';
+import { evaluate, isHighRisk, questionsFor, RULES, type AnswerRecord, type RuleCode, type RuleHit, type Sign, type Visit } from '@/data/mockScreening';
+import { ME_ASHA, ME_DOCTOR, dayStart, network, zonesOf } from '@/data/care-network';
+import { clinicalFacts, type ClinicalEntry } from '@/data/clinical';
 import type { Lang } from '@/i18n/strings';
 import { kv } from '@/lib/kv';
 
@@ -24,6 +25,10 @@ export type CheckInReport = {
   rules: string[]; // fired rule codes, most severe first
   answers: Record<string, AnswerRecord>;
   transcript: TranscriptLine[];
+  /** Which visit's questionnaire it was (data/mockScreening.ts VISIT_QUESTIONS). */
+  visit?: Visit;
+  /** When it was filed (ms). */
+  at?: number;
 };
 
 /** Vitals over the last visits, oldest first (latest = last item). */
@@ -43,6 +48,21 @@ export type Vitals = {
  */
 export type Consent = { granted: boolean; at: number; by: string; notice: string; lang: string };
 export const CONSENT_NOTICE_VERSION = 'v1.0';
+
+/**
+ * A blood-pressure recheck the ASHA set for her after a raised reading
+ * (>= 140/90, rule PE-01: re-check, and refer to the PHC today). Saved with her
+ * record and shown until her next check-in records a new reading.
+ */
+export type BpRecheck = { dueAt: number; at: number; by: string; bp: string };
+export const BP_RECHECK_HOURS = 6;
+
+/**
+ * A danger sign she reported during a check-in, and what the ASHA did about
+ * it when Sakhi paused (the MCP danger-sign protocol): referred her for an
+ * urgent check, or noted it and carried on with the questions.
+ */
+export type Referral = { code: RuleCode; signs: Sign[]; text: string; status: 'referred' | 'noted'; at: number; by: string };
 
 export type MotherRecord = {
   id: string;
@@ -71,6 +91,19 @@ export type MotherRecord = {
   escalation?: Escalation;
   /** Her consent to voice check-ins (see Consent). */
   consent?: Consent;
+  /** A BP recheck set after a raised reading (see BpRecheck). */
+  bpRecheck?: BpRecheck;
+  /** What the ASHA / health worker entered per visit (measurements, examination, tests), newest first. */
+  clinical?: ClinicalEntry[];
+  /** Danger signs reported in check-ins and what was done (see Referral), newest first. */
+  referrals?: Referral[];
+  /**
+   * Her first-visit answers (registration: history, conditions), kept for
+   * good: later visits only ask what changed.
+   */
+  profile?: Record<string, AnswerRecord>;
+  /** The visit of the check-in in progress. */
+  draftVisit?: Visit;
   referred: boolean;
   /** Past check-ins, newest first. */
   history: { when: string; high: boolean; note: string }[];
@@ -91,10 +124,22 @@ export type MotherRecord = {
    * list). Overrides the computed status on the ASHA's screens; "needs_care"
    * also puts her with the high-risk cases in the doctor's queue.
    */
-  ashaFlag?: 'well' | 'needs_care';
+  /**
+   * The ASHA's own call ("How is she?"): Well, Recheck in 6 h (bpRecheck is
+   * set with it) or Needs care. Cleared ('well' / 'recheck') when new
+   * findings arrive (a check-in, a new BP), so an old call never hides them.
+   */
+  ashaFlag?: AshaFlag;
+  /** Uploaded lab reports, newest first (the Lab report card shows their history). */
+  labReports?: LabUpload[];
 };
 
 /** What the ASHA fills in to add a pregnant woman (everything else comes from Sakhi). */
+export type AshaFlag = 'well' | 'recheck' | 'needs_care';
+
+/** An uploaded lab report: what the ASHA named it, and the photo / file kept on the phone. */
+export type LabUpload = { id: string; name: string; uri: string; kind: 'image' | 'pdf' | 'file'; at: number; by: string };
+
 export type NewMother = { name: string; months: number; language: Lang; zoneId: string; phone?: string };
 /** Her details the ASHA can correct later (the same fields as adding her). */
 export type MotherDetails = NewMother;
@@ -103,11 +148,9 @@ export type Escalation = { note: string; at: number; by: string };
 const weeksFor = (months: number) => `${Math.round(months * 4.35)}w 0d`;
 
 /** A readable transcript rebuilt from saved answers (seed data, old visits). */
-export function transcriptFrom(answers: Record<string, AnswerRecord>, name: string): TranscriptLine[] {
-  const lines: TranscriptLine[] = [
-    { from: 'sakhi', text: `Namaskara! Please answer my 24 questions about ${name} by speaking.` },
-  ];
-  for (const q of ANTENATAL_QUESTIONS) {
+export function transcriptFrom(answers: Record<string, AnswerRecord>, name: string, visit: Visit): TranscriptLine[] {
+  const lines: TranscriptLine[] = [{ from: 'sakhi', text: `Namaskara! I will ask a few questions about ${name}.` }];
+  for (const q of questionsFor(visit)) {
     const a = answers[q.id];
     if (!a) continue;
     lines.push({ from: 'sakhi', text: q.en }, { from: 'asha', text: a.value, danger: a.danger });
@@ -115,31 +158,8 @@ export function transcriptFrom(answers: Record<string, AnswerRecord>, name: stri
   return lines;
 }
 
-/**
- * Today's reading from the spoken answers (BP q06, weight q07, Hb and sugar
- * q26), appended to the trend. Anything not stated carries the last value
- * forward, so a chart never jumps to zero.
- */
-export function vitalsAfter(v: Vitals, answers: Record<string, AnswerRecord>): Vitals {
-  const last = (a: number[]) => a[a.length - 1];
-  const bp = answers.q06?.value.match(/(\d{2,3})\s*\/\s*(\d{2,3})/);
-  const kg = answers.q07?.value.match(/(\d{2,3}(?:\.\d)?)\s*kg/i);
-  const hb = answers.q26?.value.match(/hb\s*(\d{1,2}(?:\.\d)?)/i);
-  const sugar = answers.q26?.value.match(/sugar\s*(\d{2,3})/i);
-  // A newly added mother has no history: a value that is neither stated nor
-  // known yet is simply not added (never an empty / NaN point).
-  const add = (a: number[], v: number | undefined) => (v === undefined || Number.isNaN(v) ? a : [...a, v]);
-  return {
-    sys: add(v.sys, bp ? Number(bp[1]) : last(v.sys)),
-    dia: add(v.dia, bp ? Number(bp[2]) : last(v.dia)),
-    weight: add(v.weight, kg ? Number(kg[1]) : last(v.weight)),
-    hb: add(v.hb, hb ? Number(hb[1]) : last(v.hb)),
-    sugar: add(v.sugar, sugar ? Number(sugar[1]) : last(v.sugar)),
-  };
-}
-
-function seedReport(id: string, when: string, answers: Record<string, AnswerRecord>, name: string, asha: string): CheckInReport {
-  const hits = evaluate(answers);
+function seedReport(id: string, when: string, answers: Record<string, AnswerRecord>, name: string, asha: string, visit: Visit, clinical?: ClinicalEntry[]): CheckInReport {
+  const hits = evaluate(answers, clinicalFacts(clinical));
   return {
     id: `${id}-seed`,
     when,
@@ -147,15 +167,31 @@ function seedReport(id: string, when: string, answers: Record<string, AnswerReco
     high: isHighRisk(hits),
     rules: hits.map((h) => h.code),
     answers,
-    transcript: transcriptFrom(answers, name),
+    transcript: transcriptFrom(answers, name, visit),
+    visit,
   };
 }
 
-function fullAnswers(overrides: Record<string, AnswerRecord>, name: string): Record<string, AnswerRecord> {
+/** A visit's answers, all typical, with these overrides. */
+function fullAnswers(visit: Visit, overrides: Record<string, AnswerRecord>): Record<string, AnswerRecord> {
   const base: Record<string, AnswerRecord> = {};
-  for (const q of ANTENATAL_QUESTIONS) base[q.id] = { value: q.sampleNormal, danger: false };
-  base.q01 = { value: name, danger: false };
+  for (const q of questionsFor(visit)) base[q.id] = { value: q.sampleNormal, danger: false };
   return { ...base, ...overrides };
+}
+
+/** A seeded clinical entry: her latest vitals, measured by the ASHA `daysAgo`. */
+function seedClinical(v: Vitals, visit: Visit, daysAgo: number, extra: Record<string, string> = {}): ClinicalEntry[] {
+  const at = dayStart(-daysAgo) + 10 * 3_600_000;
+  const last = (a: number[]) => a[a.length - 1];
+  const entry = (value: string, source: 'measured' | 'examination' = 'measured') => ({ value, by: ME_ASHA, at, source });
+  const fields: ClinicalEntry['fields'] = {
+    bp: entry(`${last(v.sys)}/${last(v.dia)}`),
+    weight: entry(String(last(v.weight))),
+    pallor: entry('no', 'examination'),
+    oedema: entry('no', 'examination'),
+  };
+  for (const [k, val] of Object.entries(extra)) fields[k] = entry(val, k === 'pallor' || k === 'oedema' ? 'examination' : 'measured');
+  return [{ visit, at, by: ME_ASHA, fields, tests: { hb: { status: 'done', result: String(last(v.hb)), by: ME_ASHA, at } }, added: { sys: true, dia: true, weight: true, hb: true } }];
 }
 
 const initial: Omit<MotherRecord, 'draft'>[] = [
@@ -168,14 +204,7 @@ const initial: Omit<MotherRecord, 'draft'>[] = [
     village: 'Hosahalli PHC',
     asha: 'Sunita',
     lastCheck: 'Today, 10:42',
-    answers: fullAnswers(
-      {
-        q06: { value: '148/96 mmHg', danger: true },
-        q09: { value: 'Severe headache for 2 days, blurred vision', danger: true },
-        q24: { value: 'Both feet swollen since last week', danger: true },
-      },
-      'Lakshmi D., 26',
-    ),
+    answers: fullAnswers(3, { warning: { value: 'Headache, Blurred vision', danger: true, signs: ['headache', 'vision'] } }),
     advice: [
       'Come to the PHC today so the doctor can check your blood pressure again.',
       'Rest lying on your left side and avoid heavy work until you are seen.',
@@ -184,6 +213,7 @@ const initial: Omit<MotherRecord, 'draft'>[] = [
     nextVisit: 'Today, 14:00',
     dueSoon: false,
     vitals: { sys: [118, 126, 138, 148], dia: [76, 82, 90, 96], hb: [11.2, 10.6, 10.1, 9.6], sugar: [96, 104, 108, 112], weight: [55.4, 57.0, 58.9, 61.2] },
+    clinical: seedClinical({ sys: [148], dia: [96], hb: [9.6], sugar: [], weight: [61.2] }, 3, 0, { oedema: 'yes' }),
     reports: [],
     referred: false,
     history: [
@@ -201,11 +231,12 @@ const initial: Omit<MotherRecord, 'draft'>[] = [
     village: 'Kadur PHC',
     asha: 'Sunita',
     lastCheck: 'Yesterday, 16:10',
-    answers: fullAnswers({ q12: { value: 'Fewer movements since yesterday', danger: true } }, 'Meena S., 23'),
+    answers: fullAnswers(3, { movement: { value: 'Fewer movements', danger: true, signs: ['reducedMovement'] } }),
     advice: null,
     nextVisit: 'Today, 16:30',
     dueSoon: true,
     vitals: { sys: [112, 114, 116, 118], dia: [72, 74, 74, 76], hb: [10.9, 10.8, 10.6, 10.6], sugar: [92, 95, 98, 98], weight: [54.1, 55.8, 56.9, 58.0] },
+    clinical: seedClinical({ sys: [118], dia: [76], hb: [10.6], sugar: [], weight: [58.0] }, 3, 1),
     reports: [],
     referred: false,
     history: [
@@ -222,7 +253,7 @@ const initial: Omit<MotherRecord, 'draft'>[] = [
     village: 'Hosahalli PHC',
     asha: 'Sunita',
     lastCheck: '4 days ago',
-    answers: fullAnswers({}, 'Kavitha R., 24'),
+    answers: fullAnswers(2, {}),
     advice: [
       'Keep taking your iron and calcium tablets every day.',
       'Eat one extra meal a day with greens, dal and milk.',
@@ -247,7 +278,7 @@ const initial: Omit<MotherRecord, 'draft'>[] = [
     village: 'Kadur PHC',
     asha: 'Sunita',
     lastCheck: '9 days ago',
-    answers: fullAnswers({}, 'Roopa K., 21'),
+    answers: fullAnswers(1, { name: { value: 'Roopa K.', danger: false }, age: { value: '21 years', danger: false }, village: { value: 'Aliyabad', danger: false }, firstPregnancy: { value: 'Yes, first pregnancy', danger: false } }),
     advice: null,
     nextVisit: 'In 3 days',
     dueSoon: true,
@@ -265,7 +296,7 @@ const initial: Omit<MotherRecord, 'draft'>[] = [
     village: 'Hosahalli PHC',
     asha: 'Sunita',
     lastCheck: '6 days ago',
-    answers: fullAnswers({}, 'Shabana B., 24'),
+    answers: fullAnswers(2, {}),
     advice: null,
     nextVisit: 'In 2 weeks',
     dueSoon: false,
@@ -285,7 +316,7 @@ const initial: Omit<MotherRecord, 'draft'>[] = [
     village: 'Hosahalli PHC',
     asha: 'Parvati',
     lastCheck: '2 weeks ago',
-    answers: fullAnswers({}, 'Renuka M., 22'),
+    answers: fullAnswers(2, {}),
     advice: null,
     nextVisit: 'In 1 week',
     dueSoon: false,
@@ -298,18 +329,22 @@ const initial: Omit<MotherRecord, 'draft'>[] = [
 
 // Every seeded mother already has her latest visit as a voice report; seeded
 // advice was sent by Dr. Anand yesterday.
-const seeded: MotherRecord[] = initial.map((m) => ({
-  ...m,
-  draft: null,
-  reports: [seedReport(m.id, m.lastCheck, m.answers, m.name, m.asha)],
-  ...(m.advice ? { adviceAt: dayStart(-1) + 17 * 3_600_000, adviceBy: ME_DOCTOR } : {}),
-}));
+const seeded: MotherRecord[] = initial.map((m) => {
+  const visit = m.answers.name ? 1 : m.answers.movement ? 3 : 2;
+  return {
+    ...m,
+    draft: null,
+    reports: [seedReport(m.id, m.lastCheck, m.answers, m.name, m.asha, visit, m.clinical)],
+    ...(visit === 1 ? { profile: m.answers } : {}),
+    ...(m.advice ? { adviceAt: dayStart(-1) + 17 * 3_600_000, adviceBy: ME_DOCTOR } : {}),
+  };
+});
 
 // --- Saved on the phone --------------------------------------------------
 // Seeded women keep only the fields the ASHA / doctor changed; women she
 // added are kept whole (without a check-in draft).
 const SAVE_KEY = 'tara.mothers.v1';
-const SAVED_FIELDS = ['name', 'months', 'weeksLabel', 'phone', 'language', 'zoneId', 'ashaFlag', 'escalation', 'consent', 'advice', 'adviceAt', 'adviceBy', 'referred'] as const;
+const SAVED_FIELDS = ['name', 'months', 'weeksLabel', 'phone', 'language', 'zoneId', 'ashaFlag', 'escalation', 'consent', 'bpRecheck', 'labReports', 'clinical', 'referrals', 'advice', 'adviceAt', 'adviceBy', 'referred'] as const;
 type Saved = { added: MotherRecord[]; patches: Record<string, Partial<MotherRecord>> };
 
 function load(): MotherRecord[] {
@@ -340,6 +375,18 @@ let state: MotherRecord[] = load();
 const listeners = new Set<() => void>();
 // Conversation captured in the session, waiting for the summary to file it
 // under the report id the session chose (so the summary shows exactly that report).
+/** Today's report (filed before the measurements / lab results) is re-checked with them. */
+function recheckToday(reports: CheckInReport[], clinical: ClinicalEntry[], now: number) {
+  const facts = clinicalFacts(clinical);
+  return reports.map((r, k) => {
+    if (k !== 0 || (r.at ?? 0) < dayStart(0, now)) return r;
+    const hits = evaluate(r.answers, facts);
+    return { ...r, high: isHighRisk(hits), rules: hits.map((h) => h.code) };
+  });
+}
+
+// An answer the outbox may fill in later: nothing real was recorded for it.
+const LATE_FILLABLE = /^(no answer|not clear|skipped)/i;
 const transcripts = new Map<string, { reportId: string; lines: TranscriptLine[] }>();
 const emit = () => listeners.forEach((l) => l());
 /** A saved change: everyone sees it now, and it is kept on the phone. */
@@ -359,9 +406,9 @@ export const store = {
     return () => listeners.delete(l);
   },
   get: () => state,
-  /** A new check-in starts from a blank draft, so rules only see today's answers. */
-  startCheckIn(id: string) {
-    update(id, (m) => ({ ...m, draft: {} }));
+  /** A new check-in (of `visit`) starts from a blank draft, so rules only see today's answers. */
+  startCheckIn(id: string, visit: Visit = 1) {
+    update(id, (m) => ({ ...m, draft: {}, draftVisit: visit }));
   },
   recordAnswer(id: string, qid: string, answer: AnswerRecord) {
     update(id, (m) => ({ ...m, draft: { ...(m.draft ?? {}), [qid]: answer } }));
@@ -385,6 +432,66 @@ export const store = {
     transcripts.set(id, { reportId, lines });
   },
   /**
+   * An answer recorded offline was transcribed later (voice/outbox-worker.ts).
+   * It fills that question ONLY where nothing real is there yet (no answer, or
+   * a "not clear / no answer" placeholder), never over an answer the ASHA
+   * corrected. Goes to the draft while the check-in is still open, else to its
+   * filed report (rules re-run, the same deterministic rules), and to her
+   * current answers when it is her latest report. The "will be written when
+   * online" line in the conversation becomes her words. Returns whether
+   * anything changed.
+   */
+  updateTurnTranscript(
+    id: string,
+    reportId: string,
+    turn: { qid: string; question: string; text: string; record: AnswerRecord; placeholders: string[] },
+  ): boolean {
+    const m = state.find((x) => x.id === id);
+    if (!m) return false;
+    const open = (a?: AnswerRecord) => !a || (!a.corrected && LATE_FILLABLE.test(a.value));
+    const fixLines = (lines: TranscriptLine[]) => {
+      const at = lines.findIndex((l) => l.from === 'sakhi' && l.text === turn.question);
+      const from = at < 0 ? 0 : at + 1;
+      const j = lines.findIndex((l, k) => k >= from && l.from === 'asha' && turn.placeholders.includes(l.text));
+      if (j < 0) return lines;
+      const sub = turn.record.value === turn.text ? undefined : turn.record.value;
+      return lines.map((l, k) => (k === j ? { ...l, text: turn.text, sub, danger: turn.record.danger } : l));
+    };
+    const report = m.reports.find((r) => r.id === reportId);
+    if (!report) {
+      // Still in the check-in (or its review): the draft and the pending conversation.
+      if (!m.draft) return false;
+      const pending = transcripts.get(id);
+      if (pending?.reportId === reportId) transcripts.set(id, { reportId, lines: fixLines(pending.lines) });
+      if (!open(m.draft[turn.qid])) return false;
+      update(id, (cur) => ({ ...cur, draft: { ...(cur.draft ?? {}), [turn.qid]: turn.record } }));
+      return true;
+    }
+    if (!open(report.answers[turn.qid])) return false;
+    const latest = m.reports[0]?.id === reportId;
+    update(id, (cur) => {
+      const reports = cur.reports.map((r) => {
+        if (r.id !== reportId) return r;
+        const answers = { ...r.answers, [turn.qid]: turn.record };
+        const hits = evaluate(answers, clinicalFacts(cur.clinical));
+        return { ...r, answers, high: isHighRisk(hits), rules: hits.map((h) => h.code), transcript: fixLines(r.transcript) };
+      });
+      const filed = reports.find((r) => r.id === reportId) as CheckInReport;
+      if (!latest) return { ...cur, reports };
+      const hits = evaluate(filed.answers, clinicalFacts(cur.clinical));
+      const note = hits.length ? hits.map((h) => RULES[h.code].title).join(', ') : 'All answers normal';
+      return {
+        ...cur,
+        reports,
+        answers: filed.answers,
+        ...(filed.visit === 1 ? { profile: filed.answers } : {}),
+        history: cur.history.length ? [{ ...cur.history[0], high: filed.high, note }, ...cur.history.slice(1)] : cur.history,
+      };
+    });
+    persist();
+    return true;
+  },
+  /**
    * Commits the draft as the mother's latest check-in and files the report.
    * Idempotent: does nothing without a draft or if that report already exists,
    * so a re-render, remount or reload can never file a check-in twice.
@@ -397,7 +504,8 @@ export const store = {
     transcripts.delete(id);
     update(id, (cur) => {
       const answers = cur.draft ?? cur.answers;
-      const hits = evaluate(answers);
+      const visit = cur.draftVisit ?? 1;
+      const hits = evaluate(answers, clinicalFacts(cur.clinical));
       const high = isHighRisk(hits);
       const note = hits.length ? hits.map((h) => RULES[h.code].title).join(', ') : 'All answers normal';
       const report: CheckInReport = {
@@ -408,17 +516,24 @@ export const store = {
         rules: hits.map((h) => h.code),
         answers,
         transcript,
+        visit,
+        at: Date.now(),
       };
       return {
         ...cur,
         answers,
+        // The first visit is her registration: kept for good.
+        ...(visit === 1 ? { profile: answers } : {}),
         draft: null,
+        draftVisit: undefined,
         lastCheck: 'Just now',
         referred: false, // new findings need a fresh review
         history: [{ when: 'Just now', high, note }, ...cur.history],
         reports: [report, ...cur.reports],
-        vitals: vitalsAfter(cur.vitals, answers),
         isNew: false,
+        bpRecheck: undefined, // the new reading supersedes a pending recheck
+        // New findings need a fresh call: "Well" / "Recheck" were about the old ones.
+        ashaFlag: cur.ashaFlag === 'needs_care' ? 'needs_care' : undefined,
       };
     });
     persist();
@@ -467,9 +582,21 @@ export const store = {
     kv.remove(SAVE_KEY);
     emit();
   },
-  /** The ASHA marks her Well or Needs care (telling the doctor is a separate, confirmed step). */
-  setFlag(id: string, flag: 'well' | 'needs_care') {
-    update(id, (m) => ({ ...m, ashaFlag: flag }));
+  /**
+   * "How is she?": ONE choice, its side effects kept in step.
+   *   well        she is fine: a pending recheck is cancelled (the ASHA's call)
+   *   recheck     a BP recheck BP_RECHECK_HOURS from now (kept if one is already set)
+   *   needs_care  escalated (telling the doctor is a separate, confirmed step):
+   *               the recheck is superseded by the doctor's review
+   */
+  setFlag(id: string, flag: AshaFlag, by: string = ME_ASHA) {
+    const at = Date.now();
+    update(id, (m) => {
+      if (flag !== 'recheck') return { ...m, ashaFlag: flag, bpRecheck: undefined };
+      const last = (a: number[]) => a[a.length - 1];
+      const bp = m.vitals.sys.length && m.vitals.dia.length ? `${last(m.vitals.sys)}/${last(m.vitals.dia)}` : '';
+      return { ...m, ashaFlag: 'recheck', bpRecheck: m.bpRecheck ?? { dueAt: at + BP_RECHECK_HOURS * 3_600_000, at, by, bp } };
+    });
     persist();
   },
   /**
@@ -501,6 +628,93 @@ export const store = {
     update(id, (m) => ({ ...m, consent: { granted: input.granted, at: Date.now(), by: input.by, notice: CONSENT_NOTICE_VERSION, lang: input.lang } }));
     persist();
   },
+  /** Raised BP: the ASHA sets a recheck BP_RECHECK_HOURS from now (rest, then measure again). */
+  scheduleBpRecheck(id: string, input: { by: string; bp: string }) {
+    const at = Date.now();
+    // The same state as choosing "Recheck in 6 h" in How is she?
+    update(id, (m) => ({ ...m, ashaFlag: m.ashaFlag === 'needs_care' ? 'needs_care' : 'recheck', bpRecheck: { dueAt: at + BP_RECHECK_HOURS * 3_600_000, at, by: input.by, bp: input.bp } }));
+    persist();
+  },
+  /**
+   * The ASHA saves this visit's measurements and examination. One entry per
+   * day: saving again the same day updates it (and its point on the vitals
+   * trend) instead of adding a visit. Lab results entered the same day are
+   * kept (they are the Lab report's, see saveLab). A new BP is the recheck:
+   * it clears a pending one, and a "Well" / "Recheck" call made on the old
+   * reading. Her risk and today's report are re-checked with the new values.
+   */
+  saveClinical(id: string, input: { visit: Visit; fields: ClinicalEntry['fields']; by: string }) {
+    const now = Date.now();
+    update(id, (m) => {
+      const prev = m.clinical?.[0];
+      const sameDay = !!prev && prev.at >= dayStart(0, now);
+      const v = m.vitals;
+      const num = (x?: string) => (x !== undefined && x !== '' && Number.isFinite(Number(x)) ? Number(x) : undefined);
+      const bp = input.fields.bp?.value.match(/^(\d{2,3})\/(\d{2,3})$/);
+      const point = { sys: bp ? Number(bp[1]) : undefined, dia: bp ? Number(bp[2]) : undefined, weight: num(input.fields.weight?.value) };
+      const added: NonNullable<ClinicalEntry['added']> = sameDay && prev?.added?.hb ? { hb: true } : {};
+      const vitals = { ...v };
+      for (const k of ['sys', 'dia', 'weight'] as const) {
+        const replaceLast = sameDay && prev?.added?.[k];
+        const series = replaceLast ? v[k].slice(0, -1) : v[k];
+        vitals[k] = point[k] === undefined ? series : [...series, point[k] as number];
+        if (point[k] !== undefined) added[k] = true;
+      }
+      const entry: ClinicalEntry = { visit: input.visit, at: sameDay ? prev.at : now, by: input.by, fields: input.fields, tests: sameDay ? prev.tests : {}, added };
+      const clinical = [entry, ...(sameDay ? (m.clinical ?? []).slice(1) : (m.clinical ?? []))];
+      const newBp = point.sys !== undefined;
+      return {
+        ...m,
+        clinical,
+        vitals,
+        reports: recheckToday(m.reports, clinical, now),
+        bpRecheck: newBp ? undefined : m.bpRecheck,
+        ashaFlag: newBp && m.ashaFlag !== 'needs_care' ? undefined : m.ashaFlag,
+      };
+    });
+    persist();
+  },
+  /**
+   * The Lab report: test results (Hb, urine, blood group, HIV / syphilis /
+   * HBsAg, glucose, scan), each Done (with its result), Pending, Not
+   * available or Not needed. Saved with her latest visit's entry (a new one
+   * when she has none), where the rules and the PDF read them; Hb also adds
+   * (or corrects) its point on the Hb trend.
+   */
+  saveLab(id: string, input: { tests: ClinicalEntry['tests']; by: string; visit: Visit }) {
+    const now = Date.now();
+    update(id, (m) => {
+      const prev = m.clinical?.[0];
+      const base: ClinicalEntry = prev ?? { visit: input.visit, at: now, by: input.by, fields: {}, tests: {}, added: {} };
+      const tests = { ...base.tests, ...input.tests };
+      const num = (x?: string) => (x !== undefined && x !== '' && Number.isFinite(Number(x)) ? Number(x) : undefined);
+      const hb = tests.hb?.status === 'done' ? num(tests.hb.result) : undefined;
+      const series = base.added?.hb ? m.vitals.hb.slice(0, -1) : m.vitals.hb;
+      const vitals = { ...m.vitals, hb: hb === undefined ? series : [...series, hb] };
+      const added: NonNullable<ClinicalEntry['added']> = { ...(base.added ?? {}) };
+      if (hb === undefined) delete added.hb;
+      else added.hb = true;
+      const entry: ClinicalEntry = { ...base, tests, added };
+      const clinical = [entry, ...(prev ? (m.clinical ?? []).slice(1) : (m.clinical ?? []))];
+      return { ...m, clinical, vitals, reports: recheckToday(m.reports, clinical, now) };
+    });
+    persist();
+  },
+  /** The ASHA uploaded a lab report (named first): it goes on top of her report history. */
+  addLabReport(id: string, upload: Omit<LabUpload, 'at'> & { at?: number }) {
+    update(id, (m) => ({ ...m, labReports: [{ ...upload, at: upload.at ?? Date.now() }, ...(m.labReports ?? [])] }));
+    persist();
+  },
+  /** Removed by the ASHA (a wrong photo): gone from her history. */
+  removeLabReport(id: string, uploadId: string) {
+    update(id, (m) => ({ ...m, labReports: (m.labReports ?? []).filter((u) => u.id !== uploadId) }));
+    persist();
+  },
+  /** A danger sign during a check-in: what the ASHA did (referred / noted). */
+  recordReferral(id: string, r: Omit<Referral, 'at'>) {
+    update(id, (m) => ({ ...m, referrals: [{ ...r, at: Date.now() }, ...(m.referrals ?? [])] }));
+    persist();
+  },
   /** The doctor sends (or updates) the advice: the ASHA and the mother see it at once. */
   sendAdvice(id: string, advice: string[], by: string = ME_DOCTOR) {
     update(id, (m) => ({ ...m, advice, adviceAt: Date.now(), adviceBy: by }));
@@ -521,17 +735,18 @@ export function useMother(id: string | undefined) {
   return all.find((m) => m.id === id);
 }
 
-// Rule hits per answers object. Answers are never mutated (every change
-// makes a new object), so identity is a safe key; a WeakMap lets old
-// answers be collected. Lists sort and filter by risk many times per render.
-const hitsCache = new WeakMap<Record<string, AnswerRecord>, RuleHit[]>();
+// Rule hits per answers object (and clinical entry). Neither is ever mutated
+// (every change makes a new object), so identity is a safe key; a WeakMap
+// lets old answers be collected. Lists sort and filter by risk many times per render.
+const hitsCache = new WeakMap<Record<string, AnswerRecord>, { clinical?: ClinicalEntry[]; hits: RuleHit[] }>();
 
-/** Derived risk for a mother: deterministic rule hits + high-risk flag. */
+/** Derived risk for a mother: deterministic rule hits (answers + measurements) + high-risk flag. */
 export function riskOf(m: MotherRecord): { hits: RuleHit[]; high: boolean } {
-  let hits = hitsCache.get(m.answers);
+  const cached = hitsCache.get(m.answers);
+  let hits = cached && cached.clinical === m.clinical ? cached.hits : undefined;
   if (!hits) {
-    hits = evaluate(m.answers);
-    hitsCache.set(m.answers, hits);
+    hits = evaluate(m.answers, clinicalFacts(m.clinical));
+    hitsCache.set(m.answers, { clinical: m.clinical, hits });
   }
   return { hits, high: isHighRisk(hits) || m.ashaFlag === 'needs_care' };
 }
@@ -551,7 +766,9 @@ export function useAshaMothers(ashaId: string) {
 /** One word for the ASHA: needs care (red), not checked yet (plum), well (green). */
 export type CareStatus = 'alert' | 'new' | 'ok';
 export function careStatus(m: MotherRecord): CareStatus {
-  if (m.ashaFlag) return m.ashaFlag === 'needs_care' ? 'alert' : 'ok';
+  // Her own call wins, except "Recheck": that is pending, the findings decide.
+  if (m.ashaFlag === 'needs_care') return 'alert';
+  if (m.ashaFlag === 'well') return 'ok';
   if (m.isNew) return 'new';
   return riskOf(m).high ? 'alert' : 'ok';
 }

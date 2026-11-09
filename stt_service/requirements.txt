@@ -1,0 +1,12 @@
+# Sakhi Indic STT service (Python 3.10, own venv: stt_service/.venv).
+# CUDA torch first, from PyTorch's cu124 index:
+#   stt_service\.venv\Scripts\python -m pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+#   stt_service\.venv\Scripts\python -m pip install -r stt_service\requirements.txt
+transformers>=4.44,<5
+sentencepiece>=0.1.99
+soundfile>=0.12
+numpy
+huggingface_hub
+fastapi>=0.110
+uvicorn[standard]
+python-multipart

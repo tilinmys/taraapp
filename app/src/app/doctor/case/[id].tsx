@@ -18,7 +18,7 @@ import { Colors, Curves, Haptic, Nav } from '@/constants/theme';
 import { MONO } from '@/constants/typography';
 import { ME_DOCTOR, fmtWhen, network, staff } from '@/data/care-network';
 import { doctorReview, reviewOf, triageOf, useDoctorReview } from '@/data/doctor-review';
-import { ANTENATAL_QUESTIONS, RULES, type Question, type RuleCode } from '@/data/mockScreening';
+import { questionsFor, reportQuestions, RULES, type Question, type RuleCode } from '@/data/mockScreening';
 import { riskOf, store, useMother, type MotherRecord } from '@/data/store';
 import { goBack } from '@/lib/nav';
 
@@ -121,8 +121,11 @@ function Record({ mother }: { mother: MotherRecord }) {
   const { hits, high } = riskOf(mother);
   const codes = hits.map((h) => h.code as RuleCode);
   const top = codes.find((c) => c === 'PE-04') ?? codes.find((c) => RULES[c].severity !== 'watch');
-  const flagged = ANTENATAL_QUESTIONS.filter((q) => mother.answers[q.id]?.danger);
   const report = mother.reports[0];
+  // Her latest visit's questions; her registration (first visit) stays on file for later visits.
+  const questions = reportQuestions(mother.answers, report?.visit).filter((q) => q.id !== 'close');
+  const flagged = questions.filter((q) => mother.answers[q.id]?.danger);
+  const profile = report?.visit !== 1 && mother.profile ? questionsFor(1).filter((q) => q.id !== 'close' && mother.profile?.[q.id]) : [];
   // The advice he is writing: starts from what was sent, else a draft for her risk.
   const [steps, setSteps] = useState<string[]>(() => mother.advice ?? DEFAULT_ADVICE[high ? 'high' : 'normal']);
   const advice = steps.map((x) => x.trim()).filter(Boolean);
@@ -199,7 +202,7 @@ function Record({ mother }: { mother: MotherRecord }) {
       sheetProgress={sheet}
       cta={cta}
       overlay={
-        <BottomSheet open={!!row} onClose={closeRow} progress={sheet} title={row ? `${row.id.toUpperCase()} · ${row.section}` : ''} closeLabel="Close">
+        <BottomSheet open={!!row} onClose={closeRow} progress={sheet} title={row ? row.section : ''} closeLabel="Close">
           {row && (
             <>
               <View style={[styles.sheetBlock, mother.answers[row.id]?.danger && styles.sheetFlagged]}>
@@ -392,7 +395,7 @@ function Record({ mother }: { mother: MotherRecord }) {
         >
           <Icon name="checklist" size={20} color={Colors.ink} />
           <AppText variant="bodyStrong" style={styles.flex}>
-            {`All ${ANTENATAL_QUESTIONS.length} answers`}
+            {`All ${questions.length} answers${report?.visit ? ` · visit ${report.visit}` : ''}`}
           </AppText>
           <AppText variant="caption" color={flagged.length ? Colors.cherry : Colors.inkMuted}>
             {`${flagged.length} flagged`}
@@ -402,9 +405,19 @@ function Record({ mother }: { mother: MotherRecord }) {
           </View>
         </Pressable>
         {allOpen &&
-          ANTENATAL_QUESTIONS.map((q) => (
+          questions.map((q) => (
             <AnswerRow key={q.id} q={q} value={mother.answers[q.id]?.value ?? 'Not asked'} flagged={!!mother.answers[q.id]?.danger} onOpen={setRow} />
           ))}
+        {allOpen && profile.length > 0 && (
+          <>
+            <AppText variant="overline" color={Colors.inkMuted}>
+              FIRST VISIT (REGISTRATION)
+            </AppText>
+            {profile.map((q) => (
+              <AnswerRow key={`p-${q.id}`} q={q} value={mother.profile?.[q.id]?.value ?? ''} flagged={false} onOpen={() => {}} />
+            ))}
+          </>
+        )}
       </Animated.View>
     </Screen>
   );

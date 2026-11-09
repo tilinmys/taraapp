@@ -7,6 +7,7 @@ import { AppText } from '@/components/ui/app-text';
 import { Brand } from '@/constants/brand';
 import { useContentWidth } from '@/hooks/use-content-width';
 import type { Vitals } from '@/data/store';
+import { useT } from '@/features/onboarding/context';
 
 // The four vitals a PHC doctor scans first, as a 2 x 2 bento. Each cell:
 // the latest value, the change since the last visit in words, and a
@@ -18,74 +19,83 @@ const last = (a: number[]) => a[a.length - 1];
 const show = (a: number[], digits = 0) => (a.length ? last(a).toFixed(digits) : '—');
 const prev = (a: number[]) => (a.length > 1 ? a[a.length - 2] : undefined);
 
-function delta(a: number[], digits = 0, unit = '') {
+type T = ReturnType<typeof useT>;
+function delta(t: T, a: number[], digits = 0, unit = '') {
   const p = prev(a);
-  if (p === undefined) return 'First reading';
+  if (p === undefined) return t('vgFirst');
   const d = last(a) - p;
-  if (Math.abs(d) < 10 ** -digits / 2) return 'Same as last visit';
-  return `${d > 0 ? 'Up' : 'Down'} ${Math.abs(d).toFixed(digits)}${unit} since last visit`;
+  if (Math.abs(d) < 10 ** -digits / 2) return t('vgSame');
+  return t(d > 0 ? 'vgUp' : 'vgDown', { d: `${Math.abs(d).toFixed(digits)}${unit}` });
 }
 
-const Column = ({ children }: { children: ReactNode }) => <View style={{ gap: 12 }}>{children}</View>;
+const Column = ({ children }: { children: ReactNode }) => <View style={{ gap: 8 }}>{children}</View>;
+const Row = ({ children }: { children: ReactNode }) => <BentoRow style={{ gap: 8 }}>{children}</BentoRow>;
 
-export function VitalsGrid({ vitals }: { vitals: Vitals }) {
+/** `compact` (default: on phones) keeps the 2 x 2 grid short enough to see with the report above it. */
+export function VitalsGrid({ vitals, compact: compactProp }: { vitals: Vitals; compact?: boolean }) {
+  const t = useT();
   const highBp = last(vitals.sys) >= 140 || last(vitals.dia) >= 90;
   const lowHb = last(vitals.hb) < 10;
   const highSugar = last(vitals.sugar) >= 140;
   const { isTablet } = useContentWidth();
+  const compact = compactProp ?? !isTablet;
   // Phones: two rows of two. Tablets: one row of four.
-  const Outer = isTablet ? BentoRow : Column;
-  const Split = isTablet ? Fragment : BentoRow;
+  const Outer = isTablet ? Row : Column;
+  const Split = isTablet ? Fragment : Row;
   return (
-    <View style={{ gap: 12 }}>
+    <View style={{ gap: 8 }}>
       <Outer>
         <Split>
           <BentoCell
+            compact={compact}
             tone={highBp ? 'alert' : 'cherry'}
             icon="pulse"
-            label="Blood pressure"
+            label={t('vgBp')}
             value={`${show(vitals.sys)}/${show(vitals.dia)}`}
             unit="mmHg"
-            note={highBp ? `High · ${delta(vitals.sys)}` : delta(vitals.sys)}
+            note={highBp ? `${t('vgHigh')} · ${delta(t, vitals.sys)}` : delta(t, vitals.sys)}
           >
-            <Spark data={vitals.sys} color={TONES.cherry.fg} warnAbove={140} />
+            <Spark compact={compact} data={vitals.sys} color={TONES.cherry.fg} warnAbove={140} />
           </BentoCell>
           <BentoCell
+            compact={compact}
             tone={lowHb ? 'alert' : 'plum'}
             icon="drop"
-            label="Haemoglobin"
+            label={t('vgHb')}
             value={show(vitals.hb, 1)}
             unit="g/dL"
-            note={lowHb ? `Low · ${delta(vitals.hb, 1)}` : delta(vitals.hb, 1)}
+            note={lowHb ? `${t('vgLow')} · ${delta(t, vitals.hb, 1)}` : delta(t, vitals.hb, 1)}
           >
-            <Spark data={vitals.hb} color={TONES.plum.fg} warnBelow={10} />
+            <Spark compact={compact} data={vitals.hb} color={TONES.plum.fg} warnBelow={10} />
           </BentoCell>
         </Split>
         <Split>
           <BentoCell
+            compact={compact}
             tone={highSugar ? 'alert' : 'pumpkin'}
             icon="thermometer"
-            label="Sugar (random)"
+            label={t('vgSugar')}
             value={show(vitals.sugar)}
             unit="mg/dL"
-            note={delta(vitals.sugar)}
+            note={delta(t, vitals.sugar)}
           >
-            <Spark data={vitals.sugar} color={TONES.pumpkin.fg} warnAbove={140} />
+            <Spark compact={compact} data={vitals.sugar} color={TONES.pumpkin.fg} warnAbove={140} />
           </BentoCell>
           <BentoCell
+            compact={compact}
             tone="sage"
             icon="scales"
-            label="Weight"
+            label={t('vgWeight')}
             value={show(vitals.weight, 1)}
             unit="kg"
-            note={delta(vitals.weight, 1, ' kg')}
+            note={delta(t, vitals.weight, 1, ' kg')}
           >
-            <Spark data={vitals.weight} color={TONES.sage.fg} />
+            <Spark compact={compact} data={vitals.weight} color={TONES.sage.fg} />
           </BentoCell>
         </Split>
       </Outer>
       <AppText variant="caption" color={Brand.inkMuted}>
-        {`Trend over the last ${vitals.sys.length} visits. A cherry dot means outside the safe range.`}
+        {t('vgTrend', { n: vitals.sys.length })}
       </AppText>
     </View>
   );

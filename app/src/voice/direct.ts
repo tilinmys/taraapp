@@ -59,9 +59,12 @@ type Listening = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+/** A socket that has not opened yet (also what a screen shows when there is no direct session). */
+export const DIRECT_IDLE: DirectSnapshot = { stage: 'idle', rttMs: null, sttMs: null, ready: 0, total: 0, error: null };
+
 export class DirectSession implements RemoteVoice {
   readonly transport = 'websocket' as const;
-  private snap: DirectSnapshot = { stage: 'idle', rttMs: null, sttMs: null, ready: 0, total: 0, error: null };
+  private snap: DirectSnapshot = DIRECT_IDLE;
   private listeners = new Set<() => void>();
   private ws: WebSocket | null = null;
   private lines: string[] = [];

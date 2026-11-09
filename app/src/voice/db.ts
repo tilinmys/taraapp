@@ -1,4 +1,4 @@
-import type { SessionRow, TurnRow, VoiceDb } from './db-types';
+import type { OutboxRow, SessionRow, TurnRow, VoiceDb } from './db-types';
 
 // Persistence on web (the browser preview): the same interface as
 // db.native.ts, kept in memory. Phones use SQLite.
@@ -30,8 +30,26 @@ export const voiceDb: VoiceDb = {
   async outbox(sessionId) {
     return [...turns.values()].filter((t) => t.session_id === sessionId && owed.has(t.stt_status)).sort((a, b) => a.idx - b.idx);
   },
+  async outboxAll() {
+    const out: OutboxRow[] = [];
+    for (const t of turns.values()) {
+      const s = sessions.get(t.session_id);
+      if (s && owed.has(t.stt_status) && t.audio_uri) out.push({ ...t, lang: s.lang, mother_id: s.mother_id });
+    }
+    return out.sort((a, b) => (a.ended_speech_at ?? 0) - (b.ended_speech_at ?? 0));
+  },
   async turns(sessionId) {
     return [...turns.values()].filter((t) => t.session_id === sessionId).sort((a, b) => a.idx - b.idx);
+  },
+  async getDiagnostics() {
+    const all = [...turns.values()];
+    const timed = all.filter((t) => t.stt_ms !== null);
+    return {
+      totalSessions: sessions.size,
+      completedTurns: all.filter((t) => t.stt_status === 'done').length,
+      avgLatencyMs: timed.length ? Math.round(timed.reduce((n, t) => n + (t.stt_ms ?? 0), 0) / timed.length) : 0,
+      owedOutbox: all.filter((t) => owed.has(t.stt_status) && t.audio_uri).length,
+    };
   },
   async logEvent() {},
 };

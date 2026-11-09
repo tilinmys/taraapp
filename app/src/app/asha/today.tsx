@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { useSharedValue } from 'react-native-reanimated';
 
 import { goBack } from '@/lib/nav';
+import { BpStrip } from '@/components/asha/bp-recheck';
 import { VisitProgress } from '@/components/asha/visit-progress';
 import { AppIcon } from '@/components/system/app-icon';
 import { Icon } from '@/components/system/icon';
@@ -24,8 +25,10 @@ import { relLabel } from '@/lib/day-label';
 // WHETHER each visit happened.
 //   Overview        scheduled / visited / left + a progress bar, recomputed
 //                   on every tick (VisitProgress)
-//   Numbered list   1, 2, 3 ... in visiting order. Each card: the number,
-//                   her name + village (› opens her page), ↑ ↓ to change
+//   Numbered list   1, 2, 3 ... in visiting order. Each card: when her BP
+//                   is high or low, a strip on top (reading on the left, the
+//                   6-hour recheck pill top-right); the number, her name +
+//                   village (just text: the card does not navigate), ↑ ↓ to change
 //                   the order, why she is on the list + her last check-in,
 //                   "Start check-in" (Sakhi) and a Visited / Not visited
 //                   CHECKBOX that says its state in words. A ticked card
@@ -137,6 +140,8 @@ export default function TodayVisits() {
               const visited = !!plan.visited[id];
               return (
                 <View key={id} style={[styles.card, r === 'needs_care' && !visited && styles.cardAlert, visited && styles.cardDone]}>
+                  {/* BP out of range: the reading, and the recheck top-right. */}
+                  <BpStrip mother={m} />
                   <View style={styles.row}>
                     <View style={[styles.num, visited && styles.numDone]} accessibilityLabel={visited ? t('visitedLabel') : `${i + 1}`}>
                       {visited ? (
@@ -147,23 +152,15 @@ export default function TodayVisits() {
                         </AppText>
                       )}
                     </View>
-                    {/* Name + village, with a visible ›: it opens her page. */}
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`${i + 1}. ${m.name}, ${place(m)}${tone ? `, ${t(tone.key)}` : ''}. ${t('openHerPage')}`}
-                      onPress={() => router.push({ pathname: '/asha/mother/[id]', params: { id } })}
-                      style={({ pressed }) => [styles.who, pressed && styles.pressed]}
-                    >
-                      <View style={styles.flex}>
-                        <AppText variant="heading" numberOfLines={1}>
-                          {m.name}
-                        </AppText>
-                        <AppText variant="caption" color={Colors.inkMuted} numberOfLines={1}>
-                          {place(m)}
-                        </AppText>
-                      </View>
-                      <Icon name="forward" size={20} color={Colors.cherry} weight="bold" />
-                    </Pressable>
+                    {/* Name + village: text only, tapping does nothing. */}
+                    <View style={styles.who} accessible accessibilityLabel={`${i + 1}. ${m.name}, ${place(m)}${tone ? `, ${t(tone.key)}` : ''}`}>
+                      <AppText variant="heading" numberOfLines={1}>
+                        {m.name}
+                      </AppText>
+                      <AppText variant="caption" color={Colors.inkMuted} numberOfLines={1}>
+                        {place(m)}
+                      </AppText>
+                    </View>
                     <View style={styles.arrows}>
                       <Arrow label={t('moveUp')} icon="up" disabled={i === 0} onPress={() => dayPlanStore.move(ME_ASHA, women, id, -1)} />
                       <Arrow label={t('moveDown')} icon="down" disabled={i === plan.order.length - 1} onPress={() => dayPlanStore.move(ME_ASHA, women, id, 1)} />
@@ -269,7 +266,7 @@ const styles = StyleSheet.create({
   numDone: { backgroundColor: Colors.sage },
   row: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   num: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.cherry },
-  who: { flex: 1, minWidth: 0, minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  who: { flex: 1, minWidth: 0, minHeight: 48, justifyContent: 'center' },
   arrows: { flexDirection: 'row', gap: 6 },
   arrow: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: Colors.bandLine, backgroundColor: Colors.surface },
   why: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },

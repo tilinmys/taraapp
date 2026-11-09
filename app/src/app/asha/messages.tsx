@@ -9,7 +9,7 @@ import { NavCard } from '@/components/system/nav-card';
 import { Screen } from '@/components/system/screen';
 import { StateView } from '@/components/system/state-view';
 import { BottomSheet } from '@/components/ui/bottom-sheet';
-import { ME_ASHA, fmtTime, inbox, network, useNetwork, type Notice } from '@/data/care-network';
+import { ME_ASHA, NOTICE_ICONS, fmtTime, inbox, network, useNetwork, type Notice } from '@/data/care-network';
 import { sosStore } from '@/data/sos';
 import { useMothers } from '@/data/store';
 import { useOnboarding, useT } from '@/features/onboarding/context';
@@ -25,18 +25,12 @@ import type { AppIconName } from '@/components/system/app-icon';
 //   doctor opened times      -> Doctor visits
 //   SOS                      -> "I am going" (the mother sees it) + her page
 
+// The ASHA's inbox marks three kinds by what she does next, not as a date.
 const ICON: Record<Notice['kind'], AppIconName> = {
-  slots_published: 'calendar',
+  ...NOTICE_ICONS,
   booking_confirmed: 'checklist',
   booking_cancelled: 'alert',
   visit_reminder: 'voice',
-  visit_comment: 'talk',
-  high_risk_flag: 'alert',
-  visit_today: 'ashaWorker',
-  checklist_updated: 'checklist',
-  appointment_update: 'calendar',
-  advice_sent: 'checklist',
-  sos: 'ambulance',
 };
 
 export default function Messages() {

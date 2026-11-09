@@ -1,6 +1,6 @@
 import * as SQLite from 'expo-sqlite';
 
-import type { SessionRow, TurnRow, VoiceDb } from './db-types';
+import type { Diagnostics, OutboxRow, SessionRow, TurnRow, VoiceDb } from './db-types';
 
 // Persistence layer (phones): expo-sqlite, available in Expo Go.
 // One database file (sakhi-voice.db), WAL journal (writes never block
@@ -76,9 +76,28 @@ export const voiceDb: VoiceDb = {
     const db = await open();
     return db.getAllAsync<TurnRow>("SELECT * FROM turns WHERE session_id = ? AND stt_status IN ('pending', 'offline', 'failed') ORDER BY idx", sessionId);
   },
+  async outboxAll() {
+    const db = await open();
+    // The session gives the language to transcribe in and whose record it is.
+    return db.getAllAsync<OutboxRow>(
+      `SELECT t.*, s.lang AS lang, s.mother_id AS mother_id FROM turns t JOIN sessions s ON s.id = t.session_id
+       WHERE t.stt_status IN ('pending', 'offline', 'failed') AND t.audio_uri IS NOT NULL
+       ORDER BY t.ended_speech_at ASC`,
+    );
+  },
   async turns(sessionId) {
     const db = await open();
     return db.getAllAsync<TurnRow>('SELECT * FROM turns WHERE session_id = ? ORDER BY idx', sessionId);
+  },
+  async getDiagnostics(): Promise<Diagnostics> {
+    const db = await open();
+    const row = await db.getFirstAsync<{ sessions: number; done: number; avg: number | null; owed: number }>(
+      `SELECT (SELECT COUNT(*) FROM sessions) AS sessions,
+              (SELECT COUNT(*) FROM turns WHERE stt_status = 'done') AS done,
+              (SELECT AVG(stt_ms) FROM turns WHERE stt_ms IS NOT NULL) AS avg,
+              (SELECT COUNT(*) FROM turns WHERE stt_status IN ('pending', 'offline', 'failed') AND audio_uri IS NOT NULL) AS owed`,
+    );
+    return { totalSessions: row?.sessions ?? 0, completedTurns: row?.done ?? 0, avgLatencyMs: Math.round(row?.avg ?? 0), owedOutbox: row?.owed ?? 0 };
   },
   async logEvent(sessionId, kind, ms) {
     const db = await open();

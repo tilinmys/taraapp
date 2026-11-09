@@ -30,6 +30,20 @@ describe('frameDb', () => {
 });
 
 describe('Endpointer', () => {
+  it('REGRESSION: she speaks from the very first frame: her voice never becomes the "noise floor"', () => {
+    const vad = new Endpointer();
+    vad.reset({ hangoverMs: 500 });
+    const ev = run(vad, [...frames(-30, 40), ...frames(ROOM, 60)]);
+    expect(vad.floorDb).toBeLessThanOrEqual(-48);
+    expect(ev.map((x) => x.e)).toEqual(['start', 'end']);
+  });
+
+  it('a quiet budget-tablet mic (-55 dBFS voice over a -66 dBFS room) is still heard', () => {
+    const vad = new Endpointer();
+    vad.reset({ hangoverMs: 500 });
+    expect(run(vad, [...frames(-66, 20), ...frames(-55, 30), ...frames(-66, 60)]).map((x) => x.e)).toEqual(['start', 'end']);
+  });
+
   it('learns the room, starts on voice, ends after the hangover', () => {
     const vad = new Endpointer();
     vad.reset({ hangoverMs: 600 });

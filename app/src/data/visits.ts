@@ -130,14 +130,19 @@ export const VISITS: Visit[] = [
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+// Kannada and Hindi say the month in full (there is no common short form).
+const MONTHS_KN = ['ಜನವರಿ', 'ಫೆಬ್ರವರಿ', 'ಮಾರ್ಚ್', 'ಏಪ್ರಿಲ್', 'ಮೇ', 'ಜೂನ್', 'ಜುಲೈ', 'ಆಗಸ್ಟ್', 'ಸೆಪ್ಟೆಂಬರ್', 'ಅಕ್ಟೋಬರ್', 'ನವೆಂಬರ್', 'ಡಿಸೆಂಬರ್'];
+const MONTHS_HI = ['जनवरी', 'फ़रवरी', 'मार्च', 'अप्रैल', 'मई', 'जून', 'जुलाई', 'अगस्त', 'सितंबर', 'अक्टूबर', 'नवंबर', 'दिसंबर'];
 
-/** "2026-10-21" -> { day: '21', month: 'Oct', monthYear: 'October 2026', long: '21 Oct 2026' } */
-export function dateParts(iso: string) {
+/** "2026-10-21" -> { day: '21', month: 'Oct', monthYear: 'October 2026', long: '21 Oct 2026' } (in `lang`). */
+export function dateParts(iso: string, lang: 'en' | 'kn' | 'hi' = 'en') {
   const [y, m, d] = iso.split('-').map(Number);
+  const short = lang === 'kn' ? MONTHS_KN : lang === 'hi' ? MONTHS_HI : MONTHS;
+  const long = lang === 'kn' ? MONTHS_KN : lang === 'hi' ? MONTHS_HI : MONTHS_LONG;
   return {
     day: String(d),
-    month: MONTHS[m - 1],
-    monthYear: `${MONTHS_LONG[m - 1]} ${y}`,
-    long: `${d} ${MONTHS[m - 1]} ${y}`,
+    month: short[m - 1],
+    monthYear: `${long[m - 1]} ${y}`,
+    long: `${d} ${short[m - 1]} ${y}`,
   };
 }

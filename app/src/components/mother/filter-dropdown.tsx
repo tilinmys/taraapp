@@ -13,6 +13,7 @@ import { Emblem, type EmblemTone } from '@/components/system/emblem';
 import { Icon, type IconName } from '@/components/system/icon';
 import { AppText } from '@/components/ui/app-text';
 import { Brand } from '@/constants/brand';
+import { useT } from '@/features/onboarding/context';
 import { Haptic } from '@/lib/haptics';
 
 // Filter dropdown: a pill that says what is showing ("History ▾"). Tapping
@@ -42,6 +43,7 @@ export function FilterDropdown<T extends string>({
   value: T;
   onChange: (v: T) => void;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const reduceMotion = useReducedMotion();
   const flip = useSharedValue(0);
@@ -79,7 +81,7 @@ export function FilterDropdown<T extends string>({
       {open && (
         <>
           {/* Tap outside to close. */}
-          <Pressable accessibilityLabel="Close filter" style={styles.scrim} onPress={() => setOpen(false)} />
+          <Pressable accessibilityLabel={t('filterClose')} style={styles.scrim} onPress={() => setOpen(false)} />
           <Animated.View
             entering={reduceMotion ? undefined : FadeIn.duration(160)}
             exiting={reduceMotion ? undefined : FadeOut.duration(120)}

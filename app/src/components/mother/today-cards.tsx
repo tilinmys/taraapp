@@ -11,7 +11,8 @@ import { PressButton } from '@/components/ui/press-button';
 import { Colors, Haptic, Physics } from '@/constants/theme';
 import type { PlanItem } from '@/data/care-plan';
 import { MEDICATIONS, REFILL_DAYS, trackerStore, useTracker } from '@/data/pregnancy';
-import { useT } from '@/features/onboarding/context';
+import { useOnboarding, useT } from '@/features/onboarding/context';
+import { tx } from '@/i18n/content';
 import { planLabel } from '@/lib/plan-label';
 
 // The mother's "today" cards, shown on her Home: the daily checklist (a
@@ -44,7 +45,7 @@ export function PressRow({ onPress, label, checked, children, style, outer, role
 }
 
 /** Today's checklist as a popup: tick freely, nothing is saved until Save. */
-export function ChecklistSheet({ plan, asha, onSaved }: { plan: PlanItem[]; asha: string; onSaved: (allDone: boolean) => void }) {
+export function MotherChecklistSheet({ plan, asha, onSaved }: { plan: PlanItem[]; asha: string; onSaved: (allDone: boolean) => void }) {
   const { done } = useTracker();
   const t = useT();
   const [draft, setDraft] = useState<Record<string, boolean>>(() => Object.fromEntries(plan.map((d) => [d.id, !!done[d.id]])));
@@ -122,6 +123,7 @@ export function ChecklistCard({ plan, onOpen, cheers }: { plan: PlanItem[]; onOp
 export function MedicinesCard() {
   const { taken } = useTracker();
   const t = useT();
+  const { language } = useOnboarding();
   return (
     <View style={[styles.grid, styles.meds]}>
       <View style={styles.gridTitle}>
@@ -140,12 +142,12 @@ export function MedicinesCard() {
           <View key={m.id} style={[styles.medRow, i > 0 && styles.medDivider]}>
             <View style={styles.flex}>
               <AppText variant="bodyStrong" color={on ? Colors.inkMuted : Colors.ink} style={on && styles.struck}>
-                {`${m.name} · ${m.dose}`}
+                {`${tx(m.name, language)} · ${tx(m.dose, language)}`}
               </AppText>
               <View style={styles.medMeta}>
                 <Icon name="timer" size={14} color={Colors.inkMuted} />
                 <AppText variant="caption" color={Colors.inkMuted}>
-                  {m.time}
+                  {tx(m.time, language)}
                 </AppText>
               </View>
               {low && (
@@ -157,7 +159,7 @@ export function MedicinesCard() {
               )}
             </View>
             <PressRow
-              label={on ? `${m.name} taken. Tap to undo.` : `Mark ${m.name} as taken`}
+              label={on ? t('medTaken', { name: tx(m.name, language) }) : t('medMark', { name: tx(m.name, language) })}
               checked={on}
               onPress={() => trackerStore.toggleDose(m.id)}
               style={[styles.doseBtn, on && styles.doseBtnOn]}

@@ -15,6 +15,7 @@ import { AppText } from '@/components/ui/app-text';
 import { BottomSheet } from '@/components/ui/bottom-sheet';
 import { Colors } from '@/constants/theme';
 import { TOPICS, trimesterOf, useTracker, weekOf, type TopicId } from '@/data/pregnancy';
+import { tx } from '@/i18n/content';
 import { useMother } from '@/data/store';
 import { useOnboarding, useT } from '@/features/onboarding/context';
 import { LANGUAGES } from '@/i18n/strings';
@@ -145,7 +146,7 @@ export default function Pregnancy() {
           return (
             <PressRow
               key={id}
-              label={`${t.title}. ${t.blurb}`}
+              label={`${tx(t.title, language)}. ${tx(t.blurb, language)}`}
               checked={false}
               role="button"
               onPress={() => router.push({ pathname: '/mother/topic/[id]', params: { id } })}
@@ -156,10 +157,10 @@ export default function Pregnancy() {
               </View>
               <View style={styles.flex}>
                 <AppText variant="bodyStrong" numberOfLines={1}>
-                  {t.title}
+                  {tx(t.title, language)}
                 </AppText>
                 <AppText variant="caption" color={Colors.inkMuted} numberOfLines={1}>
-                  {t.blurb}
+                  {tx(t.blurb, language)}
                 </AppText>
               </View>
               <Icon name="forward" size={20} color={tone.fg} weight="bold" />

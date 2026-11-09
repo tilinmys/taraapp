@@ -76,31 +76,28 @@ describe('spoken commands', () => {
 
 describe('danger-sign and slot follow-ups', () => {
   it('denied signs leave the rest to ask; a present sign completes the question', () => {
-    const a = new Intake();
-    expect(a.answer('q10', 'ಹೊಟ್ಟೆ ನೋವು ಇಲ್ಲ').complete).toBe(false);
-    expect(a.missing('q10')).toEqual({ signs: ['bleeding', 'leaking'] });
-    expect(a.answer('q10', 'ಇಲ್ಲ').complete).toBe(true);
-    expect(a.record('q10')).toEqual({ value: 'No', danger: false });
-    const b = new Intake();
-    expect(b.answer('q10', 'ರಕ್ತಸ್ರಾವ ಆಗುತ್ತಿದೆ').complete).toBe(true);
-    expect(b.record('q10')).toEqual({ value: 'Bleeding', danger: true });
+    const a = new Intake(2);
+    expect(a.answer('feverPain', 'ಜ್ವರ ಇಲ್ಲ').complete).toBe(false);
+    expect(a.missing('feverPain')).toEqual({ signs: ['vomiting', 'abdPain'] });
+    expect(a.answer('feverPain', 'ಇಲ್ಲ').complete).toBe(true);
+    expect(a.record('feverPain')).toEqual({ value: 'No', danger: false });
+    const b = new Intake(3);
+    expect(b.answer('bleedLeak', 'ರಕ್ತಸ್ರಾವ ಆಗುತ್ತಿದೆ').complete).toBe(true);
+    expect(b.record('bleedLeak')).toEqual({ value: 'Bleeding', danger: true, signs: ['bleeding'] });
   });
   it('a bare number to a follow-up lands in the slot it asked for', () => {
-    const a = new Intake();
-    a.answer('q26', 'ಹಿಮೋಗ್ಲೋಬಿನ್ 10.5');
-    expect(a.missing('q26')).toEqual({ key: 'vAskSugar', expect: 'sugar' });
-    expect(a.answer('q26', '96', 'sugar').complete).toBe(true);
-    expect(a.record('q26').value).toBe('Hb 10.5, sugar 96');
-    const b = new Intake();
-    b.answer('q04', 'ಮೂರನೇ ಗರ್ಭ');
-    expect(b.missing('q04')).toEqual({ key: 'vAskPara', expect: 'para' });
-    expect(b.answer('q04', '2', 'para').complete).toBe(true);
-    expect(b.record('q04').value).toBe('3rd pregnancy, 2 children before');
+    const a = new Intake(1);
+    a.answer('firstPregnancy', 'ಇಲ್ಲ');
+    a.answer('deliveries', 'ಹೌದು');
+    expect(a.missing('deliveries')).toEqual({ key: 'vAskHowMany', expect: 'count' });
+    expect(a.answer('deliveries', '2', 'count').complete).toBe(true);
+    expect(a.record('deliveries').value).toBe('2 previous deliveries');
   });
   it('every follow-up line exists in every language (all are recorded)', () => {
     for (const lang of ['kn', 'hi', 'en'] as const) {
       const lines = allFollowUps(lang);
-      expect(lines.length).toBe(8 + 6 + 6 + 6 + 2);
+      // 2 fixed lines + the sign subsets (bleeding / discharge / leaking: 3; three 3-sign questions: 6 each)
+      expect(lines.length).toBe(2 + 3 + 6 + 6 + 6);
       expect(lines.every((l) => l && !l.includes('{'))).toBe(true);
     }
     expect(signsLine('kn', ['vision', 'swellFace'])).toBe('ಮತ್ತು ಕಣ್ಣು ಮಂಜಾಗುವುದು ಅಥವಾ ಮುಖ ಕೈಗಳಲ್ಲಿ ಊತ ಇದೆಯಾ?');

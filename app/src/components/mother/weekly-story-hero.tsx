@@ -22,6 +22,7 @@ import { AppText } from '@/components/ui/app-text';
 import { Brand } from '@/constants/brand';
 import { fontFor } from '@/constants/typography';
 import { Haptic } from '@/lib/haptics';
+import { useOnboarding, useT } from '@/features/onboarding/context';
 import { artKey, babyFor, clampWeek, MAX_SCRUB_WEEK, MIN_SCRUB_WEEK, usePrefetchWeekWindow, useStoryLayout, weekInfo } from '@/services/canva-media-engine';
 
 // "It's been a week" story, inside the mother's hero card (peak-end rule:
@@ -74,7 +75,9 @@ export function WeeklyStoryHero({ realWeek, week, onWeekChange, skipStory = fals
   const reduceMotion = useReducedMotion();
   const { circle } = useStoryLayout();
   const [step, setStep] = useState<Step>(storySeen || skipStory ? 2 : 1);
-  const info = weekInfo(week);
+  const t = useT();
+  const { language } = useOnboarding();
+  const info = weekInfo(week, language);
   usePrefetchWeekWindow(week);
 
   // ---- Step 2: fruit glide-in + badge pop; then the morph into the circle
@@ -219,14 +222,14 @@ export function WeeklyStoryHero({ realWeek, week, onWeekChange, skipStory = fals
         {step === 1 && (
           <View style={styles.reveal}>
             <Animated.View style={[styles.bigFruit, fruitStyle]}>
-              <Image source={info.art} style={styles.bigFruitImg} resizeMode="contain" fadeDuration={0} accessibilityLabel={`Baby is about the size of ${info.like}`} />
+              <Image source={info.art} style={styles.bigFruitImg} resizeMode="contain" fadeDuration={0} accessibilityLabel={t('wkSizeA11y', { like: info.like })} />
             </Animated.View>
             <Animated.View style={[styles.sizeBadge, badgeStyle]}>
               <AppText variant="label" color={Brand.cherry} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
-                {`Size of ${info.like} · ${info.weightLabel}`}
+                {t('wkSize', { like: info.like, weight: info.weightLabel })}
               </AppText>
             </Animated.View>
-            <StoryPill label="What can baby do now? · Next →" onPress={toBanner} />
+            <StoryPill label={t('wkWhatNow')} onPress={toBanner} />
           </View>
         )}
 
@@ -234,12 +237,12 @@ export function WeeklyStoryHero({ realWeek, week, onWeekChange, skipStory = fals
           <View style={styles.bannerWrap}>
             <View style={styles.bannerHead}>
               <AppText variant="overline" color={Brand.inkMuted}>
-                {week === realWeek ? 'THIS WEEK' : `YOU ARE IN WEEK ${realWeek}`}
+                {week === realWeek ? t('wkThis') : t('wkYouAre', { n: realWeek })}
               </AppText>
-              <Pressable accessibilityRole="button" accessibilityLabel="Replay week reveal" onPress={replay} hitSlop={6} style={({ pressed }) => [styles.replay, pressed && styles.pressed]}>
+              <Pressable accessibilityRole="button" accessibilityLabel={t('wkReplay')} onPress={replay} hitSlop={6} style={({ pressed }) => [styles.replay, pressed && styles.pressed]}>
                 <Icon name="reset" size={14} color={Brand.cherry} weight="bold" />
                 <AppText variant="caption" color={Brand.cherry}>
-                  Replay week reveal
+                  {t('wkReplay')}
                 </AppText>
               </Pressable>
             </View>
@@ -251,14 +254,14 @@ export function WeeklyStoryHero({ realWeek, week, onWeekChange, skipStory = fals
                 </Animated.View>
               </View>
               <Animated.View style={[styles.bubbleWrap, bubbleStyle]} onLayout={(e) => bubbleW.set(e.nativeEvent.layout.width)}>
-                <View style={styles.bubble} accessible accessibilityLabel={`Week ${info.week}. Size of ${info.like}, ${info.weightLabel}. Your baby says: ${info.quote}`}>
+                <View style={styles.bubble} accessible accessibilityLabel={t('wkBubbleA11y', { n: info.week, like: info.like, weight: info.weightLabel, quote: info.quote })}>
                   <AppText style={styles.watermark} aria-hidden>
                     “
                   </AppText>
                   <AppText style={styles.weekTitle} numberOfLines={1}>{`Week ${info.week}`}</AppText>
                   <View style={styles.sizePill}>
                     <AppText style={styles.sizePillText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
-                      {`Size of ${info.like} · ${info.weightLabel}`}
+                      {t('wkSize', { like: info.like, weight: info.weightLabel })}
                     </AppText>
                   </View>
                   <View style={styles.quote} key={`q-${week}`}>
@@ -298,7 +301,7 @@ export function WeeklyStoryHero({ realWeek, week, onWeekChange, skipStory = fals
       )}
       {step === 2 && week !== realWeek && (
         <Pressable accessibilityRole="button" onPress={() => { Haptic.light(); onWeekChange(realWeek); }} style={styles.backToMine}>
-          <AppText variant="buttonSmall" color={Brand.cherry}>{`Back to my week ${realWeek}`}</AppText>
+          <AppText variant="buttonSmall" color={Brand.cherry}>{t('wkBack', { n: realWeek })}</AppText>
         </Pressable>
       )}
     </View>
@@ -327,18 +330,20 @@ function StoryPill({ label, onPress }: { label: string; onPress: () => void }) {
 }
 
 function WeekPill({ dir, week, disabled, onPress }: { dir: 1 | -1; week: number; disabled: boolean; onPress: () => void }) {
-  const info = weekInfo(week);
+  const t = useT();
+  const { language } = useOnboarding();
+  const info = weekInfo(week, language);
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={dir < 0 ? `Previous week, week ${week}` : `Next week, week ${week}`}
+      accessibilityLabel={dir < 0 ? t('wkPrev', { n: week }) : t('wkNext', { n: week })}
       disabled={disabled}
       onPress={onPress}
       style={({ pressed }) => [styles.weekPill, dir > 0 && styles.weekPillNext, disabled && styles.disabled, pressed && styles.pressed]}
     >
       {dir < 0 && <Icon name="back" size={16} color={Brand.cherry} weight="bold" />}
       <View style={styles.weekPillText}>
-        <AppText variant="label" numberOfLines={1}>{disabled ? '—' : `Week ${week}`}</AppText>
+        <AppText variant="label" numberOfLines={1}>{disabled ? '—' : t('wkWeek', { n: week })}</AppText>
         {!disabled && (
           <AppText variant="caption" color={Brand.inkMuted} numberOfLines={1}>
             {info.fruit}
@@ -352,19 +357,20 @@ function WeekPill({ dir, week, disabled, onPress }: { dir: 1 | -1; week: number;
 
 /** Next week, not yet reached: a quiet teaser instead of a spoiler. */
 function LockedPill({ week }: { week: number }) {
+  const t = useT();
   const done = week > MAX_SCRUB_WEEK;
   return (
     <View
       accessible
-      accessibilityLabel={done ? 'Your baby is due' : `Week ${week} unlocks next week`}
+      accessibilityLabel={done ? t('wkDue') : t('wkUnlocksA11y', { n: week })}
       style={[styles.weekPill, styles.weekPillNext, styles.locked]}
     >
       <View style={styles.weekPillText}>
         <AppText variant="label" numberOfLines={1} color={Brand.inkMuted}>
-          {done ? 'Due any day' : `Week ${week}`}
+          {done ? t('wkDueAny') : t('wkWeek', { n: week })}
         </AppText>
         <AppText variant="caption" color={Brand.inkMuted} numberOfLines={1}>
-          {done ? 'Meet your baby soon' : 'Unlocks next week'}
+          {done ? t('wkMeet') : t('wkUnlocks')}
         </AppText>
       </View>
       <Icon name="lock" size={16} color={Brand.inkMuted} weight="bold" />

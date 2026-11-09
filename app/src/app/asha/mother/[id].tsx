@@ -6,6 +6,7 @@ import { useSharedValue } from 'react-native-reanimated';
 import { goBack } from '@/lib/nav';
 import { ChecklistSheet } from '@/components/asha/checklist-editor';
 import { ConditionPicker } from '@/components/asha/condition-picker';
+import { LabReportCard } from '@/components/asha/lab-report-card';
 import { TellDoctorSheet } from '@/components/asha/tell-doctor';
 import { VisitThread } from '@/components/care/visit-thread';
 import { AppIcon } from '@/components/system/app-icon';
@@ -18,28 +19,33 @@ import { BottomSheet } from '@/components/ui/bottom-sheet';
 import { PressButton } from '@/components/ui/press-button';
 import { Colors, Haptic } from '@/constants/theme';
 import { useCarePlan } from '@/data/care-plan';
-import { ME_ASHA, network, slotOf, staff, upcomingBooking, useNetwork, zone, zoneName } from '@/data/care-network';
+import { ME_ASHA, dayStart, network, slotOf, staff, upcomingBooking, useNetwork, zone, zoneName } from '@/data/care-network';
+import { needsClinical } from '@/data/clinical';
+import { visitFor } from '@/data/mockScreening';
 import { useMother, type MotherRecord } from '@/data/store';
 import { useOnboarding, useT } from '@/features/onboarding/context';
-import { LANGUAGES } from '@/i18n/strings';
+import { LANGUAGES, type StringKey } from '@/i18n/strings';
 import { STATUS_PILL } from '@/lib/appt-status';
 import { relLabel, whenLabel } from '@/lib/day-label';
+import { bpState, type BpLevel } from '@/lib/bp';
 import { planLabel } from '@/lib/plan-label';
+import { SIGN_LABEL } from '@/voice/nlu/intake';
 
-// ONE woman, everything the ASHA does for her, top to bottom in the order
-// she does it:
-//   1 How is she?       the condition dropdown (Needs care -> "Tell the
-//                       doctor?" with a required "What happened?"); once
-//                       told, her note stays under it
-//   2 Talk with Sakhi   the one place a check-in starts (big card)
-//   3 Doctor visit      booked: when + its status (Requested / Confirmed /
-//                       Rescheduled) + messages; a doctor's request is
-//                       confirmed here. Not booked: "Book a doctor visit"
-//   4 Doctor's advice   what the doctor sent after reading her report
-//   5 Daily checklist   what she ticks on her phone; "Change" opens the editor
-//   6 Her details       months, language, village, phone; "Edit" opens the
+// ONE woman, everything the ASHA does for her, most important first:
+//   1 Last report       risk badge, BP / Hb / weight at a glance, opens the
+//                       full report; "No report yet" before her first check-in
+//   2 Blood pressure    only when her latest BP is >= 140/90, following the
+//                       app's rules (lib/bp.ts): raised -> refer today AND a
+//                       6-hour recheck (saved with her record); severe, or
+//                       raised with danger signs -> refer now, no waiting
+//   3 Her details       months, language, village, phone; "Edit" opens the
 //                       details form (sticky Save); "Details saved" shows here
-//   7 Last report, Call her
+//   4 Talk with Sakhi   the one place a check-in starts; its top row carries
+//                       the 6-hour recheck when one applies
+//   5 How is she?       the condition dropdown (Needs care -> "Tell the
+//                       doctor?" with a required "What happened?")
+//   6 Doctor visit      booked: when + its status + messages; else "Book"
+//   7 Doctor's advice, 8 Daily checklist, Call her
 // Every save confirms itself in ONE note at the top. Back returns to where
 // the ASHA came from.
 
@@ -52,7 +58,7 @@ export default function AshaMotherPage() {
   if (!mother) {
     return (
       <Screen title="" back={{ label: t('back'), onPress: () => goBack('/asha') }}>
-        <StateView title="Not found" body="This woman is not in your villages." action={{ label: t('back'), onPress: () => goBack('/asha') }} />
+        <StateView title={t('notFound')} body={t('notInVillages')} action={{ label: t('back'), onPress: () => goBack('/asha') }} />
       </Screen>
     );
   }
@@ -89,6 +95,23 @@ function Page({ mother, added, saved }: { mother: MotherRecord; added: boolean; 
   const lang = LANGUAGES.find((l) => l.id === mother.language);
   const back = () => goBack('/asha');
   const pill = b ? STATUS_PILL[b.status] : null;
+  const report = mother.reports[0];
+  const v = mother.vitals;
+  const latest = (a: number[]) => (a.length ? a[a.length - 1] : undefined);
+  const sys = latest(v.sys);
+  const dia = latest(v.dia);
+  const hb = latest(v.hb);
+  const weight = latest(v.weight);
+  const bp = bpState(mother);
+  const clin = mother.clinical?.[0];
+  const clinToday = !!clin && clin.at >= dayStart(0);
+  const clinMissing = needsClinical(mother.clinical, dayStart(0)) && !!mother.reports[0];
+  const clinLine = clin
+    ? [t('clinCardDone', { when: whenLabel(clin.at, language) }), clin.fields.bp && `BP ${clin.fields.bp.value}`, clin.fields.weight && `${clin.fields.weight.value} kg`].filter(Boolean).join(' · ')
+    : t('clinCardEmpty');
+  const reading = bp ? `${bp.sys}/${bp.dia}` : '';
+  const low = bp?.level === 'low';
+  const bpTone = low ? Colors.pumpkinInk : Colors.cherry;
 
   return (
     <Screen
@@ -142,7 +165,175 @@ function Page({ mother, added, saved }: { mother: MotherRecord; added: boolean; 
         </View>
       )}
 
-      {/* 1 How is she? (+ what she told the doctor) */}
+      {/* 1 Last report: risk and vitals at a glance */}
+      {report ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${t('lastReport')}, ${relLabel(mother.lastCheck, language)}. ${report.high ? t('riskHighBadge') : t('riskRoutineBadge')}. ${t('viewFullReport')}`}
+          onPress={() => {
+            Haptic.light();
+            router.push({ pathname: '/asha/summary/[id]', params: { id: mother.id, report: report.id } });
+          }}
+          style={({ pressed }) => [styles.card, report.high && styles.cardHigh, pressed && styles.pressed]}
+        >
+          <View style={styles.head}>
+            <AppIcon name="report" size={32} />
+            <View style={styles.flex}>
+              <AppText variant="heading" numberOfLines={2}>
+                {t('lastReport')}
+              </AppText>
+              <AppText variant="caption" color={Colors.inkMuted} numberOfLines={1}>
+                {relLabel(mother.lastCheck, language)}
+              </AppText>
+            </View>
+            <View style={[styles.badge, report.high ? styles.badgeHigh : styles.badgeRoutine]}>
+              <AppText variant="label" color={report.high ? Colors.cherry : Colors.sage} numberOfLines={1}>
+                {report.high ? t('riskHighBadge') : t('riskRoutineBadge')}
+              </AppText>
+            </View>
+          </View>
+          <View style={styles.vitals}>
+            <Vital label={t('vitalsBp')} value={sys !== undefined && dia !== undefined ? `${sys}/${dia}` : '—'} unit="mmHg" alert={!!bp} />
+            <Vital label={t('vitalsHb')} value={hb !== undefined ? hb.toFixed(1) : '—'} unit="g/dL" alert={hb !== undefined && hb < 10} />
+            <Vital label={t('vitalsWeight')} value={weight !== undefined ? weight.toFixed(1) : '—'} unit="kg" />
+          </View>
+          <View style={styles.reportLink}>
+            <AppText variant="buttonSmall" color={Colors.cherry}>
+              {t('viewFullReport')}
+            </AppText>
+            <Icon name="forward" size={18} color={Colors.cherry} weight="bold" />
+          </View>
+        </Pressable>
+      ) : (
+        <View style={styles.card}>
+          <View style={styles.head}>
+            <AppIcon name="report" size={32} />
+            <View style={styles.flex}>
+              <AppText variant="heading">{t('noReportYet')}</AppText>
+              <AppText variant="caption" color={Colors.inkMuted}>
+                {t('noReportHint')}
+              </AppText>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* 2 Blood pressure outside 90/60 - 140/90: what the rules say to do (lib/bp.ts) */}
+      {!!bp && (
+        <View style={[styles.bpCard, low && styles.bpCardLow]} accessibilityLiveRegion="polite">
+          <View style={styles.head}>
+            <Icon name="warning" size={22} color={bpTone} weight="fill" />
+            <View style={styles.flex}>
+              <AppText variant="heading" color={bpTone}>
+                {t(BP_TEXT[bp.level].title)}
+              </AppText>
+              <AppText variant="bodyStrong">{`${reading} mmHg`}</AppText>
+            </View>
+          </View>
+          <AppText variant="body">{t(BP_TEXT[bp.level].desc, { bp: reading })}</AppText>
+        </View>
+      )}
+
+      {/* Measurements & tests: what the ASHA measures and records (never asked by Sakhi) */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${t('clinTitle')}. ${clinLine}`}
+        onPress={() => {
+          Haptic.light();
+          router.push({ pathname: '/asha/clinical/[id]', params: { id: mother.id } });
+        }}
+        style={({ pressed }) => [styles.card, clinMissing && styles.cardWarn, pressed && styles.pressed]}
+      >
+        <View style={styles.head}>
+          <Icon name="checklist" size={24} color={clinMissing ? Colors.pumpkinInk : Colors.cherry} />
+          <View style={styles.flex}>
+            <AppText variant="heading" numberOfLines={2}>
+              {t('clinTitle')}
+            </AppText>
+            <AppText variant="caption" color={clinMissing ? Colors.pumpkinInk : Colors.inkMuted} numberOfLines={2}>
+              {clinLine}
+            </AppText>
+          </View>
+          <AppText variant="buttonSmall" color={Colors.cherry}>
+            {t(clinToday ? 'clinEdit' : 'clinEnter')}
+          </AppText>
+        </View>
+      </Pressable>
+
+      {/* Danger signs she reported in check-ins, and what was done */}
+      {!!mother.referrals?.length && (
+        <View style={styles.card}>
+          <AppText variant="label">{t('referralsTitle')}</AppText>
+          {mother.referrals.slice(0, 3).map((r) => (
+            <View key={r.at} style={styles.refRow}>
+              <Icon name="warning" size={16} color={r.status === 'referred' ? Colors.sage : Colors.cherry} weight="fill" />
+              <AppText variant="caption" style={styles.flex}>
+                {`${r.signs.map((sg) => SIGN_LABEL[sg]).join(', ')} · ${t(r.status === 'referred' ? 'refReferred' : 'refNoted')} · ${whenLabel(r.at, language)}`}
+              </AppText>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* 3 Her details: what the ASHA entered; Edit opens the form */}
+      <View style={styles.card}>
+        <View style={styles.head}>
+          <AppIcon name="mother" size={36} />
+          <AppText variant="heading" style={styles.flex}>
+            {t('herDetails')}
+          </AppText>
+          <SmallButton
+            label={t('editDetails')}
+            a11y={`${t('editDetails')} ${t('herDetails')}`}
+            onPress={() => router.push({ pathname: '/asha/edit/[id]', params: { id: mother.id } })}
+          />
+        </View>
+        {justSaved && (
+          <View style={styles.savedLine} accessibilityLiveRegion="polite">
+            <Icon name="checkCircle" size={16} color={Colors.sage} weight="fill" />
+            <AppText variant="caption" color={Colors.sage} style={styles.flex}>
+              {t('detailsSaved')}
+            </AppText>
+          </View>
+        )}
+        <Detail label={t('addMonths')} value={`${t('monthsShort', { n: mother.months })} · ${mother.weeksLabel}`} />
+        <Detail label={t('detailsLanguage')} value={lang ? (lang.english === lang.native ? lang.native : `${lang.native} · ${lang.english}`) : '-'} />
+        <Detail label={t('detailsVillage')} value={z ? zoneName(z, language) : '-'} />
+        <Detail label={t('detailsPhone')} value={mother.phone ? `+91 ${mother.phone}` : t('phoneNone')} muted={!mother.phone} />
+        {/* Check-ins done (her history), and which visit's questions Sakhi asks next. */}
+        <Detail label={t('detailsVisits')} value={t(mother.history.length ? 'visitsCount' : 'visitsNone', { n: mother.history.length, visit: t(`visit${visitFor(mother)}`) })} />
+      </View>
+
+      {/* 4 Talk with Sakhi: the only place a check-in starts. */}
+      <View style={styles.sakhi}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${t('talkSakhi')}. ${t('talkSakhiHint')}`}
+          onPress={() => {
+            Haptic.medium();
+            router.push({ pathname: '/asha/session/[id]', params: { id: mother.id } });
+          }}
+          style={({ pressed }) => [styles.sakhiMain, pressed && styles.pressed]}
+        >
+          <View style={styles.sakhiWell}>
+            <AppIcon name="voice" size={44} />
+          </View>
+          <View style={styles.flex}>
+            <AppText variant="heading" color={Colors.onCherry}>
+              {t('talkSakhi')}
+            </AppText>
+            <AppText variant="caption" color={Colors.onCherry}>
+              {t('talkSakhiHint')}
+            </AppText>
+          </View>
+          <View style={styles.go}>
+            <Icon name="arrow" size={22} color={Colors.cherry} weight="bold" />
+          </View>
+        </Pressable>
+      </View>
+
+      {/* 5 How is she? Well / Recheck in 6 h / Needs care (+ what she told the doctor).
+          The 6-hour recheck is chosen here (suggested when her BP is out of range). */}
       <View style={styles.card}>
         <ConditionPicker mother={mother} onNeedsCare={(m) => setAsking(m)} />
         {!!mother.escalation && mother.ashaFlag === 'needs_care' && (
@@ -155,33 +346,7 @@ function Page({ mother, added, saved }: { mother: MotherRecord; added: boolean; 
         )}
       </View>
 
-      {/* 2 Talk with Sakhi: the only place a check-in starts */}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${t('talkSakhi')}. ${t('talkSakhiHint')}`}
-        onPress={() => {
-          Haptic.medium();
-          router.push({ pathname: '/asha/session/[id]', params: { id: mother.id } });
-        }}
-        style={({ pressed }) => [styles.sakhi, pressed && styles.pressed]}
-      >
-        <View style={styles.sakhiWell}>
-          <AppIcon name="voice" size={44} />
-        </View>
-        <View style={styles.flex}>
-          <AppText variant="heading" color={Colors.onCherry}>
-            {t('talkSakhi')}
-          </AppText>
-          <AppText variant="caption" color={Colors.onCherry}>
-            {t('talkSakhiHint')}
-          </AppText>
-        </View>
-        <View style={styles.go}>
-          <Icon name="arrow" size={22} color={Colors.cherry} weight="bold" />
-        </View>
-      </Pressable>
-
-      {/* 3 Doctor visit, with its status */}
+      {/* 6 Doctor visit, with its status */}
       {slot && b ? (
         <View style={styles.visit}>
           <NavCard
@@ -216,7 +381,7 @@ function Page({ mother, added, saved }: { mother: MotherRecord; added: boolean; 
         />
       )}
 
-      {/* 4 Doctor's advice (once sent) */}
+      {/* 7 Doctor's advice (once sent) */}
       {!!mother.advice?.length && !!mother.adviceAt && (
         <View style={styles.card}>
           <View style={styles.head}>
@@ -241,7 +406,7 @@ function Page({ mother, added, saved }: { mother: MotherRecord; added: boolean; 
         </View>
       )}
 
-      {/* 5 Daily checklist */}
+      {/* 8 Daily checklist */}
       <View style={styles.card}>
         <View style={styles.head}>
           <AppIcon name="checklist" size={36} />
@@ -265,42 +430,6 @@ function Page({ mother, added, saved }: { mother: MotherRecord; added: boolean; 
         ))}
       </View>
 
-      {/* 6 Her details: what the ASHA entered; Edit opens the form */}
-      <View style={styles.card}>
-        <View style={styles.head}>
-          <AppIcon name="mother" size={36} />
-          <AppText variant="heading" style={styles.flex}>
-            {t('herDetails')}
-          </AppText>
-          <SmallButton
-            label={t('editDetails')}
-            a11y={`${t('editDetails')} ${t('herDetails')}`}
-            onPress={() => router.push({ pathname: '/asha/edit/[id]', params: { id: mother.id } })}
-          />
-        </View>
-        {justSaved && (
-          <View style={styles.savedLine} accessibilityLiveRegion="polite">
-            <Icon name="checkCircle" size={16} color={Colors.sage} weight="fill" />
-            <AppText variant="caption" color={Colors.sage} style={styles.flex}>
-              {t('detailsSaved')}
-            </AppText>
-          </View>
-        )}
-        <Detail label={t('addMonths')} value={`${t('monthsShort', { n: mother.months })} · ${mother.weeksLabel}`} />
-        <Detail label={t('detailsLanguage')} value={lang ? (lang.english === lang.native ? lang.native : `${lang.native} · ${lang.english}`) : '-'} />
-        <Detail label={t('detailsVillage')} value={z ? zoneName(z, language) : '-'} />
-        <Detail label={t('detailsPhone')} value={mother.phone ? `+91 ${mother.phone}` : t('phoneNone')} muted={!mother.phone} />
-      </View>
-
-      {/* 7 Last report, call her */}
-      {mother.reports[0] && (
-        <NavCard
-          icon="report"
-          title={t('lastReport')}
-          line={relLabel(mother.lastCheck, language)}
-          onPress={() => router.push({ pathname: '/asha/summary/[id]', params: { id: mother.id, report: mother.reports[0].id } })}
-        />
-      )}
       {!!mother.phone && (
         <NavCard
           icon="mother"
@@ -312,6 +441,9 @@ function Page({ mother, added, saved }: { mother: MotherRecord; added: boolean; 
           }}
         />
       )}
+
+      {/* 9 Lab report: her test results (entered on their own screen; in the PDF too) */}
+      <LabReportCard mother={mother} />
     </Screen>
   );
 }
@@ -334,6 +466,30 @@ function SmallButton({ label, a11y, onPress }: { label: string; a11y: string; on
   );
 }
 
+const BP_TEXT: Record<BpLevel, { title: StringKey; desc: StringKey }> = {
+  raised: { title: 'highBpAlert', desc: 'highBpDesc' },
+  severe: { title: 'severeBpAlert', desc: 'severeBpDesc' },
+  signs: { title: 'bpSignsAlert', desc: 'bpSignsDesc' },
+  low: { title: 'lowBpAlert', desc: 'lowBpDesc' },
+};
+
+/** One vital in the report card: label, value, unit; cherry when outside the safe range. */
+function Vital({ label, value, unit, alert }: { label: string; value: string; unit: string; alert?: boolean }) {
+  return (
+    <View style={[styles.vital, alert && styles.vitalAlert]} accessible accessibilityLabel={`${label} ${value} ${unit}`}>
+      <AppText variant="caption" color={alert ? Colors.cherry : Colors.inkMuted} numberOfLines={1}>
+        {label}
+      </AppText>
+      <AppText variant="bodyStrong" color={alert ? Colors.cherry : Colors.ink} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
+        {value}
+      </AppText>
+      <AppText variant="caption" color={Colors.inkMuted} numberOfLines={1}>
+        {unit}
+      </AppText>
+    </View>
+  );
+}
+
 function Detail({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
   return (
     <View style={[styles.task, styles.taskLine]} accessible accessibilityLabel={`${label}: ${value}`}>
@@ -352,8 +508,24 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.75 },
   note: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12, borderRadius: 14, backgroundColor: Colors.sageTint },
   card: { gap: 10, padding: 14, borderRadius: 20, borderWidth: 1, borderColor: Colors.bandLine, backgroundColor: Colors.surface },
+  cardWarn: { borderColor: Colors.pumpkin, borderWidth: 1.5 },
+  refRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   told: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: 10, borderRadius: 12, backgroundColor: Colors.cherryMist },
-  sakhi: { minHeight: 92, flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16, borderRadius: 22, backgroundColor: Colors.cherry },
+  shrink: { flexShrink: 1 },
+  cardHigh: { borderColor: Colors.cherry, borderWidth: 1.5 },
+  badge: { flexShrink: 0, maxWidth: 140, paddingHorizontal: 10, paddingVertical: 3, borderRadius: 12 },
+  badgeHigh: { backgroundColor: Colors.cherryMist },
+  badgeRoutine: { backgroundColor: Colors.sageTint },
+  vitals: { flexDirection: 'row', gap: 8 },
+  vital: { flex: 1, minWidth: 0, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 12, backgroundColor: Colors.shell },
+  vitalAlert: { backgroundColor: Colors.cherryMist },
+  reportLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 4 },
+  bpCardLow: { borderColor: Colors.pumpkin, backgroundColor: Colors.orangeTint },
+  bpCard: { gap: 10, padding: 14, borderRadius: 20, borderWidth: 1.5, borderColor: Colors.cherry, backgroundColor: Colors.cherryMist },
+  // The Sakhi card: an optional top row (the recheck pill, right-aligned) above
+  // the unchanged main row, so the pill never squeezes the title.
+  sakhi: { gap: 10, padding: 16, borderRadius: 22, backgroundColor: Colors.cherry },
+  sakhiMain: { minHeight: 60, flexDirection: 'row', alignItems: 'center', gap: 14 },
   sakhiWell: { width: 64, height: 64, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surface },
   go: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surface },
   visit: { gap: 8 },

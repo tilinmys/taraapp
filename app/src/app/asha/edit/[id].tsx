@@ -26,7 +26,7 @@ export default function EditMother() {
   if (!mother) {
     return (
       <Screen title="" back={{ label: t('back'), onPress: () => goBack('/asha') }}>
-        <StateView title="Not found" body="This woman is not in your villages." action={{ label: t('back'), onPress: () => goBack('/asha') }} />
+        <StateView title={t('notFound')} body={t('notInVillages')} action={{ label: t('back'), onPress: () => goBack('/asha') }} />
       </Screen>
     );
   }

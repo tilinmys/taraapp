@@ -6,6 +6,7 @@ import { Icon } from '@/components/system/icon';
 import { AppText } from '@/components/ui/app-text';
 import { Brand } from '@/constants/brand';
 import type { TranscriptLine } from '@/data/store';
+import { useT } from '@/features/onboarding/context';
 
 // The live talk, as it happened. Collapsed, it shows the opening lines plus
 // every danger answer and the question before it (what a reviewer needs);
@@ -13,7 +14,9 @@ import type { TranscriptLine } from '@/data/store';
 
 type Props = { lines: TranscriptLine[]; preview?: number; title?: string };
 
-export function TranscriptCard({ lines, preview = 6, title = 'Conversation transcript' }: Props) {
+export function TranscriptCard({ lines, preview = 6, title: titleProp }: Props) {
+  const t = useT();
+  const title = titleProp ?? t('trTitle');
   const [open, setOpen] = useState(false);
   const reduceMotion = useReducedMotion();
   const keep = new Set(lines.flatMap((l, i) => (l.danger ? [i - 1, i] : [])));
@@ -28,7 +31,7 @@ export function TranscriptCard({ lines, preview = 6, title = 'Conversation trans
           {title.toUpperCase()}
         </AppText>
         <AppText variant="caption" color={Brand.inkMuted}>
-          {`${lines.length} lines`}
+          {t('trLines', { n: lines.length })}
         </AppText>
       </View>
       {shown.map((l, i) => (
@@ -47,7 +50,7 @@ export function TranscriptCard({ lines, preview = 6, title = 'Conversation trans
       ))}
       {lines.length === 0 && (
         <AppText variant="caption" color={Brand.inkMuted}>
-          No conversation was recorded for this visit.
+          {t('trNone')}
         </AppText>
       )}
       {lines.length > preview && (hidden > 0 || open) && (
@@ -58,7 +61,7 @@ export function TranscriptCard({ lines, preview = 6, title = 'Conversation trans
           style={({ pressed }) => [styles.more, pressed && styles.pressed]}
         >
           <AppText variant="buttonSmall" color={Brand.cherry}>
-            {open ? 'Show less' : `Show full conversation (${hidden} more)`}
+            {open ? t('trLess') : t('trMore', { n: hidden })}
           </AppText>
           <View style={open && styles.flip}>
             <Icon name="down" size={16} color={Brand.cherry} weight="bold" />

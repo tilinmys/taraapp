@@ -15,6 +15,7 @@ import { ME_ASHA, slotOf, upcomingBooking, useNetwork, zone, zoneName } from '@/
 import { careStatus, sortByRisk, useAshaMothers, type MotherRecord } from '@/data/store';
 import { useOnboarding, useT } from '@/features/onboarding/context';
 import { whenLabel } from '@/lib/day-label';
+import { BpStrip } from '@/components/asha/bp-recheck';
 
 // One village (zone): its women, the ones who need care first. Each card:
 //   top     initial, name, months (+ booked visit), ›  -> opens HER page
@@ -103,6 +104,8 @@ export default function ZonePage() {
               const alert = careStatus(m) === 'alert';
               return (
                 <View key={m.id} style={[styles.card, alert && styles.cardAlert]}>
+                  {/* High or low BP only: the reading, and the 6-hour recheck top-right. */}
+                  <BpStrip mother={m} inset={14} radius={alert ? 18 : 19} />
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel={`${m.name}. ${line(m)}`}

@@ -15,7 +15,8 @@ import { AppText } from '@/components/ui/app-text';
 import { Colors } from '@/constants/theme';
 import { useMother, type CheckInReport, type MotherRecord } from '@/data/store';
 import { dateParts, VISITS, type Visit } from '@/data/visits';
-import { useOnboarding } from '@/features/onboarding/context';
+import { useOnboarding, useT } from '@/features/onboarding/context';
+import type { StringKey } from '@/i18n/strings';
 import { shareReportPdf } from '@/lib/report-pdf';
 import { sharePrescription, shareVisitSummary } from '@/lib/visit-pdf';
 
@@ -43,12 +44,13 @@ type Item = {
 const TODAY = '2026-10-21';
 
 /** Mother-facing names: plain and calm ("Referral" reads as alarming). */
-const VISIT_LOOK: Record<Visit['kind'], { title: string; icon: AppIconName }> = {
-  'Check-up': { title: 'Check-up', icon: 'clinic' },
-  Scan: { title: 'Baby scan', icon: 'kicks' },
-  'Lab tests': { title: 'Lab tests', icon: 'report' },
-  Referral: { title: 'Doctor visit', icon: 'clinic' },
+const VISIT_LOOK: Record<Visit['kind'], { title: StringKey; icon: AppIconName }> = {
+  'Check-up': { title: 'kindCheckup', icon: 'clinic' },
+  Scan: { title: 'kindScan', icon: 'kicks' },
+  'Lab tests': { title: 'kindLab', icon: 'report' },
+  Referral: { title: 'kindDoctor', icon: 'clinic' },
 };
+type T = (key: StringKey, values?: Record<string, string | number>) => string;
 
 /** ASHA check-in times are relative ("Yesterday, 16:10"); place them on the calendar. */
 function isoFromRelative(when: string) {
@@ -63,64 +65,65 @@ const shortDate = (iso: string) => {
   return `${d.day} ${d.month}`;
 };
 
-function visitDocs(m: MotherRecord, v: Visit, only: Filter): VisitDoc[] {
+function visitDocs(m: MotherRecord, v: Visit, only: Filter, t: T): VisitDoc[] {
   const rx: VisitDoc | null = v.prescription
-    ? { id: `${v.id}-rx`, title: 'Prescription', meta: 'From your doctor', kind: 'prescription', share: () => sharePrescription(m, v) }
+    ? { id: `${v.id}-rx`, title: t('histRxOne'), meta: t('histFromDoctor'), kind: 'prescription', share: () => sharePrescription(m, v) }
     : null;
   if (only === 'prescriptions') return rx ? [rx] : [];
-  const summary: VisitDoc = { id: `${v.id}-sum`, title: 'Visit summary', meta: 'Notes from this visit', kind: 'report', share: () => shareVisitSummary(m, v) };
+  const summary: VisitDoc = { id: `${v.id}-sum`, title: t('histSummary'), meta: t('histSummaryMeta'), kind: 'report', share: () => shareVisitSummary(m, v) };
   return rx ? [summary, rx] : [summary];
 }
 
-function reportItem(m: MotherRecord, r: CheckInReport): Item {
+function reportItem(m: MotherRecord, r: CheckInReport, t: T): Item {
   return {
     key: r.id,
     date: isoFromRelative(r.when),
-    title: 'ASHA check-in',
-    who: `${r.asha} · at home`,
+    title: t('histCheckIn'),
+    who: `${r.asha} · ${t('histAtHome')}`,
     tone: 'pumpkin',
     icon: 'asha',
     next: m.nextVisit,
-    docs: [{ id: `${r.id}-pdf`, title: 'Check-in report', meta: 'Your answers', kind: 'report', share: () => shareReportPdf(m, r) }],
+    docs: [{ id: `${r.id}-pdf`, title: t('histReport'), meta: t('histYourAnswers'), kind: 'report', share: () => shareReportPdf(m, r) }],
   };
 }
 
-function buildItems(m: MotherRecord, filter: Filter): Item[] {
+function buildItems(m: MotherRecord, filter: Filter, t: T): Item[] {
   const visits = VISITS.filter((v) => filter === 'history' || v.prescription).map<Item>((v) => ({
     key: v.id,
     date: v.date,
-    title: filter === 'prescriptions' ? 'Prescription' : VISIT_LOOK[v.kind].title,
+    title: filter === 'prescriptions' ? t('histRxOne') : t(VISIT_LOOK[v.kind].title),
     who: v.doctor.includes(v.place) ? v.doctor : `${v.doctor} · ${v.place}`,
     tone: v.tone,
     icon: filter === 'prescriptions' ? 'prescription' : VISIT_LOOK[v.kind].icon,
     next: v.next ? shortDate(v.next.date) : undefined,
-    docs: visitDocs(m, v, filter),
+    docs: visitDocs(m, v, filter, t),
   }));
-  const checkIns = filter === 'history' ? m.reports.map((r) => reportItem(m, r)) : [];
+  const checkIns = filter === 'history' ? m.reports.map((r) => reportItem(m, r, t)) : [];
   return [...checkIns, ...visits].sort((a, b) => b.date.localeCompare(a.date));
 }
 export default function History() {
-  const { demoMother } = useOnboarding();
+  const { demoMother, language } = useOnboarding();
+  const t = useT();
   const mother = useMother(demoMother);
   const reduceMotion = useReducedMotion();
   const [filter, setFilter] = useState<Filter>('history');
   const [tip, setTip] = useState(true);
   if (!mother) return <MissingMother />;
 
-  const items = buildItems(mother, filter);
+  const items = buildItems(mother, filter, t);
   const options: FilterOption<Filter>[] = [
     {
       id: 'history',
-      label: 'History',
-      hint: 'Visits, scans, tests and check-ins',
+      label: t('histHistory'),
+      hint: t('histHistoryHint'),
       icon: 'clipboard',
       tone: 'cherry',
-      count: buildItems(mother, 'history').length,
+      count: buildItems(mother, 'history', t).length,
     },
     {
       id: 'prescriptions',
-      label: 'Prescriptions',
-      hint: 'Medicines from your doctor',
+      label: t('histRx'),
+      hint: t('histRxHint'),
       icon: 'pill',
       tone: 'pumpkin',
       count: VISITS.filter((v) => v.prescription).length,
@@ -128,7 +131,7 @@ export default function History() {
   ];
   // Group by month ("October 2026"), newest first.
   const groups = items.reduce<{ month: string; items: Item[] }[]>((acc, it) => {
-    const month = dateParts(it.date).monthYear;
+    const month = dateParts(it.date, language).monthYear;
     const last = acc[acc.length - 1];
     if (last?.month === month) last.items.push(it);
     else acc.push({ month, items: [it] });
@@ -139,16 +142,16 @@ export default function History() {
     <Screen
       inTabs
       eyebrow={`${mother.name} · ${mother.village}`}
-      title="My history"
+      title={t('histTitle')}
       titleVariant="greeting"
-      compactTitle={filter === 'history' ? 'My history' : 'Prescriptions'}
-      right={{ label: 'Profile', icon: 'profile', art: 'profile', onPress: () => router.push('/profile') }}
+      compactTitle={filter === 'history' ? t('histTitle') : t('histRx')}
+      right={{ label: t('histProfile'), icon: 'profile', art: 'profile', onPress: () => router.push('/profile') }}
       gap={16}
     >
       <View style={styles.filterRow}>
-        <FilterDropdown label="Show" options={options} value={filter} onChange={setFilter} />
+        <FilterDropdown label={t('histShow')} options={options} value={filter} onChange={setFilter} />
         <AppText variant="caption" color={Colors.inkMuted} style={styles.countText}>
-          {`${items.length} ${filter === 'history' ? (items.length === 1 ? 'visit' : 'visits') : items.length === 1 ? 'prescription' : 'prescriptions'}`}
+          {filter === 'history' ? (items.length === 1 ? t('histVisit1') : t('histVisitsN', { n: items.length })) : items.length === 1 ? t('histRx1') : t('histRxN', { n: items.length })}
         </AppText>
       </View>
 
@@ -156,12 +159,12 @@ export default function History() {
         <Animated.View exiting={reduceMotion ? undefined : FadeOut.duration(160)} style={styles.tip}>
           <AppIcon name="report" size={40} />
           <View style={styles.flex}>
-            <AppText variant="bodyStrong">Your papers are safe here</AppText>
+            <AppText variant="bodyStrong">{t('histTipTitle')}</AppText>
             <AppText variant="caption" color={Colors.inkMuted}>
-              Tap “PDF” on any visit to save it or share it on WhatsApp. Show it at the hospital.
+              {t('histTipBody')}
             </AppText>
           </View>
-          <Pressable accessibilityRole="button" accessibilityLabel="Hide tip" hitSlop={8} onPress={() => setTip(false)} style={styles.tipClose}>
+          <Pressable accessibilityRole="button" accessibilityLabel={t('histHideTip')} hitSlop={8} onPress={() => setTip(false)} style={styles.tipClose}>
             <Icon name="close" size={16} color={Colors.inkMuted} weight="bold" />
           </Pressable>
         </Animated.View>
@@ -170,10 +173,10 @@ export default function History() {
       {items.length === 0 ? (
         <StateView
           compact
-          title={filter === 'prescriptions' ? 'No prescriptions yet' : 'No history yet'}
-          body={`Papers from your visits with ${mother.asha} and your doctor will appear here.`}
+          title={filter === 'prescriptions' ? t('histNoRx') : t('histNone')}
+          body={t('histNoneBody', { asha: mother.asha })}
           icon={filter === 'prescriptions' ? 'pill' : 'clipboard'}
-          action={{ label: 'Ask Tara a question', onPress: () => router.navigate('/mother/talk') }}
+          action={{ label: t('histAskTara'), onPress: () => router.navigate('/mother/talk') }}
         />
       ) : (
         <Animated.View key={filter} entering={reduceMotion ? undefined : FadeIn.duration(220)} style={styles.groups}>
@@ -190,7 +193,7 @@ export default function History() {
                 <View style={styles.monthLine} />
               </View>
               {g.items.map((it, i) => {
-                const d = dateParts(it.date);
+                const d = dateParts(it.date, language);
                 return (
                   <VisitCard
                     key={it.key}

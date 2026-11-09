@@ -1,6 +1,6 @@
 # ಸಖಿ · Sakhi — Maternal Health Voice Agent
 
-[![Code: MIT](https://img.shields.io/badge/Code-MIT-blue.svg)](LICENSE)
+[![Code: Apache-2.0](https://img.shields.io/badge/Code-Apache--2.0-blue.svg)](LICENSE)
 [![Content: CC BY 4.0](https://img.shields.io/badge/Content-CC%20BY%204.0-lightgrey.svg)](LICENSE-CONTENT.md)
 [![Digital Public Good](https://img.shields.io/badge/DPG-Candidate-green.svg)](https://digitalpublicgoods.net/)
 [![SDG 3](https://img.shields.io/badge/SDG-3.1%20%26%203.2%20Good%20Health-orange.svg)](https://sdgs.un.org/goals/goal3)
@@ -33,6 +33,49 @@ ASHA worker speaks Kannada
         ▼
   ASHA worker hears the answer   (+ optional Tavus video avatar)
 ```
+
+---
+
+## Quick Start: Tara Mobile Application (`app/`)
+
+The primary field application is an offline-first **React Native / Expo SDK 58** app supporting three role-based personas:
+* **ASHA Worker (`/asha`):** visit-based voice check-in with Sakhi (MCP card visits 1-3), review of every answer, measurements and lab reports, BP re-check, and A4 PDF referral report.
+* **Expectant Mother (`/mother`):** Daily care checklist, localized audio advice, doctor bookings, and SOS emergency beacon.
+* **Specialist Doctor (`/doctor`):** High-risk tele-triage dashboard, appointment slot manager, and direct clinical advice handoff.
+
+```bash
+cd app
+npm install
+
+# Development server
+npm run tunnel     # Cloudflare quick tunnel for real Android/iOS devices (Expo Go)
+npm start          # Local development server
+npm run web        # Browser preview
+
+# Quality gates
+npm test           # Jest
+npm run typecheck  # TypeScript (0 errors)
+npm run lint       # Expo lint (0 warnings)
+```
+
+## Quick Start: local speech-to-text (open-source model)
+
+The app's speech-to-text runs **on your own GPU** with the open-source
+[bodhan-ai/indic-transcribe-flex](https://huggingface.co/bodhan-ai/indic-transcribe-flex) model
+(Kannada, Hindi, English). No paid STT provider is used. The model weights are **not** in this
+repository (4.9 GB, gated licence): you download them once from Hugging Face.
+
+**Full, step-by-step guide (people and AI agents): [`stt_service/README.md`](stt_service/README.md).**
+The order matters:
+
+1. Prerequisites: Python 3.10, an NVIDIA GPU (>= 4 GB), ffmpeg.
+2. `py -3.10 -m venv stt_service\.venv`, then install CUDA PyTorch and `stt_service/requirements.txt`.
+3. **A person** accepts the model licence on Hugging Face, runs `hf auth login` and `hf download bodhan-ai/indic-transcribe-flex`.
+4. `stt_service\run.cmd` starts the service on `http://127.0.0.1:8795`; `stt_service\smoke_test.py` must print `OK`.
+5. Add `INDIC_STT_URL=http://127.0.0.1:8795` to `.env`, then `python scripts\sakhi_gateway_dev.py` (gateway, port 8787).
+6. `cd app && npm run tunnel`, then scan the QR code with Expo Go.
+
+> Built with Indic-Transcribe-Flex from Bodhan AI / AI4Bharat.
 
 ---
 

@@ -29,6 +29,7 @@ import {
 import { useMother } from '@/data/store';
 import { useOnboarding, useT } from '@/features/onboarding/context';
 import { dayLabel, whenLabel } from '@/lib/day-label';
+import { tx } from '@/i18n/content';
 
 // Mother: book her own doctor visit. Three numbered steps on ONE page, each
 // a row of big picture buttons, and only real choices are shown (days with
@@ -201,8 +202,18 @@ export default function MotherDoctors() {
                       {d.name}
                     </AppText>
                     <AppText variant="caption" color={Colors.inkMuted} numberOfLines={1}>
-                      {d.title ?? 'Doctor'}
+                      {tx(d.title ?? 'Doctor', language)}
                     </AppText>
+                    {!!d.credentials && (
+                      <AppText variant="label" color={Colors.inkMuted} numberOfLines={1}>
+                        {d.credentials}
+                      </AppText>
+                    )}
+                    {!!d.experience && (
+                      <AppText variant="label" color={Colors.inkMuted} numberOfLines={1}>
+                        {d.experience}
+                      </AppText>
+                    )}
                     <AppText variant="label" color={free.length ? Colors.sage : Colors.inkMuted} numberOfLines={1}>
                       {free.length ? t('nextFree', { day: dayLabel(free[0].day, language) }) : t('noFreeWeek')}
                     </AppText>

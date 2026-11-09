@@ -4,39 +4,44 @@ import { Icon } from '@/components/system/icon';
 import { AppText } from '@/components/ui/app-text';
 import { Brand } from '@/constants/brand';
 import { MONO } from '@/constants/typography';
-import { ANTENATAL_QUESTIONS, RULES, type AnswerRecord, type RuleCode } from '@/data/mockScreening';
+import { RULES, triggersOf, type AnswerRecord, type RuleCode } from '@/data/mockScreening';
+import { useOnboarding, useT } from '@/features/onboarding/context';
+import { tx } from '@/i18n/content';
 
 // Why the app said "high risk": each fired rule with its exact logic, the
 // action it asks for, and the answers that triggered it. Deterministic, so
-// a doctor can check it line by line (no black box).
+// a doctor can check it line by line (no black box). A rule on a
+// measurement (BP, examination) names the measured value instead.
 
 type Props = { rules: RuleCode[]; answers: Record<string, AnswerRecord> };
 
 export function RuleAudit({ rules, answers }: Props) {
+  const t = useT();
+  const { language } = useOnboarding();
   return (
     <View style={styles.card}>
       <View style={styles.head}>
         <Icon name="shield" size={20} color={Brand.cherry} tone={Brand.pumpkin} />
         <AppText variant="overline" color={Brand.inkMuted} style={styles.flex}>
-          RULE AUDIT
+          {t('raTitle')}
         </AppText>
         <AppText variant="caption" color={Brand.inkMuted}>
-          {`${rules.length} fired`}
+          {t('raFired', { n: rules.length })}
         </AppText>
       </View>
       {rules.map((code) => {
         const r = RULES[code];
-        const triggers = ANTENATAL_QUESTIONS.filter((q) => q.rule === code && answers[q.id]?.danger);
+        const triggers = triggersOf(code, answers);
         return (
           <View key={code} style={[styles.rule, r.severity === 'watch' && styles.watch]}>
             <AppText style={styles.mono}>{`#${code}  ${r.logic}`}</AppText>
-            <AppText variant="bodyStrong">{r.title}</AppText>
+            <AppText variant="bodyStrong">{tx(r.title, language)}</AppText>
             <AppText variant="caption" color={Brand.ink}>
               {r.action}
             </AppText>
-            {triggers.map((q) => (
-              <AppText key={q.id} variant="caption" color={Brand.inkMuted}>
-                {`“${answers[q.id]?.value}”`}
+            {triggers.map((id) => (
+              <AppText key={id} variant="caption" color={Brand.inkMuted}>
+                {`“${answers[id]?.value}”`}
               </AppText>
             ))}
           </View>

@@ -1,0 +1,390 @@
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      font-family: "Montserrat", sans-serif;
+    }
+    /* The counter the device stands on. */
+    #s1-counter {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 800px;
+      bottom: 0;
+      background: linear-gradient(180deg, #fbf5f2 0%, #efe2df 38%, #e6d3d2 100%);
+      box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.9), 0 -18px 40px rgba(142, 90, 115, 0.08);
+    }
+    #s1-cam {
+      position: absolute;
+      inset: 0;
+    }
+    #s1-device {
+      position: absolute;
+      left: 250px;
+      top: 190px;
+      width: 700px;
+      height: 760px;
+    }
+    #s1-device > svg {
+      position: absolute;
+      inset: 0;
+      width: 700px;
+      height: 760px;
+      overflow: visible;
+    }
+    #s1-pipette,
+    #s1-drop,
+    #s1-spot {
+      position: absolute;
+    }
+    #s1-pipette {
+      left: 322px;
+      top: 300px;
+      width: 56px;
+      height: 340px;
+    }
+    #s1-drop {
+      left: 339px;
+      top: 628px;
+      width: 22px;
+      height: 30px;
+    }
+    #s1-spot {
+      left: 322px;
+      top: 680px;
+      width: 56px;
+      height: 20px;
+    }
+    /* The device screen (HTML so the text stays sharp). Its result state is
+       the card that carries across into the next scene. */
+    #s1-screen {
+      position: absolute;
+      left: 140px;
+      top: 100px;
+      width: 420px;
+      height: 290px;
+      border-radius: 28px;
+      background: linear-gradient(160deg, #3d2233 0%, #26141f 100%);
+      box-shadow: inset 0 0 0 1px rgba(233, 199, 207, 0.08);
+      overflow: hidden;
+      color: #f7f0eb;
+    }
+    .s1-state {
+      position: absolute;
+      inset: 0;
+      padding: 28px;
+    }
+    #s1-ready,
+    #s1-analysing {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+    }
+    .s1-small {
+      font-size: 19px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      color: rgba(247, 240, 235, 0.9);
+    }
+    .s1-bar {
+      width: 220px;
+      height: 6px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.12);
+      overflow: hidden;
+    }
+    .s1-bar-fill {
+      width: 100%;
+      height: 100%;
+      border-radius: 3px;
+      background: linear-gradient(90deg, #e9c7cf, #d78ea5);
+      transform-origin: left center;
+    }
+    /* Result card (identical markup in referral.html). */
+    .card-eyebrow {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.22em;
+      color: #e9c7cf;
+    }
+    .card-title {
+      margin-top: 6px;
+      font-family: "Playfair Display", serif;
+      font-size: 27px;
+      color: #f7f0eb;
+    }
+    .gauge {
+      position: relative;
+      margin-top: 26px;
+      height: 12px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.12);
+    }
+    .gauge-fill {
+      position: absolute;
+      inset: 0;
+      border-radius: 6px;
+      background: linear-gradient(90deg, #e9c7cf 0%, #d99aae 55%, #c2577a 100%);
+      transform-origin: left center;
+    }
+    .gauge-mark {
+      position: absolute;
+      left: 78%;
+      top: -8px;
+      width: 4px;
+      height: 28px;
+      margin-left: -2px;
+      border-radius: 2px;
+      background: #f7f0eb;
+      box-shadow: 0 0 0 3px rgba(38, 20, 31, 0.6);
+    }
+    .gauge-labels {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 10px;
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      color: rgba(247, 240, 235, 0.55);
+    }
+    .pill {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 22px;
+      padding: 9px 16px;
+      border-radius: 20px;
+      background: rgba(194, 87, 122, 0.22);
+      border: 1px solid rgba(233, 199, 207, 0.45);
+      font-size: 16px;
+      font-weight: 600;
+      color: #f6d9e0;
+    }
+    .dot-wrap {
+      position: relative;
+      width: 10px;
+      height: 10px;
+    }
+    .dot,
+    .ring {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+    }
+    .dot {
+      background: #e58ba6;
+    }
+    .ring {
+      border: 2px solid #e58ba6;
+    }
+    /* Titles, after the reference: spaced caps + one serif word. */
+    .s1-title {
+      position: absolute;
+      left: 1040px;
+      width: 760px;
+      top: 330px;
+      text-align: center;
+      color: #3e1d30;
+    }
+    .t-caps {
+      font-size: 50px;
+      font-weight: 500;
+      letter-spacing: 0.16em;
+      line-height: 1.2;
+    }
+    .t-serif {
+      font-family: "Playfair Display", serif;
+      font-weight: 700;
+      font-size: 124px;
+      line-height: 1.05;
+      letter-spacing: 0.01em;
+    }
+    .t-rule {
+      width: 260px;
+      height: 3px;
+      margin: 30px auto 0;
+      border-radius: 2px;
+      background: #d99aae;
+      transform-origin: center;
+    }
+  </style>
+
+  <div id="root" data-composition-id="screening" data-width="1920" data-height="1080">
+    <div id="s1-counter"></div>
+
+    <div id="s1-cam">
+      <div id="s1-device" data-layout-allow-overflow>
+        <svg viewBox="0 0 700 760" aria-hidden="true">
+          <defs>
+            <linearGradient id="s1-body" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#fffbf8" />
+              <stop offset="0.6" stop-color="#f4e9e5" />
+              <stop offset="1" stop-color="#e3d0cd" />
+            </linearGradient>
+            <linearGradient id="s1-base" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#7a3f5f" />
+              <stop offset="1" stop-color="#4a2238" />
+            </linearGradient>
+            <linearGradient id="s1-strip" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#ffffff" stop-opacity="0.75" />
+              <stop offset="1" stop-color="#f5e6ea" stop-opacity="0.55" />
+            </linearGradient>
+            <filter id="s1-soft" x="-30%" y="-30%" width="160%" height="160%">
+              <feGaussianBlur stdDeviation="14" />
+            </filter>
+          </defs>
+          <!-- contact shadow -->
+          <ellipse cx="360" cy="702" rx="320" ry="30" fill="#5b2a45" opacity="0.22" filter="url(#s1-soft)" />
+          <!-- plum base -->
+          <path d="M96 360 Q78 690 170 690 L540 690 Q632 690 614 360 Z" fill="url(#s1-base)" />
+          <!-- cream body -->
+          <rect x="70" y="30" width="570" height="590" rx="96" fill="url(#s1-body)" />
+          <rect x="70" y="30" width="570" height="590" rx="96" fill="none" stroke="#ffffff" stroke-opacity="0.8" stroke-width="2" />
+          <path d="M120 70 Q355 40 590 70" stroke="#ffffff" stroke-width="6" stroke-linecap="round" fill="none" opacity="0.7" />
+          <!-- screen bezel -->
+          <rect x="120" y="80" width="460" height="330" rx="44" fill="#2a1622" />
+          <!-- button -->
+          <circle cx="355" cy="478" r="34" fill="#f7efeb" stroke="#d9c4c4" stroke-width="2" />
+          <circle cx="355" cy="478" r="22" fill="none" stroke="#e7d7d5" stroke-width="2" />
+          <!-- cartridge slot -->
+          <rect x="228" y="548" width="254" height="74" rx="16" fill="#5b2a45" />
+          <rect x="246" y="566" width="218" height="40" rx="9" fill="#2a1622" />
+          <!-- test strip, coming toward the viewer -->
+          <path d="M268 588 L442 588 L486 744 L224 744 Z" fill="url(#s1-strip)" stroke="#8e5a73" stroke-opacity="0.35" stroke-width="2" />
+          <path d="M276 600 L434 600" stroke="#ffffff" stroke-width="3" opacity="0.8" />
+          <ellipse cx="350" cy="690" rx="30" ry="11" fill="#ffffff" stroke="#c9a3b3" stroke-width="2" />
+          <rect x="420" y="712" width="22" height="6" rx="3" fill="#8e5a73" opacity="0.5" />
+        </svg>
+
+        <div id="s1-screen" data-layout-ignore>
+          <div id="s1-ready" class="s1-state">
+            <svg width="54" height="66" viewBox="0 0 54 66" aria-hidden="true">
+              <path d="M27 3 C27 3 4 30 4 43 a23 23 0 0 0 46 0 C50 30 27 3 27 3 Z" fill="#e3a1b4" />
+              <path d="M16 44 a11 11 0 0 0 8 10" stroke="#fbe6ec" stroke-width="3" fill="none" stroke-linecap="round" />
+            </svg>
+            <div class="s1-bar"><div class="s1-bar-fill" style="opacity: 0.45"></div></div>
+            <div class="s1-small">Ready for test</div>
+          </div>
+          <div id="s1-analysing" class="s1-state">
+            <div class="card-eyebrow">BIOMARKER PANEL</div>
+            <div class="s1-bar"><div id="s1-progress" class="s1-bar-fill"></div></div>
+            <div class="s1-small">Analysing sample</div>
+          </div>
+          <div id="s1-result" class="s1-state">
+            <div class="card-eyebrow">BIOMARKER PANEL</div>
+            <div class="card-title">sFlt-1 / PlGF ratio</div>
+            <div class="gauge">
+              <div id="s1-gauge-fill" class="gauge-fill"></div>
+              <div id="s1-gauge-mark" class="gauge-mark"></div>
+            </div>
+            <div class="gauge-labels"><span>LOW</span><span>HIGH</span></div>
+            <div id="s1-pill" class="pill">
+              <span class="dot-wrap"><span id="s1-ring" class="ring"></span><span class="dot"></span></span>
+              Elevated risk · refer
+            </div>
+          </div>
+        </div>
+
+        <div id="s1-pipette">
+          <svg width="56" height="340" viewBox="0 0 56 340" aria-hidden="true">
+            <rect x="12" y="0" width="32" height="210" rx="10" fill="#ffffff" fill-opacity="0.85" stroke="#c9a3b3" stroke-width="2" />
+            <rect x="18" y="130" width="20" height="74" rx="6" fill="#9b2c4b" opacity="0.75" />
+            <path d="M14 210 L42 210 L31 330 L25 330 Z" fill="#ffffff" fill-opacity="0.9" stroke="#c9a3b3" stroke-width="2" />
+            <path d="M22 240 L34 240 L31 300 L25 300 Z" fill="#9b2c4b" opacity="0.6" />
+          </svg>
+        </div>
+        <div id="s1-drop">
+          <svg width="22" height="30" viewBox="0 0 22 30" aria-hidden="true">
+            <path d="M11 1 C11 1 2 14 2 20 a9 9 0 0 0 18 0 C20 14 11 1 11 1 Z" fill="#9b2c4b" />
+            <ellipse cx="8" cy="20" rx="2" ry="3" fill="#ffffff" opacity="0.45" />
+          </svg>
+        </div>
+        <div id="s1-spot">
+          <svg width="56" height="20" viewBox="0 0 56 20" aria-hidden="true">
+            <ellipse cx="28" cy="10" rx="22" ry="7.5" fill="#9b2c4b" opacity="0.88" />
+            <ellipse cx="22" cy="8" rx="6" ry="2" fill="#ffffff" opacity="0.35" />
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <div id="s1-title-a" class="s1-title">
+      <div id="s1-a1" class="t-caps">POINT-OF-CARE</div>
+      <div id="s1-a2" class="t-serif">BIOMARKER</div>
+      <div id="s1-a3" class="t-caps">SCREENING</div>
+      <div id="s1-a-rule" class="t-rule"></div>
+    </div>
+    <div id="s1-title-b" class="s1-title" style="top: 380px">
+      <div id="s1-b1" class="t-caps">EARLY RISK</div>
+      <div id="s1-b2" class="t-serif">DETECTION</div>
+      <div id="s1-b-rule" class="t-rule"></div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    const blurIn = (sel, at, dur = 0.22) =>
+      tl.fromTo(sel, { opacity: 0, filter: "blur(8px)" }, { opacity: 1, filter: "blur(0px)", duration: dur, ease: "power4.out" }, at);
+    const blurOut = (sel, at, dur = 0.2) =>
+      tl.fromTo(sel, { opacity: 1, filter: "blur(0px)" }, { opacity: 0, filter: "blur(8px)", duration: dur, ease: "power2.in", immediateRender: false }, at);
+
+    // 0.0 the device arrives (a slow settle, no movement after it lands)
+    tl.fromTo("#s1-cam", { opacity: 0, scale: 1.05, y: 24 }, { opacity: 1, scale: 1, y: 0, duration: 1.1, ease: "expo.out", transformOrigin: "600px 540px" }, 0);
+    tl.fromTo("#s1-counter", { opacity: 0 }, { opacity: 1, duration: 0.6, ease: "power2.out" }, 0);
+
+    // title 1, line by line
+    blurIn("#s1-a1", 0.35);
+    blurIn("#s1-a2", 0.47, 0.26);
+    blurIn("#s1-a3", 0.6);
+    tl.fromTo("#s1-a-rule", { scaleX: 0 }, { scaleX: 1, duration: 0.6, ease: "expo.out" }, 0.75);
+
+    // the screen starts on "Ready for test"
+    tl.fromTo("#s1-ready", { opacity: 1 }, { opacity: 1, duration: 0.01 }, 0);
+    tl.fromTo(["#s1-analysing", "#s1-result"], { opacity: 0 }, { opacity: 0, duration: 0.01 }, 0);
+
+    // the dropper comes down, a drop forms and falls into the sample well
+    tl.fromTo("#s1-pipette", { y: -480, opacity: 0 }, { y: 0, opacity: 1, duration: 0.7, ease: "power3.out" }, 0.9);
+    tl.fromTo("#s1-drop", { scale: 0, opacity: 0, transformOrigin: "50% 0%" }, { scale: 1, opacity: 1, duration: 0.3, ease: "power2.out" }, 1.55);
+    tl.fromTo("#s1-drop", { y: 0 }, { y: 44, duration: 0.24, ease: "power2.in", immediateRender: false }, 1.9);
+    tl.to("#s1-drop", { opacity: 0, duration: 0.05 }, 2.14);
+    tl.fromTo("#s1-spot", { scale: 0.2, opacity: 0, transformOrigin: "50% 50%" }, { scale: 1, opacity: 1, duration: 0.35, ease: "expo.out" }, 2.14);
+    tl.fromTo("#s1-pipette", { y: 0 }, { y: -480, opacity: 0, duration: 0.45, ease: "power3.in", immediateRender: false }, 2.25);
+
+    // the device reads the sample
+    blurOut("#s1-ready", 2.35, 0.16);
+    blurIn("#s1-analysing", 2.45, 0.16);
+    tl.fromTo("#s1-progress", { scaleX: 0 }, { scaleX: 1, duration: 1.0, ease: "power1.inOut" }, 2.5);
+
+    // title 1 leaves; the result arrives
+    blurOut("#s1-title-a", 3.35);
+    blurOut("#s1-analysing", 3.52, 0.14);
+    blurIn("#s1-result", 3.6, 0.18);
+    tl.fromTo("#s1-gauge-fill", { scaleX: 0 }, { scaleX: 1, duration: 0.7, ease: "expo.out" }, 3.7);
+    tl.fromTo("#s1-gauge-mark", { opacity: 0, scaleY: 0.3 }, { opacity: 1, scaleY: 1, duration: 0.3, ease: "back.out(1.6)" }, 4.05);
+    tl.fromTo("#s1-pill", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.35, ease: "expo.out" }, 4.2);
+    // the subtle alert: one soft ring, once
+    tl.fromTo("#s1-ring", { scale: 1, opacity: 0.85 }, { scale: 3.2, opacity: 0, duration: 0.9, ease: "power2.out" }, 4.4);
+
+    // title 2
+    blurIn("#s1-b1", 3.8);
+    blurIn("#s1-b2", 3.92, 0.26);
+    tl.fromTo("#s1-b-rule", { scaleX: 0 }, { scaleX: 1, duration: 0.6, ease: "expo.out" }, 4.1);
+    blurOut("#s1-title-b", 5.15);
+
+    // the result card leaves the device and comes to the viewer (it becomes the next scene)
+    tl.fromTo("#s1-screen", { x: 0, y: 0, scale: 1 }, { x: 360, y: 105, scale: 2.2, duration: 0.7, ease: "power2.inOut", immediateRender: false }, 5.25);
+    tl.fromTo(
+      ["#s1-device > svg", "#s1-spot", "#s1-counter"],
+      { opacity: 1, filter: "blur(0px)" },
+      { opacity: 0, filter: "blur(14px)", duration: 0.45, ease: "power2.in", immediateRender: false },
+      5.25,
+    );
+
+    window.__timelines["screening"] = tl;
+  </script>
+</template>

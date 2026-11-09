@@ -26,6 +26,7 @@ beforeEach(() => {
   store.resetDemo();
   dayPlanStore.reset();
   carePlanStore.reset();
+  network.reset();
 });
 
 describe('ASHA: her details', () => {
@@ -58,8 +59,8 @@ describe('ASHA: tell the doctor', () => {
   it("every doctor gets her name, 'Needs care' and the ASHA's note; the case keeps the note", () => {
     store.setEscalation('kavitha', 'Severe headache since morning', ME_ASHA);
     const told = network.alertDoctors('kavitha', 'Kavitha R.', ME_ASHA, 'kamthana', 'Severe headache since morning');
-    expect(told).toEqual(['Dr. Anand', 'Dr. Farzana']);
-    const n = notices('staff', 'anand')[0];
+    expect(told).toEqual(['Dr. Smitha A.P', 'Dr. Surbhi Sinha']);
+    const n = notices('staff', 'smitha')[0];
     expect(n.kind).toBe('high_risk_flag');
     expect(n.title).toBe('Kavitha R. needs care');
     expect(n.body).toContain('Severe headache since morning');
@@ -142,7 +143,7 @@ describe('doctor: consultation statuses', () => {
     network.doctorSchedule(slot.id, m, ME_DOCTOR, 'requested');
     expect(network.doctorSchedule(openSlot(0).id, m, ME_DOCTOR, 'requested')).toEqual({ ok: false, reason: 'has_visit' });
     expect(network.doctorSchedule(slot.id, store.get().find((x) => x.id === 'roopa')!, ME_DOCTOR, 'requested')).toEqual({ ok: false, reason: 'taken' });
-    const farzana = network.get().slots.find((s) => s.doctorId === 'farzana' && s.status === 'open')!;
-    expect(network.doctorSchedule(farzana.id, store.get().find((x) => x.id === 'roopa')!, ME_DOCTOR, 'requested')).toEqual({ ok: false, reason: 'taken' });
+    const surbhi = network.get().slots.find((s) => s.doctorId === 'surbhi' && s.status === 'open')!;
+    expect(network.doctorSchedule(surbhi.id, store.get().find((x) => x.id === 'roopa')!, ME_DOCTOR, 'requested')).toEqual({ ok: false, reason: 'taken' });
   });
 });

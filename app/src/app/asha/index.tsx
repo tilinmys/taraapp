@@ -49,7 +49,7 @@ function ZoneTile({ z, women }: { z: Zone; women: MotherRecord[] }) {
     >
       <View style={styles.zoneTop}>
         <View style={styles.zoneWell}>
-          <AppIcon name="home" size={30} />
+          <AppIcon name="home" size={26} />
         </View>
         <Icon name="forward" size={22} color={Colors.cherry} weight="bold" />
       </View>
@@ -214,12 +214,12 @@ const styles = StyleSheet.create({
   // Title above its hint: side by side, long Kannada hints squeezed the title.
   sectionHead: { gap: 2 },
   list: { gap: 10 },
-  zones: { flexDirection: 'row', flexWrap: 'wrap', gap: 16 },
+  zones: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   zone: {
     width: '47%',
     flexGrow: 1,
-    gap: 6,
-    padding: 14,
+    gap: 4,
+    padding: 11,
     borderRadius: 20,
     borderWidth: 1,
     borderColor: Colors.bandLine,
@@ -227,7 +227,7 @@ const styles = StyleSheet.create({
   },
   zoneAlert: { borderWidth: 2, borderColor: Colors.cherry },
   zoneTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 },
-  zoneWell: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.shell },
+  zoneWell: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.shell },
   zonePill: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'stretch', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12 },
   zonePillAlert: { backgroundColor: Colors.cherryMist },
   zonePillOk: { backgroundColor: Colors.sageTint },

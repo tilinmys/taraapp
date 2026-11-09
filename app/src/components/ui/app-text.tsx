@@ -3,7 +3,7 @@ import { Text, type TextProps } from 'react-native';
 import Animated from 'react-native-reanimated';
 
 import { Brand } from '@/constants/brand';
-import { fontFor, lineHeightFor, splitByScript, type TypeRole } from '@/constants/typography';
+import { fontFor, lineHeightFor, splitByScript, type Script, type TypeRole } from '@/constants/typography';
 
 // The only text component screens should use. Pick a role from the type
 // scale (`variant`), and mixed-script strings such as "ಕನ್ನಡ · हिंदी · English"
@@ -16,7 +16,31 @@ type Props = TextProps & {
   children?: ReactNode;
 };
 
-function renderRuns(children: ReactNode, variant: TypeRole): ReactNode {
+/**
+ * The one script of a text that is all Kannada, all Devanagari or all Latin
+ * (null when mixed or not plain text). Such a text gets its font on the
+ * outer <Text> itself: no nested span, so Android can wrap it and shrink it
+ * (adjustsFontSizeToFit ignores the fixed size of a nested span there).
+ */
+function singleScript(children: ReactNode): Script | null {
+  let script: Script | null = null;
+  let ok = true;
+  Children.forEach(children, (child) => {
+    if (!ok) return;
+    if (typeof child !== 'string') {
+      if (typeof child !== 'number' && child != null && child !== false) ok = false;
+      return;
+    }
+    for (const run of splitByScript(child)) {
+      if (script && run.script !== script) ok = false;
+      script = run.script;
+    }
+  });
+  return ok ? script : null;
+}
+
+function renderRuns(children: ReactNode, variant: TypeRole, single: Script | null): ReactNode {
+  if (single) return children;
   return Children.map(children, (child) => {
     if (typeof child !== 'string') return child;
     const runs = splitByScript(child);
@@ -40,14 +64,15 @@ function paragraphLineHeight(children: ReactNode, variant: TypeRole): number {
   return tallest;
 }
 
-function baseStyle(variant: TypeRole, color: string | undefined, align: Props['align'], children: ReactNode) {
-  return [fontFor(variant), { color: color ?? Brand.ink, textAlign: align, lineHeight: paragraphLineHeight(children, variant) }];
+function baseStyle(variant: TypeRole, color: string | undefined, align: Props['align'], children: ReactNode, single: Script | null) {
+  return [fontFor(variant, single ?? 'latin'), { color: color ?? Brand.ink, textAlign: align, lineHeight: paragraphLineHeight(children, variant) }];
 }
 
 export function AppText({ variant = 'body', color, align, style, children, ...rest }: Props) {
+  const single = singleScript(children);
   return (
-    <Text maxFontSizeMultiplier={1.5} {...rest} style={[baseStyle(variant, color, align, children), style]}>
-      {renderRuns(children, variant)}
+    <Text maxFontSizeMultiplier={1.5} {...rest} style={[baseStyle(variant, color, align, children, single), style]}>
+      {renderRuns(children, variant, single)}
     </Text>
   );
 }
@@ -67,8 +92,8 @@ export function AnimatedAppText({
   children?: ReactNode;
 }) {
   return (
-    <Animated.Text maxFontSizeMultiplier={1.5} {...rest} style={[baseStyle(variant, color, align, children), style]}>
-      {renderRuns(children, variant)}
+    <Animated.Text maxFontSizeMultiplier={1.5} {...rest} style={[baseStyle(variant, color, align, children, singleScript(children)), style]}>
+      {renderRuns(children, variant, singleScript(children))}
     </Animated.Text>
   );
 }

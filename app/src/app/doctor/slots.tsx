@@ -33,15 +33,15 @@ import {
 } from '@/data/care-network';
 import { useMothers } from '@/data/store';
 
-// Doctor: visit times in one or two taps. Doctors are short of time, so
-// nothing here needs typing and nothing needs a second "lock" step:
-//   Usual week   his OPD days + session + visit length, remembered. The
-//                sticky button opens all of them for the next 7 days: ONE tap
-//                on a normal week. Changing a day or session is one tap more.
-//   One day      tap a day, then Morning / Afternoon / Full day: opens it
-//                (2 taps). "Away this day" closes its free times.
-//   The day      every time as an equal tile: Free (tap x to close) or the
-//                mother's name. Booked times cannot be closed here.
+// Doctor: visit times. One question at a time, nothing to decode:
+//   1 Pick a day     7 dates; a dot means that day has times
+//   2 That day       in plain words: "2 booked · 4 free", then who is coming
+//                    (tap a name for messages). An empty day shows three big
+//                    buttons: Morning / Afternoon / Full day. "Away this day"
+//                    closes the free times; booked visits stay.
+//   3 Every week     folded into one line ("Mon, Wed, Fri · Morning · 30 min");
+//                    "Change" opens the editor. The sticky button opens the
+//                    usual week in one tap.
 // Every open goes straight to the ASHAs and mothers (one message per ASHA).
 
 const SESSION_IDS: Session[] = ['morning', 'afternoon', 'both'];
@@ -52,14 +52,17 @@ export default function DoctorSlots() {
   const mothers = useMothers();
   const me = staff(ME_DOCTOR);
   const { day: dayParam } = useLocalSearchParams<{ day?: string }>();
-  const days = Array.from({ length: PLAN_DAYS + 1 }, (_, i) => dayStart(i));
+  const days = Array.from({ length: PLAN_DAYS }, (_, i) => dayStart(i));
   const [day, setDay] = useState(dayParam ? Number(dayParam) : days[1]);
   const [note, setNote] = useState<string | null>(null);
+  const [addMore, setAddMore] = useState(false);
+  const [editWeek, setEditWeek] = useState(false);
   const usual = net.usual[ME_DOCTOR] ?? { weekdays: [1, 3, 5], session: 'morning' as Session, minutes: 30 };
 
   const mine = net.slots.filter((s) => s.doctorId === ME_DOCTOR && s.status !== 'closed' && s.start > now - 60 * 60_000);
   const ofDay = mine.filter((s) => sameDay(s.start, day)).sort((a, b) => a.start - b.start);
   const free = ofDay.filter((s) => s.status === 'open');
+  const booked = ofDay.filter((s) => s.status === 'booked');
   const ashaNames = [...new Set(ZONES.filter((z) => z.phcId === me?.phcId).map((z) => staff(z.ashaId)?.name))].join(' and ');
   const weekDays = usualDays(usual, now);
   const preview = planTimes(ME_DOCTOR, weekDays, usual.session, usual.minutes, net);
@@ -68,6 +71,7 @@ export default function DoctorSlots() {
   const sheet = useSharedValue(0);
   const [threadId, setThreadId] = useState<string | null>(null);
   const threadMother = mothers.find((m) => m.id === net.bookings.find((b) => b.id === threadId)?.motherId)?.name ?? '';
+  const weekLine = [1, 2, 3, 4, 5, 6, 0].filter((wd) => usual.weekdays.includes(wd)).map((wd) => WEEKDAYS[wd]).join(', ');
 
   const setUsual = (next: Partial<typeof usual>) => {
     Haptic.light();
@@ -77,6 +81,7 @@ export default function DoctorSlots() {
   const openDay = (session: Session) => {
     const n = network.openTimes(ME_DOCTOR, [day], session, usual.minutes);
     Haptic[n ? 'success' : 'warning']();
+    setAddMore(false);
     setNote(n ? `${fmtDay(day)}: ${n} times open. ${ashaNames} told.` : `${fmtDay(day)} ${SESSIONS[session].label.toLowerCase()} is already open.`);
   };
 
@@ -98,7 +103,7 @@ export default function DoctorSlots() {
         enabled: preview.length > 0,
         icon: 'calendar',
         haptic: 'success',
-        context: preview.length ? `${preview.length} times · ${ashaNames} and mothers are told` : 'Change a day above to open more',
+        context: preview.length ? `${weekLine} · ${SESSIONS[usual.session].label}` : undefined,
         onPress: () => {
           const n = network.openTimes(ME_DOCTOR, weekDays, usual.session, usual.minutes);
           setNote(n ? `${n} times open for the week. ${ashaNames} told.` : null);
@@ -114,56 +119,9 @@ export default function DoctorSlots() {
         </View>
       )}
 
-      {/* Usual week: set once, then one tap a week. */}
-      <View style={styles.card}>
-        <View style={styles.cardHead}>
-          <AppText variant="heading" style={styles.flex}>
-            Your usual week
-          </AppText>
-          <AppText variant="caption" color={Colors.inkMuted}>
-            Saved for next time
-          </AppText>
-        </View>
-        <View style={styles.row} accessibilityRole="none">
-          {[1, 2, 3, 4, 5, 6, 0].map((wd) => {
-            const on = usual.weekdays.includes(wd);
-            return (
-              <Pressable
-                key={wd}
-                accessibilityRole="checkbox"
-                accessibilityState={{ checked: on }}
-                accessibilityLabel={WEEKDAYS[wd]}
-                onPress={() => setUsual({ weekdays: on ? usual.weekdays.filter((x) => x !== wd) : [...usual.weekdays, wd] })}
-                style={({ pressed }) => [styles.weekday, on && styles.on, pressed && styles.pressed]}
-              >
-                <AppText variant="label" color={on ? Colors.onCherry : Colors.ink}>
-                  {WEEKDAYS[wd].slice(0, 2)}
-                </AppText>
-              </Pressable>
-            );
-          })}
-        </View>
-        <Segmented
-          options={SESSION_IDS.map((s) => ({ id: s, label: SESSIONS[s].label, sub: SESSIONS[s].hours }))}
-          value={usual.session}
-          onChange={(s) => setUsual({ session: s as Session })}
-        />
-        <Segmented
-          options={SLOT_LENGTHS.map((m) => ({ id: String(m), label: `${m} min`, sub: 'each visit' }))}
-          value={String(usual.minutes)}
-          onChange={(m) => setUsual({ minutes: Number(m) })}
-        />
-        <AppText variant="caption" color={Colors.inkMuted}>
-          {weekDays.length ? `Next 7 days: ${weekDays.map((d) => fmtDay(d)).join(', ')}` : 'Pick at least one day.'}
-        </AppText>
-      </View>
-
-      {/* One day: pick it, then tap a session. */}
-      <AppText variant="heading" accessibilityRole="header">
-        Or change one day
-      </AppText>
+      {/* 1 Pick a day */}
       <View style={styles.row} accessibilityRole="radiogroup">
-        {days.slice(1).map((d) => {
+        {days.map((d) => {
           const on = sameDay(d, day);
           const has = mine.some((s) => sameDay(s.start, d));
           const date = new Date(d);
@@ -177,11 +135,12 @@ export default function DoctorSlots() {
                 Haptic.light();
                 setDay(d);
                 setNote(null);
+                setAddMore(false);
               }}
               style={({ pressed }) => [styles.date, on && styles.on, pressed && styles.pressed]}
             >
-              <AppText variant="caption" color={on ? Colors.onCherry : Colors.inkMuted}>
-                {WEEKDAYS[date.getDay()]}
+              <AppText variant="caption" color={on ? Colors.onCherry : Colors.inkMuted} numberOfLines={1}>
+                {sameDay(d, now) ? 'Today' : WEEKDAYS[date.getDay()].slice(0, 3)}
               </AppText>
               <AppText variant="bodyStrong" color={on ? Colors.onCherry : Colors.ink}>
                 {String(date.getDate())}
@@ -191,104 +150,160 @@ export default function DoctorSlots() {
           );
         })}
       </View>
-      <View style={styles.row}>
-        {SESSION_IDS.map((s) => (
-          <Pressable
-            key={s}
-            accessibilityRole="button"
-            accessibilityLabel={`Open ${fmtDay(day)} ${SESSIONS[s].label}, ${SESSIONS[s].hours}`}
-            onPress={() => openDay(s)}
-            style={({ pressed }) => [styles.session, pressed && styles.pressed]}
-          >
-            <Icon name="plus" size={18} color={Colors.cherry} weight="bold" />
-            <AppText variant="buttonSmall" color={Colors.cherry} numberOfLines={1}>
-              {SESSIONS[s].label}
-            </AppText>
-            <AppText variant="caption" color={Colors.inkMuted} numberOfLines={1}>
-              {SESSIONS[s].hours}
-            </AppText>
-          </Pressable>
-        ))}
-      </View>
 
-      {/* The chosen day */}
-      <View style={styles.cardHead}>
-        <AppText variant="heading" style={styles.flex}>
-          {fmtDay(day)}
-        </AppText>
+      {/* 2 That day, in plain words */}
+      <View style={styles.card}>
+        <View style={styles.cardHead}>
+          <View style={styles.flex}>
+            <AppText variant="heading">{fmtDay(day)}</AppText>
+            <AppText variant="body" color={Colors.inkMuted}>
+              {ofDay.length === 0 ? 'No visit times yet' : `${booked.length} booked · ${free.length} free`}
+            </AppText>
+          </View>
+          {free.length > 0 && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Away on ${fmtDay(day)}: close ${free.length} free times`}
+              onPress={() => {
+                const n = network.closeDay(ME_DOCTOR, day);
+                Haptic.medium();
+                setNote(`${fmtDay(day)}: ${n} free times closed. Booked visits stay.`);
+              }}
+              style={({ pressed }) => [styles.away, pressed && styles.pressed]}
+            >
+              <AppText variant="buttonSmall" color={Colors.cherry}>
+                Away this day
+              </AppText>
+            </Pressable>
+          )}
+        </View>
+
+        {booked.map((s) => {
+          const b = bookingOf(s);
+          return (
+            <Pressable
+              key={s.id}
+              disabled={!b}
+              accessibilityRole="button"
+              accessibilityLabel={`${fmtTime(s.start)}, ${motherOf(s) ?? 'booked'}. Opens messages with the ASHA.`}
+              onPress={() => b && setThreadId(b.id)}
+              style={({ pressed }) => [styles.visit, pressed && styles.pressed]}
+            >
+              <AppText variant="bodyStrong" style={styles.time}>
+                {fmtTime(s.start)}
+              </AppText>
+              <AppText variant="bodyStrong" numberOfLines={1} style={styles.flex}>
+                {motherOf(s) ?? 'Booked'}
+              </AppText>
+              {!!b?.comments.length && (
+                <View style={styles.msg}>
+                  <Icon name="chat" size={14} color={Colors.cherry} />
+                  <AppText variant="label" color={Colors.cherry}>
+                    {String(b.comments.length)}
+                  </AppText>
+                </View>
+              )}
+              <Icon name="forward" size={18} color={Colors.cherry} weight="bold" />
+            </Pressable>
+          );
+        })}
+
         {free.length > 0 && (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Away on ${fmtDay(day)}: close ${free.length} free times`}
-            onPress={() => {
-              const n = network.closeDay(ME_DOCTOR, day);
-              Haptic.medium();
-              setNote(`${fmtDay(day)}: ${n} free times closed. Booked visits stay.`);
-            }}
-            style={({ pressed }) => [styles.away, pressed && styles.pressed]}
-          >
+          <AppText variant="caption" color={Colors.inkMuted}>
+            {`Free: ${free.map((s) => fmtTime(s.start)).join(', ')}`}
+          </AppText>
+        )}
+
+        {ofDay.length === 0 || addMore ? (
+          <>
+            <AppText variant="label">{ofDay.length === 0 ? 'Open this day for visits' : 'Add more times'}</AppText>
+            <View style={styles.row}>
+              {SESSION_IDS.map((s) => (
+                <Pressable
+                  key={s}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${fmtDay(day)} ${SESSIONS[s].label}, ${SESSIONS[s].hours}`}
+                  onPress={() => openDay(s)}
+                  style={({ pressed }) => [styles.session, pressed && styles.pressed]}
+                >
+                  <AppText variant="buttonSmall" color={Colors.cherry} numberOfLines={1}>
+                    {SESSIONS[s].label}
+                  </AppText>
+                  <AppText variant="caption" color={Colors.inkMuted} numberOfLines={1}>
+                    {SESSIONS[s].hours}
+                  </AppText>
+                </Pressable>
+              ))}
+            </View>
+          </>
+        ) : (
+          <Pressable accessibilityRole="button" onPress={() => setAddMore(true)} style={({ pressed }) => [styles.link, pressed && styles.pressed]}>
+            <Icon name="plus" size={16} color={Colors.cherry} weight="bold" />
             <AppText variant="buttonSmall" color={Colors.cherry}>
-              Away this day
+              Add more times
             </AppText>
           </Pressable>
         )}
       </View>
-      {ofDay.length === 0 ? (
-        <AppText variant="body" color={Colors.inkMuted}>
-          No times on this day. Tap Morning, Afternoon or Full day above.
-        </AppText>
-      ) : (
-        <View style={styles.tiles}>
-          {ofDay.map((s) => {
-            const booked = s.status === 'booked';
-            const b = booked ? bookingOf(s) : undefined;
-            return (
-              <Pressable
-                key={s.id}
-                disabled={!b}
-                accessibilityRole={b ? 'button' : undefined}
-                accessibilityLabel={b ? `${fmtTime(s.start)}, ${motherOf(s) ?? 'booked'}. Opens messages with the ASHA.` : undefined}
-                onPress={() => b && setThreadId(b.id)}
-                style={({ pressed }) => [styles.tile, booked ? styles.tileBooked : styles.tileOpen, pressed && styles.pressed]}
-              >
-                <View style={styles.tileTop}>
-                  <AppText variant="bodyStrong">{fmtTime(s.start)}</AppText>
-                  {!booked && (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Close ${fmtTime(s.start)}`}
-                      hitSlop={10}
-                      onPress={() => {
-                        Haptic.light();
-                        network.removeSlot(s.id);
-                      }}
-                    >
-                      <Icon name="close" size={16} color={Colors.inkMuted} weight="bold" />
-                    </Pressable>
-                  )}
-                </View>
-                <AppText variant="caption" color={booked ? Colors.cherry : Colors.sage} numberOfLines={1}>
-                  {booked ? (motherOf(s) ?? 'Booked') : 'Free'}
-                </AppText>
-                {!!b?.comments.length && (
-                  <View style={styles.msg}>
-                    <Icon name="chat" size={12} color={Colors.cherry} />
-                    <AppText variant="overline" color={Colors.cherry}>
-                      {String(b.comments.length)}
-                    </AppText>
-                  </View>
-                )}
-              </Pressable>
-            );
-          })}
+
+      {/* 3 Every week: one line until she taps Change */}
+      <View style={styles.card}>
+        <View style={styles.cardHead}>
+          <View style={styles.flex}>
+            <AppText variant="heading">Every week</AppText>
+            <AppText variant="body" color={Colors.inkMuted}>
+              {weekLine ? `${weekLine} · ${SESSIONS[usual.session].label} · ${usual.minutes} min` : 'No days chosen'}
+            </AppText>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: editWeek }}
+            onPress={() => {
+              Haptic.light();
+              setEditWeek(!editWeek);
+            }}
+            style={({ pressed }) => [styles.away, pressed && styles.pressed]}
+          >
+            <AppText variant="buttonSmall" color={Colors.cherry}>
+              {editWeek ? 'Done' : 'Change'}
+            </AppText>
+          </Pressable>
         </View>
-      )}
+        {editWeek && (
+          <>
+            <AppText variant="label">Days</AppText>
+            <View style={styles.row}>
+              {[1, 2, 3, 4, 5, 6, 0].map((wd) => {
+                const on = usual.weekdays.includes(wd);
+                return (
+                  <Pressable
+                    key={wd}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: on }}
+                    accessibilityLabel={WEEKDAYS[wd]}
+                    onPress={() => setUsual({ weekdays: on ? usual.weekdays.filter((x) => x !== wd) : [...usual.weekdays, wd] })}
+                    style={({ pressed }) => [styles.weekday, on && styles.on, pressed && styles.pressed]}
+                  >
+                    <AppText variant="label" color={on ? Colors.onCherry : Colors.ink}>
+                      {WEEKDAYS[wd].slice(0, 2)}
+                    </AppText>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <AppText variant="label">Time</AppText>
+            <Segmented options={SESSION_IDS.map((s) => ({ id: s, label: SESSIONS[s].label }))} value={usual.session} onChange={(s) => setUsual({ session: s as Session })} />
+            <AppText variant="label">Each visit</AppText>
+            <Segmented options={SLOT_LENGTHS.map((m) => ({ id: String(m), label: `${m} min` }))} value={String(usual.minutes)} onChange={(m) => setUsual({ minutes: Number(m) })} />
+          </>
+        )}
+      </View>
     </Screen>
   );
 }
 
-/** Equal-width segments in one row: label + small sub-line. */
-function Segmented({ options, value, onChange }: { options: { id: string; label: string; sub: string }[]; value: string; onChange: (id: string) => void }) {
+/** Equal-width choices in one row. */
+function Segmented({ options, value, onChange }: { options: { id: string; label: string }[]; value: string; onChange: (id: string) => void }) {
   return (
     <View style={styles.row} accessibilityRole="radiogroup">
       {options.map((o) => {
@@ -298,15 +313,12 @@ function Segmented({ options, value, onChange }: { options: { id: string; label:
             key={o.id}
             accessibilityRole="radio"
             accessibilityState={{ checked: on }}
-            accessibilityLabel={`${o.label}, ${o.sub}`}
+            accessibilityLabel={o.label}
             onPress={() => onChange(o.id)}
             style={({ pressed }) => [styles.segment, on && styles.segmentOn, pressed && styles.pressed]}
           >
             <AppText variant="buttonSmall" color={on ? Colors.cherryPressed : Colors.ink} numberOfLines={1}>
               {o.label}
-            </AppText>
-            <AppText variant="caption" color={Colors.inkMuted} numberOfLines={1}>
-              {o.sub}
             </AppText>
           </Pressable>
         );
@@ -317,24 +329,22 @@ function Segmented({ options, value, onChange }: { options: { id: string; label:
 
 const styles = StyleSheet.create({
   flex: { flex: 1, minWidth: 0 },
-  pressed: { transform: [{ scale: 0.96 }] },
+  pressed: { transform: [{ scale: 0.97 }] },
   note: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12, borderRadius: 14, backgroundColor: Colors.sageTint },
-  card: { gap: 12, padding: 16, borderRadius: 20, borderWidth: 1, borderColor: Colors.bandLine, backgroundColor: Colors.surface },
+  card: { gap: 10, padding: 14, borderRadius: 20, borderWidth: 1, borderColor: Colors.bandLine, backgroundColor: Colors.surface },
   cardHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   // Every row of choices is equal columns, so edges line up down the page.
   row: { flexDirection: 'row', gap: 6 },
-  weekday: { flex: 1, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 22, borderWidth: 1.5, borderColor: Colors.bandLine, backgroundColor: Colors.surface },
+  date: { flex: 1, minHeight: 60, alignItems: 'center', justifyContent: 'center', gap: 1, borderRadius: 14, borderWidth: 1.5, borderColor: Colors.bandLine, backgroundColor: Colors.surface },
   on: { backgroundColor: Colors.cherry, borderColor: Colors.cherry },
-  segment: { flex: 1, minHeight: 56, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, borderRadius: 14, borderWidth: 1.5, borderColor: Colors.bandLine, backgroundColor: Colors.surface },
-  segmentOn: { borderColor: Colors.cherry, backgroundColor: Colors.cherryMist },
-  date: { flex: 1, minHeight: 64, alignItems: 'center', justifyContent: 'center', gap: 1, borderRadius: 14, borderWidth: 1.5, borderColor: Colors.bandLine, backgroundColor: Colors.surface },
   mark: { width: 6, height: 6, borderRadius: 3, marginTop: 2 },
-  session: { flex: 1, minHeight: 72, alignItems: 'center', justifyContent: 'center', gap: 2, paddingHorizontal: 4, borderRadius: 16, borderWidth: 1.5, borderStyle: 'dashed', borderColor: Colors.cherry, backgroundColor: Colors.cherryMist },
   away: { minHeight: 40, justifyContent: 'center', paddingHorizontal: 14, borderRadius: 20, borderWidth: 1.5, borderColor: Colors.cherry },
-  tiles: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  tile: { width: '31.5%', minHeight: 64, gap: 2, padding: 10, borderRadius: 14, borderWidth: 1.5 },
+  visit: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, borderRadius: 14, backgroundColor: Colors.cherryMist },
+  time: { minWidth: 52 },
   msg: { flexDirection: 'row', alignItems: 'center', gap: 3 },
-  tileTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  tileOpen: { borderColor: `${Colors.sage}55`, backgroundColor: Colors.sageTint },
-  tileBooked: { borderColor: Colors.cherry, backgroundColor: Colors.cherryMist },
+  session: { flex: 1, minHeight: 64, alignItems: 'center', justifyContent: 'center', gap: 2, paddingHorizontal: 4, borderRadius: 16, borderWidth: 1.5, borderStyle: 'dashed', borderColor: Colors.cherry, backgroundColor: Colors.cherryMist },
+  link: { minHeight: 40, flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start' },
+  weekday: { flex: 1, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 22, borderWidth: 1.5, borderColor: Colors.bandLine, backgroundColor: Colors.surface },
+  segment: { flex: 1, minHeight: 48, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, borderRadius: 14, borderWidth: 1.5, borderColor: Colors.bandLine, backgroundColor: Colors.surface },
+  segmentOn: { borderColor: Colors.cherry, backgroundColor: Colors.cherryMist },
 });

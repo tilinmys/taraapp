@@ -1,11 +1,11 @@
 import { createContext, useContext, type ReactNode } from 'react';
 import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
-import Svg, { Circle, Polyline } from 'react-native-svg';
 
 import { AppIcon, type AppIconName } from '@/components/system/app-icon';
 import { Emblem, TONES, type EmblemTone } from '@/components/system/emblem';
 import { Icon, type IconName } from '@/components/system/icon';
+import { TrendChart } from '@/components/report/trend-chart';
 import { AppText } from '@/components/ui/app-text';
 import { Brand } from '@/constants/brand';
 import { Haptic } from '@/lib/haptics';
@@ -45,9 +45,10 @@ type CellProps = {
   unit?: string;
   note?: string;
   flex?: number;
+  /** Defaults to 104 (76 when compact). An explicit value, 0 included, always wins. */
   minHeight?: number;
   onPress?: () => void;
-  /** Smaller value type for 3-across rows. */
+  /** Dense cell for lists and phones: 76 pt tall, 10 pt padding, heading-size value, one-line note. */
   compact?: boolean;
   accessibilityLabel?: string;
   children?: ReactNode;
@@ -66,7 +67,7 @@ export function BentoCell({
   unit,
   note,
   flex = 1,
-  minHeight = 104,
+  minHeight: minHeightProp,
   onPress,
   compact,
   accessibilityLabel,
@@ -74,6 +75,7 @@ export function BentoCell({
   style,
 }: CellProps) {
   const stacked = useContext(InStack);
+  const minHeight = minHeightProp ?? (compact ? 76 : 104);
   const press = useSharedValue(1);
   const pressStyle = useAnimatedStyle(() => ({ transform: [{ scale: press.get() }] }));
   const t = tone === 'neutral' || tone === 'alert' ? null : TONES[tone];
@@ -86,15 +88,15 @@ export function BentoCell({
       {(icon || art || label) && (
         <View style={styles.head}>
           {art ? (
-            <View style={styles.well}>
-              <AppIcon name={art} size={30} />
+            <View style={[styles.well, compact && styles.wellCompact]}>
+              <AppIcon name={art} size={compact ? 22 : 30} />
             </View>
           ) : null}
           {!art && icon &&
             (emblem && t ? (
-              <Emblem icon={icon} tone={tone as EmblemTone} size={40} onTint />
+              <Emblem icon={icon} tone={tone as EmblemTone} size={compact ? 32 : 40} onTint />
             ) : (
-              <Icon name={icon} size={22} color={fg} tone={fill} />
+              <Icon name={icon} size={compact ? 18 : 22} color={fg} tone={fill} />
             ))}
           {!!label && (
             <AppText variant="overline" color={tone === 'alert' ? Brand.cherry : Brand.inkMuted} numberOfLines={2} style={styles.label}>
@@ -123,7 +125,7 @@ export function BentoCell({
         </View>
       )}
       {!!note && (
-        <AppText variant="caption" color={tone === 'alert' ? Brand.ink : Brand.inkMuted} numberOfLines={3}>
+        <AppText variant="caption" color={tone === 'alert' ? Brand.ink : Brand.inkMuted} numberOfLines={compact ? 1 : 3}>
           {note}
         </AppText>
       )}
@@ -134,7 +136,7 @@ export function BentoCell({
   // A hairline in the cell's own hue keeps tints crisp on the header band.
   const edge = tone === 'neutral' ? Brand.hairline : `${fg}24`;
   const size = stacked ? { flexGrow: 1, flexBasis: 'auto' as const } : { flex };
-  const cellStyle = [styles.cell, size, { minHeight, backgroundColor: bg, borderColor: edge }, tone === 'alert' && styles.alert, style];
+  const cellStyle = [styles.cell, compact && styles.cellCompact, size, { minHeight, backgroundColor: bg, borderColor: edge }, tone === 'alert' && styles.alert, style];
   if (!onPress) {
     return (
       <View style={cellStyle} accessibilityLabel={accessibilityLabel} accessible={!!accessibilityLabel}>
@@ -161,30 +163,22 @@ export function BentoCell({
   );
 }
 
-/** Tiny trend line for a vitals cell. The last point is drawn as a dot. */
-type SparkProps = { data: number[]; color: string; width?: number; height?: number; warnAbove?: number; warnBelow?: number };
+/**
+ * The trend for a vitals cell (react-native-gifted-charts, see trend-chart):
+ * it fills the cell's width unless a width is given; the latest point turns
+ * cherry when it crosses its limit.
+ */
+type SparkProps = { data: number[]; color: string; width?: number; height?: number; compact?: boolean; warnAbove?: number; warnBelow?: number };
 
-export function Spark({ data, color, width = 96, height = 28, warnAbove, warnBelow }: SparkProps) {
-  if (data.length < 2) return null;
-  const min = Math.min(...data);
-  const max = Math.max(...data);
-  const span = max - min || 1;
-  const pts = data.map((v, i) => [(i / (data.length - 1)) * (width - 6) + 3, height - 3 - ((v - min) / span) * (height - 6)]);
-  const last = pts[pts.length - 1];
-  const now = data[data.length - 1];
-  const hot = (warnAbove !== undefined && now >= warnAbove) || (warnBelow !== undefined && now < warnBelow);
-  return (
-    <Svg width={width} height={height} aria-hidden>
-      <Polyline points={pts.map((p) => p.join(',')).join(' ')} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" opacity={0.85} />
-      <Circle cx={last[0]} cy={last[1]} r={3.5} fill={hot ? Brand.cherry : color} />
-    </Svg>
-  );
+export function Spark({ data, color, compact, width, height = compact ? 40 : 52, warnAbove, warnBelow }: SparkProps) {
+  return <TrendChart data={data} color={color} width={width} height={height} warnAbove={warnAbove} warnBelow={warnBelow} />;
 }
 
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', gap: 12 },
   stack: { gap: 12 },
   cell: { borderRadius: 20, padding: 14, gap: 8, overflow: 'hidden', borderWidth: 1 },
+  cellCompact: { padding: 10, gap: 4, borderRadius: 16 },
   alert: { borderWidth: 2, borderColor: Brand.cherry },
   // Wraps: on narrow cells the label drops under the icon as a whole word.
   head: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 8, rowGap: 4 },
@@ -192,4 +186,5 @@ const styles = StyleSheet.create({
   flex: { flex: 1, minWidth: 0 },
   valueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
   well: { width: 42, height: 42, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: Brand.surface },
+  wellCompact: { width: 32, height: 32, borderRadius: 10 },
 });

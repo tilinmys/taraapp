@@ -15,7 +15,11 @@
 //                                                           re-ask is used up)
 //   wait (spoken)       waits left                       -> listen again, longer, saying nothing
 //   skip (spoken / Next with nothing said)              -> skip (recorded as skipped)
-//   pending (STT late)  -                                -> next (the answer is applied when it lands)
+//   pending             -                                -> next, but only once the engine has
+//                                                           waited ~9.5 s for the transcript, or
+//                                                           the speech service is offline: never
+//                                                           stuck offline; her recorded answer
+//                                                           is applied when it lands (outbox)
 // And a hard ceiling: MAX_TURNS answers per question, whatever they were.
 // The flow therefore never stalls on one question and never loops.
 

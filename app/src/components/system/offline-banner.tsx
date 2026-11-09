@@ -1,4 +1,5 @@
 import { useNetworkState } from 'expo-network';
+import { useEffect, useRef } from 'react';
 import { StyleSheet, View } from 'react-native';
 import Animated, { FadeInUp, FadeOutUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -6,15 +7,28 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/system/icon';
 import { AppText } from '@/components/ui/app-text';
 import { Brand } from '@/constants/brand';
+import { flushOfflineOutbox } from '@/voice/outbox-worker';
 
 // Global offline notice. Shown only when the OS reports no internet; answers
 // and reports keep saving on the phone, so the message reassures instead of
 // blocking. It never covers controls: a slim pill under the status bar.
+// It also starts the outbox (voice/outbox-worker.ts): answers recorded with
+// no network are sent when the phone comes back online, and once at start.
 
 export function OfflineBanner() {
   const net = useNetworkState();
   const insets = useSafeAreaInsets();
   const offline = net.isConnected === false || net.isInternetReachable === false;
+  // null until the OS has answered: neither "was offline" nor "came online".
+  const known = net.isConnected !== undefined;
+  const wasOffline = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!known) return;
+    const before = wasOffline.current;
+    wasOffline.current = offline;
+    // offline -> online, or the first answer of the app run being "online".
+    if (!offline && before !== false) flushOfflineOutbox().catch(() => {});
+  }, [known, offline]);
   if (!offline) return null;
   return (
     <View pointerEvents="none" style={[styles.host, { top: insets.top + 4 }]}>

@@ -21,6 +21,7 @@ export default function AshaLayout() {
       >
         <Stack.Screen name="add" options={{ animation: 'slide_from_bottom' }} />
         <Stack.Screen name="session/[id]" options={{ gestureEnabled: false }} />
+        <Stack.Screen name="review/[id]" options={{ gestureEnabled: false, animation: 'fade' }} />
         <Stack.Screen name="summary/[id]" options={{ gestureEnabled: false, animation: 'fade' }} />
       </Stack>
       <LiveBanner to={ME} onOpen={() => router.push('/asha/messages')} />

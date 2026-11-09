@@ -2,10 +2,14 @@
 // Decides, with no network, when the ASHA has finished answering, so Sakhi
 // can ask the next question (docs/VOICE_IN_APP_DESIGN.md 4.2).
 //
-//   noise floor  follows the quiet frames (EMA), clamped to [-75, -35] dBFS
-//   start        3 frames in a row above floor + 10 dB (and above -55 dBFS)
-//   stay         above floor + 6 dB (hysteresis: harder to start than stay)
-//   end          quiet for hangover = base + min(300, 0.08 * speech ms)
+//   noise floor  calibrated on the first 200 ms from QUIET frames only (a
+//                frame above -50 dBFS is her voice, not the room: it never
+//                lifts the floor), calibrated floor at most -48 dBFS; then it
+//                follows the quiet frames (EMA), clamped to [-75, -35] dBFS
+//   start        3 frames in a row above floor + 7 dB (and above -62 dBFS:
+//                budget tablets' mics are quiet)
+//   stay         above floor + 4 dB (hysteresis: harder to start than stay)
+//   end          quiet for hangover = base + min(200, 0.05 * speech ms)
 //   no answer    nothing in noSpeechMs -> 'noSpeech'
 //   cap          maxSpeechMs of speech -> 'end'
 // O(1) per frame and no allocation per frame.
@@ -25,11 +29,15 @@ export type VadOptions = {
 
 const FLOOR_MIN = -75;
 const FLOOR_MAX = -35;
-const START_DB = 10;
-const STAY_DB = 6;
+const START_DB = 7;
+const STAY_DB = 4;
 const START_FRAMES = 3;
-const ABS_MIN_DB = -55;
+const ABS_MIN_DB = -62;
 const CALIBRATE_FRAMES = 10; // 200 ms
+/** A calibration frame louder than this is speech, not the room. */
+const CALIB_SPEECH_DB = -50;
+/** The calibrated floor never starts above this (she may talk from the first frame). */
+const CALIB_FLOOR_MAX = -48;
 /** Exact zeros (a mic that is still starting): not the room, never taught to the floor. */
 const DIGITAL_SILENCE_DB = -90;
 
@@ -45,9 +53,10 @@ export function frameDb(pcm: Int16Array, offset: number, n: number) {
 }
 
 export class Endpointer {
-  private opts: Required<VadOptions> = { hangoverMs: 700, noSpeechMs: 7000, maxSpeechMs: 20000 };
+  private opts: Required<VadOptions> = { hangoverMs: 500, noSpeechMs: 7000, maxSpeechMs: 20000 };
   private floor = -60;
   private calib: number[] = [];
+  private calibFrames = 0;
   private above = 0;
   private speaking = false;
   private speechMs = 0;
@@ -93,11 +102,15 @@ export class Endpointer {
     const target = Math.max(0, Math.min(1, (db - this.floor) / 30));
     this.level += (target - this.level) * 0.35;
 
-    if (this.calib.length < CALIBRATE_FRAMES) {
-      this.calib.push(db);
-      if (this.calib.length === CALIBRATE_FRAMES) {
+    if (this.calibFrames < CALIBRATE_FRAMES) {
+      this.calibFrames++;
+      if (db <= CALIB_SPEECH_DB) this.calib.push(db);
+      if (this.calibFrames === CALIBRATE_FRAMES) {
+        // No quiet frame at all (she spoke at once, or a loud room): start
+        // from the cap; the quiet frames that follow teach the real floor.
         const sorted = [...this.calib].sort((a, b) => a - b);
-        this.floor = clamp(sorted[Math.floor(sorted.length / 2)]);
+        const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : CALIB_FLOOR_MAX;
+        this.floor = clamp(Math.min(CALIB_FLOOR_MAX, median));
       }
       this.waitedMs += FRAME_MS;
       return 'none';
@@ -125,7 +138,7 @@ export class Endpointer {
     this.speechMs += FRAME_MS;
     if (db > this.floor + STAY_DB) this.quietMs = 0;
     else this.quietMs += FRAME_MS;
-    const hangover = this.opts.hangoverMs + Math.min(300, 0.08 * this.speechMs);
+    const hangover = this.opts.hangoverMs + Math.min(200, 0.05 * this.speechMs);
     if (this.quietMs >= hangover || this.speechMs >= this.opts.maxSpeechMs) {
       this.speaking = false;
       return 'end';

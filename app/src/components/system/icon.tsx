@@ -5,6 +5,7 @@ import {
   Bell,
   BowlFood,
   CalendarDots,
+  Camera,
   CaretDown,
   CaretLeft,
   CaretRight,
@@ -114,6 +115,7 @@ const ICONS = {
   calendar: CalendarDots,
   download: DownloadSimple,
   pdf: FilePdf,
+  camera: Camera,
   drop: Drop, // haemoglobin / sugar
   scales: Scales, // weight
   thermometer: Thermometer,

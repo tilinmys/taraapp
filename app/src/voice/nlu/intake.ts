@@ -1,96 +1,113 @@
-import { ANTENATAL_QUESTIONS, type AnswerRecord } from '@/data/mockScreening';
+import { questionsFor, URGENT_SIGNS, WATCH_SIGNS, type AnswerRecord, type Question, type Sign, type Visit } from '@/data/mockScreening';
 import type { StringKey } from '@/i18n/strings';
 
 import { extract, type Facts, type Polarity } from './extract';
 import type { Concept } from './lexicon';
 
+export type { Sign } from '@/data/mockScreening';
+
 // The check-in as SLOT FILLING, with no language model in the loop.
 //
 // Every answer is turned into facts (extract.ts) and offered to EVERY
-// question: the one just asked reads it fully (bare numbers, a plain yes /
-// no); the others take only what was said explicitly ("7 ತಿಂಗಳು", "ಬಿಪಿ
-// 148 ಬೈ 96", "ಮೊದಲನೇ ಗರ್ಭ"). That is the PREFILL.
+// question of the visit: the one just asked reads it fully (bare numbers, a
+// plain yes / no); the others take only what was said explicitly ("ಇದು
+// ಮೊದಲನೇ ಗರ್ಭ", "ಹೊಟ್ಟೆ ನೋವು ಇದೆ"). That is the PREFILL.
 //
 // What happens next is decided from the slots alone:
 //   next question   the first one, in order, that is not yet answered and
 //                   not skippable. Skippable = NOT a danger question and its
 //                   slots already filled by earlier answers (or not
 //                   applicable: no past deliveries in a first pregnancy, no
-//                   period date needed once months are known). A danger
-//                   question is ALWAYS asked, even when an earlier answer
-//                   mentioned the sign: a denial or a sign must come from
-//                   that question
+//                   "less movement?" once she said the baby moves as usual).
+//                   A danger question is ALWAYS asked, even when an earlier
+//                   answer mentioned the sign: a denial or a sign must come
+//                   from that question
 //   follow-up       a PARTLY answered question asks only for what is
-//                   missing (Spec.follow): "Lakshmi" -> "and her age?",
-//                   "140" -> "and the lower number?", "no headache" -> "and
-//                   blurred vision or swelling?". A danger question with
-//                   signs only DENIED is done when every sign was answered
-//                   (or a plain no / don't know covered them): a sign she
-//                   never answered is never recorded as "No". A sign that is
-//                   PRESENT completes it (the doctor examines her anyway). A bare number given to a
-//                   follow-up goes to the slot it asked for (answer's expect).
-//   same question   asked again ONCE when the answer did not fill it (no
-//                   number for the BP, no age, nothing understood); after
-//                   that it is recorded as "Not clear" and the check-in
-//                   moves on. A danger question that stays unclear is
-//                   flagged for the doctor: a missed sign costs more than a
-//                   second look
-// Each question also writes the English record the doctor and the rules
-// read (AnswerRecord), so the screening rules work unchanged.
+//                   missing: "yes" to "previous deliveries?" -> "how many?",
+//                   "no headache" -> "and blurred vision or swelling?". A
+//                   danger question with signs only DENIED is done when every
+//                   sign was answered (or a plain no / don't know covered
+//                   them): a sign she never answered is never recorded as
+//                   "No". A sign that is PRESENT completes it
+//   same question   asked again ONCE when the answer did not fill it; after
+//                   that it is recorded as "Not clear" and the check-in moves
+//                   on. A danger question that stays unclear is flagged for
+//                   the doctor: a missed sign costs more than a second look
+// DANGER SIGNS ARE HEARD IN ANY ANSWER (the MCP danger-sign protocol): a
+// sign said in "anything worrying you?" or "new problems?" is recorded with
+// that answer (`reported`) and raises its alert at once, even when this
+// visit has no question about it. History questions are the exception: "I
+// was treated for fits" (epilepsy, in the past) is history, not a fit now.
+// Each question writes the English record the doctor and the rules read.
 
 type Src = { q: string; stated: boolean };
 type Slot<T> = { v: T } & Src;
+type YN = Slot<boolean>;
 
 export type Slots = {
   name?: Slot<string>;
   age?: Slot<number>;
-  gaMonths?: Slot<number>;
-  gaWeeks?: Slot<number>;
+  village?: Slot<string>;
+  firstPregnancy?: YN;
+  prevPregnancies?: Slot<number>;
   lmp?: Slot<string>;
-  gravida?: Slot<number>;
-  para?: Slot<number>;
-  past?: Slot<string[]>;
-  conception?: Slot<'natural' | 'ivf'>;
-  bp?: Slot<[number, number]>;
-  /** The upper BP number alone, waiting for the lower one ("ಬಿಪಿಯ ಕೆಳಗಿನ ಸಂಖ್ಯೆ?"). */
-  bpSys?: Slot<number>;
-  weight?: Slot<number>;
-  iron?: Slot<'daily' | 'irregular' | 'no'>;
-  fhr?: Slot<number | 'checked' | 'not checked'>;
-  scan?: Slot<boolean>;
-  scanPlace?: Slot<string>;
-  tt?: Slot<0 | 1 | 2>;
-  hb?: Slot<number>;
-  sugar?: Slot<number | 'normal'>;
-  history?: Slot<string[]>;
-  meds?: Slot<string[]>;
-  allergy?: Slot<boolean>;
-  staff?: Slot<boolean>;
-  ambulance?: Slot<boolean>;
+  gaMonths?: Slot<number>;
+  regular?: Slot<'regular' | 'irregular'>;
+  confirmed?: Slot<string | false>;
+  deliveries?: Slot<number>;
+  /** "Yes" to previous deliveries, with no number yet. */
+  deliveriesYes?: YN;
+  losses?: Slot<string[]>;
+  pastProblems?: Slot<string[]>;
+  csection?: YN;
+  conditions?: Slot<string[]>;
+  longIllness?: Slot<string[]>;
+  medicines?: Slot<string[]>;
+  allergy?: YN;
+  transfusion?: YN;
+  tobacco?: Slot<string[]>;
+  concerns?: Slot<string>;
+  newProblems?: Slot<string>;
+  tummySize?: Slot<string>;
+  movementFelt?: YN;
+  ifa?: Slot<Adherence>;
+  calcium?: Slot<Adherence>;
+  ironCalcium?: Slot<Adherence>;
+  testsDone?: YN;
+  followedAdvice?: YN;
   movement?: Slot<'normal' | 'reduced' | 'absent'>;
+  fewer?: Slot<'yes' | 'no' | 'absent'>;
+  deliveryPlace?: Slot<string | false>;
+  support?: YN;
   /** Danger signs: true = present, false = denied. */
   signs: Partial<Record<Sign, Slot<boolean>>>;
+  /** Signs heard in a question's answer that are not that question's own (see DANGER SIGNS above). */
+  reported: Map<string, Sign[]>;
   /** Questions answered "don't know". */
   unknown: Set<string>;
   /** A danger question answered "yes" with no sign named. */
   vagueYes: Set<string>;
 };
-
-export type Sign = 'headache' | 'vision' | 'swellFace' | 'swellFeet' | 'pallor' | 'abdPain' | 'bleeding' | 'leaking' | 'fits' | 'fever' | 'vomiting' | 'breathless';
+type Adherence = 'daily' | 'irregular' | 'no';
 
 const SIGN_OF: Partial<Record<Concept, Sign>> = {
   HEADACHE: 'headache', VISION: 'vision', SWELL_FACE: 'swellFace', SWELL_FEET: 'swellFeet', PALLOR: 'pallor', ABD_PAIN: 'abdPain',
   BLEEDING: 'bleeding', LEAKING: 'leaking', FITS: 'fits', FEVER: 'fever', VOMITING: 'vomiting', BREATHLESS: 'breathless',
+  DISCHARGE: 'discharge', TIRED: 'tired', PALPITATIONS: 'palpitations',
 };
-const SIGN_LABEL: Record<Sign, string> = {
+export const SIGN_LABEL: Record<Sign, string> = {
   headache: 'Headache', vision: 'Blurred vision', swellFace: 'Swelling of face / hands', swellFeet: 'Swollen feet', pallor: 'Pallor',
-  abdPain: 'Stomach pain', bleeding: 'Bleeding', leaking: 'Leaking fluid', fits: 'Fits', fever: 'Fever', vomiting: 'Vomiting', breathless: 'Breathlessness',
+  abdPain: 'Abdominal pain', bleeding: 'Bleeding', leaking: 'Leaking fluid', fits: 'Fits', fever: 'Fever', vomiting: 'Vomiting',
+  breathless: 'Breathlessness', discharge: 'Unusual discharge', tired: 'Unusual tiredness', palpitations: 'Palpitations', reducedMovement: 'Reduced baby movements',
 };
 
-type Ctx = { f: Facts; s: Slots; q: string; current: boolean; expect?: Expect };
+/** Reduced movement is a red flag from 28 weeks (sakhi_triage.py THIRD_TRIMESTER_WEEKS); unknown gestation counts. */
+export const MOVEMENT_FLAG_WEEKS = 28;
+
+type Ctx = { f: Facts; s: Slots; q: string; current: boolean; expect?: Expect; weeks?: number };
 
 /** The one slot a follow-up asked for: a bare number in the reply goes there. */
-export type Expect = 'name' | 'age' | 'diastolic' | 'para' | 'allergy' | 'meds' | 'hb' | 'sugar';
+export type Expect = 'count' | 'date';
 /**
  * What a partly answered question still needs, as the line that asks for
  * it: a fixed line (`key`), or the danger signs she has not answered yet
@@ -101,6 +118,8 @@ export type FollowUp = { key: StringKey; expect: Expect } | { signs: Sign[] };
 type Spec = {
   /** Danger questions are never skipped. */
   danger: boolean;
+  /** About the past: the signs it mentions are history, never a danger sign now. */
+  history?: boolean;
   /** Say-only (the closing line): never listens. */
   sayOnly?: boolean;
   fill(c: Ctx): void;
@@ -109,7 +128,7 @@ type Spec = {
   follow?(s: Slots): FollowUp | null;
   /** Not applicable given other answers. */
   notApplicable?(s: Slots): boolean;
-  record(s: Slots): AnswerRecord;
+  record(s: Slots, weeks?: number): AnswerRecord;
 };
 
 const set = <K extends keyof Slots>(c: Ctx, key: K, v: NonNullable<Slots[K]> extends Slot<infer T> ? T : never) => {
@@ -126,6 +145,7 @@ function numberIn(f: Facts, lo: number, hi: number, units: Concept[] = [], marke
   return n?.value;
 }
 const bare = (f: Facts) => f.numbers.filter((n) => !n.unit && !n.marker);
+const plainNoOf = (c: Ctx) => c.f.global === 'no' || c.f.seen.has('NOTHING');
 
 /**
  * Signs of a danger question. Each danger question owns its signs: a sign
@@ -140,7 +160,7 @@ function fillSigns(c: Ctx, signs: Sign[], generic?: { concept: Concept; sign: Si
     setSign(c, sign, p === 1);
     named.add(sign);
   }
-  // "swelling" alone means this question's swelling (face in q09, feet in q24)
+  // "swelling" alone means this question's swelling (face / hands here)
   const g = generic && c.current ? pol(c, generic.concept) : undefined;
   if (generic && g !== undefined && !named.has(generic.sign)) {
     setSign(c, generic.sign, g === 1);
@@ -183,10 +203,12 @@ function signsFollow(s: Slots, q: string, signs: Sign[]): FollowUp | null {
   const rest = signs.filter((sg) => !answeredHere(s, q, sg));
   return rest.length < signs.length ? { signs: rest } : null;
 }
+/** A watch sign (discharge, tiredness...) is recorded for the doctor but raises no alarm. */
+const alarming = (signs: Sign[]) => signs.some((sg) => !WATCH_SIGNS.has(sg));
 function signRecord(s: Slots, q: string, signs: Sign[]): AnswerRecord {
   const present = signs.filter((sg) => s.signs[sg]?.v === true);
   // A sign she was asked about but never answered is "not answered", never "No".
-  if (present.length) return { value: present.map((sg) => SIGN_LABEL[sg]).join(', '), danger: true };
+  if (present.length) return { value: present.map((sg) => SIGN_LABEL[sg] + (WATCH_SIGNS.has(sg) ? ' (check)' : '')).join(', '), danger: alarming(present), signs: present };
   const unanswered = s.unknown.has(q) || s.vagueYes.has(q) ? [] : signs.filter((sg) => !answeredHere(s, q, sg));
   const rest = unanswered.length ? ` · Not answered: ${unanswered.map((sg) => SIGN_LABEL[sg]).join(', ')} (check)` : '';
   if (s.vagueYes.has(q)) return { value: 'Yes (sign not named: check)', danger: true };
@@ -200,10 +222,12 @@ function signRecord(s: Slots, q: string, signs: Sign[]): AnswerRecord {
 
 /** The signs each multi-sign danger question asks about, in its own order. */
 export const QUESTION_SIGNS: Record<string, Sign[]> = {
-  q09: ['headache', 'vision', 'swellFace'],
-  q10: ['abdPain', 'bleeding', 'leaking'],
-  q18: ['fever', 'vomiting', 'breathless'],
-  q24: ['pallor', 'swellFeet'],
+  bleedDischarge: ['bleeding', 'discharge'],
+  feverPain: ['fever', 'vomiting', 'abdPain'],
+  bleedFluid: ['bleeding', 'leaking'],
+  bleedLeak: ['bleeding', 'leaking'],
+  warning: ['headache', 'vision', 'swellFace'],
+  breathing: ['breathless', 'tired', 'palpitations'],
 };
 const yesNo = (c: Ctx, concepts: Concept[]): boolean | undefined => {
   for (const k of concepts) {
@@ -212,206 +236,289 @@ const yesNo = (c: Ctx, concepts: Concept[]): boolean | undefined => {
   }
   if (!c.current) return undefined;
   if (c.f.global === 'yes' || c.f.seen.has('NORMAL')) return true;
-  if (c.f.global === 'no') return false;
+  if (c.f.global === 'no' || c.f.seen.has('NOTHING')) return false;
   return undefined;
 };
+/** A plain yes / no question (what it asks, and how each answer reads for the doctor). */
+function yesNoSpec(key: keyof Slots, concepts: Concept[], yes: string, no: string, opts: { history?: boolean; notApplicable?: (s: Slots) => boolean } = {}): Spec {
+  return {
+    danger: false,
+    history: opts.history,
+    notApplicable: opts.notApplicable,
+    fill(c) {
+      const v = yesNo(c, concepts);
+      if (v !== undefined && (c.current || concepts.some((k) => pol(c, k) !== undefined))) set(c, key, v as never);
+      if (c.current && v === undefined && c.f.global === 'unknown') c.s.unknown.add(c.q);
+    },
+    done: (s) => !!s[key] || s.unknown.has(String(key)),
+    record: (s) => {
+      const v = (s[key] as YN | undefined)?.v;
+      return { value: v === true ? yes : v === false ? no : s.unknown.has(String(key)) ? 'Not known' : 'Not clear', danger: false };
+    },
+  };
+}
+/** A medicine she should take every day: daily / not regularly / no. */
+function adherenceSpec(key: 'ifa' | 'calcium' | 'ironCalcium', concepts: Concept[]): Spec {
+  return {
+    danger: false,
+    fill(c) {
+      if (!c.current) return;
+      if (pol(c, 'SOMETIMES') === 1 || pol(c, 'DAILY') === -1) set(c, key, 'irregular');
+      else if (pol(c, 'DAILY') === 1 || concepts.some((k) => pol(c, k) === 1) || c.f.global === 'yes') set(c, key, 'daily');
+      else if (concepts.some((k) => pol(c, k) === -1) || c.f.global === 'no') set(c, key, 'no');
+      else if (c.f.global === 'unknown') c.s.unknown.add(key);
+    },
+    done: (s) => !!s[key] || s.unknown.has(key),
+    record: (s) => {
+      const v = (s[key] as Slot<Adherence> | undefined)?.v;
+      return { value: v === 'daily' ? 'Yes, every day' : v === 'irregular' ? 'Not regularly (check)' : v === 'no' ? 'No (check)' : 'Not known', danger: false };
+    },
+  };
+}
+/** Named items of a list question ("which conditions?"), or none, or "yes" with none named. */
+function listSpec(key: 'losses' | 'pastProblems' | 'conditions' | 'longIllness' | 'tobacco', items: [Concept, string][], opts: { history?: boolean; notApplicable?: (s: Slots) => boolean; extra?: (c: Ctx) => string[] } = {}): Spec {
+  return {
+    danger: false,
+    history: opts.history,
+    notApplicable: opts.notApplicable,
+    fill(c) {
+      const found = items.filter(([k]) => pol(c, k) === 1).map(([, label]) => label);
+      if (c.current) found.push(...(opts.extra?.(c) ?? []));
+      if (found.length && (c.current || key === 'tobacco')) set(c, key, [...new Set(found)]);
+      else if (c.current && (plainNoOf(c) || items.some(([k]) => pol(c, k) === -1))) set(c, key, []);
+      else if (c.current && c.f.global === 'yes') set(c, key, ['Yes (not named: check)']);
+      else if (c.current && c.f.global === 'unknown') c.s.unknown.add(key);
+    },
+    done: (s) => !!s[key] || s.unknown.has(key),
+    record: (s) => {
+      const v = (s[key] as Slot<string[]> | undefined)?.v;
+      return { value: v?.length ? v.join(', ') : v ? 'No' : s.unknown.has(key) ? 'Not known' : 'Not clear', danger: false };
+    },
+  };
+}
+/** An open question ("anything worrying you?"): her own words, or "No". */
+function openSpec(key: 'concerns' | 'newProblems' | 'tummySize'): Spec {
+  return {
+    danger: false,
+    fill(c) {
+      if (!c.current) return;
+      if (plainNoOf(c) && !c.f.said.size) set(c, key, '');
+      else if (plainNoOf(c) && [...c.f.said.values()].every((p) => p === -1)) set(c, key, '');
+      else if (c.f.global === 'unknown') c.s.unknown.add(key);
+      else if (c.f.raw.trim()) set(c, key, c.f.raw.trim());
+    },
+    done: (s) => !!s[key] || s.unknown.has(key),
+    record: (s) => {
+      const v = s[key]?.v;
+      return { value: v ? `Reported: "${v}" (check)` : v === '' ? 'No' : s.unknown.has(key) ? 'Not sure' : 'Not clear', danger: false };
+    },
+  };
+}
 
 const ORD = ['', '1st', '2nd', '3rd', '4th', '5th'];
 /** Words around a name that are not the name ("my name is", "her age"). */
 const NAME_FILLER = new Set([
-  'ನನ್ನ', 'ಅವರ', 'ಅವಳ', 'ಅವರು', 'ಅವಳು', 'ಇವರ', 'ಇವಳ', 'ತಾಯಿ', 'ತಾಯಿಯ', 'ಅಮ್ಮ', 'ಅವರದು', 'ಇದು', 'ಆಗಿದೆ', 'ವರ್ಷದ', 'ವರ್ಷಗಳು',
-  'मेरा', 'मेरी', 'उनका', 'उनकी', 'इनका', 'इनकी', 'माता', 'मां', 'का', 'की', 'के', 'है', 'हैं', 'उसका', 'उसकी',
-  'my', 'her', 'the', 'mother', 'mothers', 'is', 'and', 'old', 'she', 'name', 'age', 'years',
+  'ನನ್ನ', 'ಅವರ', 'ಅವಳ', 'ಅವರು', 'ಅವಳು', 'ಇವರ', 'ಇವಳ', 'ತಾಯಿ', 'ತಾಯಿಯ', 'ಅಮ್ಮ', 'ಅವರದು', 'ಇದು', 'ಆಗಿದೆ', 'ವರ್ಷದ', 'ವರ್ಷಗಳು', 'ನಾನು', 'ಊರು', 'ಹಳ್ಳಿ', 'ಗ್ರಾಮ', 'ನಮ್ಮ', 'ಇರುವುದು', 'ವಾಸ',
+  'मेरा', 'मेरी', 'उनका', 'उनकी', 'इनका', 'इनकी', 'माता', 'मां', 'का', 'की', 'के', 'है', 'हैं', 'उसका', 'उसकी', 'मैं', 'गाँव', 'गांव', 'में', 'रहती', 'हूँ', 'हूं', 'हमारा',
+  'my', 'her', 'the', 'mother', 'mothers', 'is', 'and', 'old', 'she', 'name', 'age', 'years', 'i', 'live', 'in', 'village', 'from', 'am', 'at',
 ]);
+const wordsOf = (c: Ctx) => c.f.rest.filter((w) => /[\p{L}\p{M}]{2,}/u.test(w) && !NAME_FILLER.has(w)).join(' ').trim();
+const firstPreg = (s: Slots) => s.firstPregnancy?.v === true;
 
 export const SPECS: Record<string, Spec> = {
-  q01: {
+  // ---- first visit: who she is --------------------------------------------------
+  name: {
+    danger: false,
+    fill(c) {
+      // letters AND marks: Kannada / Devanagari vowel signs are marks (ರೂಪ = ರ + ೂ + ಪ)
+      if (c.current && wordsOf(c)) set(c, 'name', titleCase(wordsOf(c)));
+    },
+    done: (s) => !!s.name,
+    record: (s) => ({ value: s.name?.v ?? 'Not clear', danger: false }),
+  },
+  age: {
     danger: false,
     fill(c) {
       const age = numberWith(c.f, ['YEAR', 'AGE'], 14, 55) ?? (c.current ? numberIn(c.f, 14, 55) : undefined);
       if (age !== undefined) set(c, 'age', age);
-      if (c.current) {
-        // letters AND marks: Kannada / Devanagari vowel signs are marks (ರೂಪ = ರ + ೂ + ಪ)
-        const name = c.f.rest.filter((w) => /[\p{L}\p{M}]{2,}/u.test(w) && !NAME_FILLER.has(w)).join(' ').trim();
-        if (name) set(c, 'name', titleCase(name));
-      }
     },
-    done: (s) => !!s.name && !!s.age,
-    follow: (s) => (s.name && !s.age ? { key: 'vAskAge', expect: 'age' } : s.age && !s.name ? { key: 'vAskName', expect: 'name' } : null),
-    record: (s) => ({ value: [s.name?.v, s.age ? `${s.age.v} years` : null].filter(Boolean).join(', ') || 'Not clear', danger: false }),
+    done: (s) => !!s.age,
+    record: (s) => ({ value: s.age ? `${s.age.v} years` : 'Not clear', danger: false }),
   },
-  q02: {
+  village: {
     danger: false,
     fill(c) {
-      const months = numberWith(c.f, ['MONTH'], 1, 10);
-      const weeks = numberWith(c.f, ['WEEK'], 4, 42);
-      if (months !== undefined) set(c, 'gaMonths', months);
-      if (weeks !== undefined) set(c, 'gaWeeks', weeks);
-      if (c.current && months === undefined && weeks === undefined) {
-        const n = bare(c.f)[0]?.value;
-        if (n !== undefined && n >= 1 && n <= 10) set(c, 'gaMonths', n);
-        else if (n !== undefined && n >= 11 && n <= 42) set(c, 'gaWeeks', n);
-      }
-      if (c.current && c.f.date) set(c, 'lmp', c.f.date);
+      if (c.current && wordsOf(c)) set(c, 'village', titleCase(wordsOf(c)));
     },
-    done: (s) => !!(s.gaMonths || s.gaWeeks || s.lmp),
-    record: (s) => ({ value: [s.gaMonths && `${s.gaMonths.v} months`, s.gaWeeks && `${s.gaWeeks.v} weeks`, s.lmp && `LMP/EDD ${s.lmp.v}`].filter(Boolean).join(', ') || 'Not clear', danger: false }),
+    done: (s) => !!s.village,
+    record: (s) => ({ value: s.village?.v ?? 'Not clear', danger: false }),
   },
-  q03: {
+  firstPregnancy: {
     danger: false,
-    fill(c) {
-      if (c.current && c.f.date) set(c, 'lmp', c.f.date);
-      if (c.current && c.f.global === 'unknown') c.s.unknown.add('q03');
-    },
-    done: (s) => !!s.lmp || s.unknown.has('q03'),
-    notApplicable: (s) => !!(s.gaMonths || s.gaWeeks || s.lmp),
-    record: (s) => ({ value: s.lmp ? `LMP ${s.lmp.v}` : s.gaMonths || s.gaWeeks ? 'Not needed: months known' : 'Not known', danger: false }),
-  },
-  q04: {
-    danger: false,
+    history: true,
     fill(c) {
       const ord = c.f.ordinal;
-      if (ord && (c.current || c.f.seen.has('PREGNANCY'))) set(c, 'gravida', ord);
-      const kids = c.f.numbers.find((n) => n.unit === 'CHILD' || n.marker === 'CHILD');
-      if (kids) set(c, 'para', kids.value);
-      if (pol(c, 'CHILD') === -1 && c.current) set(c, 'para', 0);
-      // (not in reply to "how many children before?": that number is the count)
-      if (c.current && !ord && c.expect !== 'para') {
-        const nums = bare(c.f).filter((n) => n.value <= 12);
-        if (nums.length) set(c, 'gravida', nums[0].value);
-        if (nums.length > 1 && !kids) set(c, 'para', nums[1].value);
+      if (ord && (c.current || c.f.seen.has('PREGNANCY'))) {
+        set(c, 'firstPregnancy', ord === 1);
+        if (ord > 1) set(c, 'prevPregnancies', ord - 1);
+      } else if (c.current) {
+        const v = yesNo(c, []);
+        if (v !== undefined) set(c, 'firstPregnancy', v);
       }
-      // The follow-up "how many children before?": a bare number is the count.
-      if (c.current && c.expect === 'para' && !kids) {
-        const n = bare(c.f).find((x) => x.value <= 12)?.value;
-        if (n !== undefined) set(c, 'para', n);
-        else if (c.f.global === 'no') set(c, 'para', 0);
-      }
-      if (c.s.gravida?.v === 1 && !c.s.para) set(c, 'para', 0);
     },
-    done: (s) => !!s.gravida && (s.gravida.v === 1 || !!s.para),
-    follow: (s) => (s.gravida && s.gravida.v > 1 && !s.para ? { key: 'vAskPara', expect: 'para' } : null),
+    done: (s) => !!s.firstPregnancy,
+    record: (s) => ({ value: s.firstPregnancy?.v ? 'Yes, first pregnancy' : s.firstPregnancy ? 'No' : 'Not clear', danger: false }),
+  },
+  prevPregnancies: {
+    danger: false,
+    history: true,
+    fill(c) {
+      if (!c.current) return;
+      const n = numberWith(c.f, ['PREGNANCY', 'CHILD'], 0, 15) ?? bare(c.f).find((x) => x.value <= 15)?.value;
+      if (n !== undefined) set(c, 'prevPregnancies', n);
+      else if (pol(c, 'ONE_ONLY') === 1) set(c, 'prevPregnancies', 1);
+      else if (pol(c, 'BOTH') === 1) set(c, 'prevPregnancies', 2);
+      else if (c.f.global === 'unknown') c.s.unknown.add('prevPregnancies');
+    },
+    done: (s) => !!s.prevPregnancies || s.unknown.has('prevPregnancies'),
+    notApplicable: firstPreg,
+    record: (s) =>
+      firstPreg(s) && !s.prevPregnancies
+        ? { value: 'None: first pregnancy', danger: false }
+        : { value: s.prevPregnancies ? `${s.prevPregnancies.v} time${s.prevPregnancies.v === 1 ? '' : 's'} before (${ORD[s.prevPregnancies.v + 1] ?? `${s.prevPregnancies.v + 1}th`} pregnancy)` : 'Not known', danger: false },
+  },
+  // ---- first visit: pregnancy history ----------------------------------------------
+  lmp: {
+    danger: false,
+    history: true,
+    fill(c) {
+      const months = numberWith(c.f, ['MONTH'], 1, 10);
+      if (months !== undefined) set(c, 'gaMonths', months);
+      if (!c.current) return;
+      if (c.f.date) set(c, 'lmp', c.f.date);
+      else if (c.f.global === 'unknown' || c.f.global === 'no') set(c, 'lmp', 'unknown');
+      else if (c.f.global === 'yes') c.s.vagueYes.add('lmp');
+    },
+    done: (s) => !!s.lmp,
+    follow: (s) => (!s.lmp && s.vagueYes.has('lmp') ? { key: 'vAskDate', expect: 'date' } : null),
     record: (s) => ({
-      value:
-        [
-          s.gravida && `${ORD[s.gravida.v] ?? `${s.gravida.v}th`} pregnancy`,
-          s.para && s.gravida?.v !== 1 && (s.para.v === 0 ? 'no children before' : `${s.para.v} child${s.para.v === 1 ? '' : 'ren'} before`),
-        ]
-          .filter(Boolean)
-          .join(', ') || 'Not clear',
+      value: s.lmp && s.lmp.v !== 'unknown' ? `LMP ${s.lmp.v}` : `Not remembered${s.gaMonths ? ` (about ${s.gaMonths.v} months pregnant)` : ''}`,
       danger: false,
     }),
   },
-  q05: {
+  regularPeriods: {
     danger: false,
+    history: true,
     fill(c) {
-      const found: string[] = [];
-      if (pol(c, 'CSECTION') === 1) found.push('C-section');
-      if (c.current && pol(c, 'BLEEDING') === 1) found.push('Heavy bleeding');
-      if (c.current && pol(c, 'FITS') === 1) found.push('Fits');
-      if (found.length) set(c, 'past', found);
-      else if (c.current && (c.f.global === 'no' || pol(c, 'CSECTION') === -1)) set(c, 'past', []);
-      else if (c.current && c.f.global === 'yes') set(c, 'past', ['Yes (not named)']);
+      if (!c.current) return;
+      if (pol(c, 'SOMETIMES') === 1 || pol(c, 'DAILY') === -1 || pol(c, 'NORMAL') === -1) set(c, 'regular', 'irregular');
+      else if (pol(c, 'DAILY') === 1 || c.f.seen.has('NORMAL') || c.f.global === 'yes') set(c, 'regular', 'regular');
+      else if (c.f.global === 'no') set(c, 'regular', 'irregular');
+      else if (c.f.global === 'unknown') c.s.unknown.add('regularPeriods');
     },
-    done: (s) => !!s.past,
-    notApplicable: (s) => s.gravida?.v === 1,
-    record: (s) => ({ value: s.gravida?.v === 1 && !s.past ? 'First pregnancy: no past deliveries' : s.past?.v.length ? s.past.v.join(', ') : 'No problems', danger: false }),
+    done: (s) => !!s.regular || s.unknown.has('regularPeriods'),
+    record: (s) => ({ value: s.regular?.v === 'regular' ? 'Yes, regular' : s.regular ? 'Not regular' : 'Not known', danger: false }),
   },
-  q21: {
+  confirmed: {
     danger: false,
+    history: true,
     fill(c) {
-      if (pol(c, 'IVF') === 1) set(c, 'conception', 'ivf');
-      else if (pol(c, 'NATURAL') === 1 || (c.current && (pol(c, 'IVF') === -1 || c.f.global === 'no' || c.f.seen.has('NORMAL')))) set(c, 'conception', 'natural');
+      if (!c.current) return;
+      const how = [pol(c, 'PREG_TEST') === 1 && 'pregnancy test', (pol(c, 'HEALTH_CENTRE') === 1 || pol(c, 'PLACE') === 1) && 'health centre'].filter(Boolean) as string[];
+      if (how.length) set(c, 'confirmed', how.join(' and '));
+      else if (c.f.global === 'yes') set(c, 'confirmed', 'yes');
+      else if (plainNoOf(c)) set(c, 'confirmed', false);
+      else if (c.f.global === 'unknown') c.s.unknown.add('confirmed');
     },
-    done: (s) => !!s.conception,
-    record: (s) => ({ value: s.conception?.v === 'ivf' ? 'After IVF treatment' : 'Natural', danger: false }),
+    done: (s) => !!s.confirmed || s.unknown.has('confirmed'),
+    record: (s) => ({ value: s.confirmed?.v === false ? 'Not yet confirmed (check)' : s.confirmed?.v === 'yes' ? 'Yes' : s.confirmed ? `Yes, ${s.confirmed.v}` : 'Not known', danger: false }),
   },
-  q06: {
-    danger: true,
+  deliveries: {
+    danger: false,
+    history: true,
     fill(c) {
-      if (c.f.bp && (c.current || c.f.seen.has('BP') || c.f.seen.has('HTN'))) set(c, 'bp', c.f.bp);
-      else if (c.current) {
-        const nums = c.f.numbers.filter((n) => n.value >= 40 && n.value <= 260);
-        if (nums.length >= 2 && nums[0].value > nums[1].value && nums[0].value >= 70 && nums[1].value <= 160) set(c, 'bp', [nums[0].value, nums[1].value]);
-        else if (nums.length === 1) {
-          // One number: the lower one when the upper is already heard, else the upper.
-          const n = nums[0].value;
-          const sys = c.s.bpSys?.v;
-          if (sys !== undefined && n < sys && n <= 160) set(c, 'bp', [sys, n]);
-          else if (n >= 70) set(c, 'bpSys', n);
-        }
-      }
-      if (c.current && c.f.global === 'unknown') c.s.unknown.add('q06');
+      if (!c.current) return;
+      const n = numberWith(c.f, ['CHILD', 'PREGNANCY'], 0, 12) ?? bare(c.f).find((x) => x.value <= 12)?.value;
+      if (n !== undefined) set(c, 'deliveries', n);
+      else if (pol(c, 'ONE_ONLY') === 1) set(c, 'deliveries', 1);
+      else if (plainNoOf(c)) set(c, 'deliveries', 0);
+      else if (c.f.global === 'yes') set(c, 'deliveriesYes', true);
+      else if (c.f.global === 'unknown') c.s.unknown.add('deliveries');
     },
-    done: (s) => !!s.bp || s.unknown.has('q06'),
-    follow: (s) => (s.bpSys && !s.bp ? { key: 'vAskDiastolic', expect: 'diastolic' } : null),
+    done: (s) => !!s.deliveries || s.unknown.has('deliveries'),
+    follow: (s) => (!s.deliveries && s.deliveriesYes ? { key: 'vAskHowMany', expect: 'count' } : null),
+    notApplicable: firstPreg,
     record: (s) =>
-      s.bp ? { value: `${s.bp.v[0]}/${s.bp.v[1]} mmHg`, danger: s.bp.v[0] >= 140 || s.bp.v[1] >= 90 } : { value: 'Not measured (check)', danger: true },
+      firstPreg(s) && !s.deliveries
+        ? { value: 'None: first pregnancy', danger: false }
+        : { value: s.deliveries ? (s.deliveries.v === 0 ? 'No previous deliveries' : `${s.deliveries.v} previous deliver${s.deliveries.v === 1 ? 'y' : 'ies'}`) : 'Not known', danger: false },
   },
-  q07: {
+  losses: listSpec('losses', [['MISCARRIAGE', 'Miscarriage'], ['ABORTION', 'Abortion'], ['STILLBIRTH', 'Stillbirth']], { history: true, notApplicable: firstPreg }),
+  pastProblems: listSpec('pastProblems', [['CSECTION', 'C-section'], ['BLEEDING', 'Heavy bleeding'], ['FITS', 'Fits'], ['HTN', 'High BP'], ['DIABETES', 'Sugar'], ['STILLBIRTH', 'Stillbirth']], {
+    history: true,
+    notApplicable: firstPreg,
+  }),
+  csection: yesNoSpec('csection', ['CSECTION'], 'Yes, C-section before (check)', 'No', {
+    history: true,
+    notApplicable: (s) => firstPreg(s) || s.deliveries?.v === 0 || (s.pastProblems?.v.includes('C-section') ?? false),
+  }),
+  // ---- first visit: existing health conditions -----------------------------------------
+  conditions: listSpec('conditions', [['HTN', 'High BP'], ['DIABETES', 'Diabetes'], ['HEART', 'Heart disease'], ['ASTHMA', 'Asthma'], ['THYROID', 'Thyroid']], { history: true }),
+  longIllness: listSpec('longIllness', [['TB', 'TB'], ['FITS', 'Epilepsy']], { history: true }),
+  medicines: {
     danger: false,
+    history: true,
     fill(c) {
-      const kg = numberWith(c.f, ['KG'], 30, 150) ?? (c.current ? numberIn(c.f, 30, 150) : undefined);
-      if (kg !== undefined) set(c, 'weight', kg);
-      if (c.current && c.f.global === 'unknown') c.s.unknown.add('q07');
+      if (!c.current) return;
+      const meds: string[] = [];
+      if (pol(c, 'IRON') === 1) meds.push('Iron');
+      if (/calcium|ಕ್ಯಾಲ್ಸಿ|कैल्शियम/.test(c.f.text)) meds.push('Calcium');
+      if (/folic|ಫೋಲಿಕ್|फोलिक/.test(c.f.text)) meds.push('Folic acid');
+      if (pol(c, 'THYROID') === 1) meds.push('Thyroid');
+      if (pol(c, 'DIABETES') === 1) meds.push('Sugar');
+      if (pol(c, 'HTN') === 1) meds.push('BP');
+      if (!meds.length && (pol(c, 'MEDICINE') === 1 || c.f.global === 'yes')) meds.push('Yes (not named: check)');
+      if (meds.length) set(c, 'medicines', meds);
+      else if (plainNoOf(c) || pol(c, 'MEDICINE') === -1) set(c, 'medicines', []);
+      else if (c.f.global === 'unknown') c.s.unknown.add('medicines');
     },
-    done: (s) => !!s.weight || s.unknown.has('q07'),
-    record: (s) => ({ value: s.weight ? `${s.weight.v} kg` : 'Not known', danger: false }),
+    done: (s) => !!s.medicines || s.unknown.has('medicines'),
+    record: (s) => ({ value: s.medicines?.v.length ? s.medicines.v.join(', ') : s.medicines ? 'No medicines' : 'Not known', danger: false }),
   },
-  q08: {
+  allergy: yesNoSpec('allergy', ['ALLERGY'], 'Yes, allergy (check)', 'No allergies', { history: true }),
+  transfusion: yesNoSpec('transfusion', ['TRANSFUSION'], 'Yes, transfusion before', 'No', { history: true }),
+  // ---- first visit: this pregnancy ---------------------------------------------------------
+  bleedDischarge: dangerSigns('bleedDischarge'),
+  feverPain: dangerSigns('feverPain'),
+  tobacco: listSpec('tobacco', [['TOBACCO', 'Tobacco'], ['ALCOHOL', 'Alcohol']]),
+  concerns: openSpec('concerns'),
+  // ---- second and third visits ---------------------------------------------------------------
+  newProblems: openSpec('newProblems'),
+  bleedFluid: dangerSigns('bleedFluid'),
+  bleedLeak: dangerSigns('bleedLeak'),
+  warning: dangerSigns('warning', { concept: 'SWELLING', sign: 'swellFace' }),
+  breathing: dangerSigns('breathing'),
+  // Her own words about her tummy (the ASHA examines fundal height): recorded for a check.
+  tummySize: openSpec('tummySize'),
+  movementFelt: {
     danger: false,
     fill(c) {
       if (!c.current) return;
-      if (pol(c, 'SOMETIMES') === 1 || pol(c, 'DAILY') === -1) set(c, 'iron', 'irregular');
-      else if (pol(c, 'DAILY') === 1 || pol(c, 'IRON') === 1 || c.f.global === 'yes') set(c, 'iron', 'daily');
-      else if (pol(c, 'IRON') === -1 || c.f.global === 'no') set(c, 'iron', 'no');
+      const mv = pol(c, 'MOVEMENT');
+      if (mv === 1 || c.f.global === 'yes' || c.f.seen.has('NORMAL')) set(c, 'movementFelt', true);
+      else if (mv === -1 || c.f.global === 'no') set(c, 'movementFelt', false);
+      else if (c.f.global === 'unknown') c.s.unknown.add('movementFelt');
     },
-    done: (s) => !!s.iron,
-    record: (s) => ({ value: s.iron?.v === 'daily' ? 'Yes, every day' : s.iron?.v === 'irregular' ? 'Not regularly' : 'No', danger: false }),
+    done: (s) => !!s.movementFelt || s.unknown.has('movementFelt'),
+    // Not yet felt is recorded as such, never as a danger sign: it depends on the weeks.
+    record: (s) => ({ value: s.movementFelt?.v ? 'Yes, feels movements' : s.movementFelt ? 'Not yet felt' : 'Not sure', danger: false }),
   },
-  q24: {
-    danger: true,
-    fill: (c) => fillSigns(c, ['pallor', 'swellFeet'], { concept: 'SWELLING', sign: 'swellFeet' }),
-    done: (s) => signsAnswered(s, 'q24', ['pallor', 'swellFeet']),
-    follow: (s) => signsFollow(s, 'q24', ['pallor', 'swellFeet']),
-    record: (s) => signRecord(s, 'q24', ['pallor', 'swellFeet']),
-  },
-  q25: {
-    danger: false,
-    fill(c) {
-      const rate = numberWith(c.f, ['FHR'], 80, 220) ?? (c.current ? numberIn(c.f, 80, 220) : undefined);
-      if (rate !== undefined) set(c, 'fhr', rate);
-      else if (c.current && c.f.global === 'yes') set(c, 'fhr', 'checked');
-      else if (c.current && c.f.global === 'no') set(c, 'fhr', 'not checked');
-      if (c.current && c.f.global === 'unknown') c.s.unknown.add('q25');
-    },
-    done: (s) => !!s.fhr || s.unknown.has('q25'),
-    record: (s) => ({ value: typeof s.fhr?.v === 'number' ? `${s.fhr.v} per minute` : s.fhr?.v === 'checked' ? 'Checked' : s.fhr ? 'Not checked' : 'Not known', danger: false }),
-  },
-  q09: {
-    danger: true,
-    fill: (c) => fillSigns(c, ['headache', 'vision', 'swellFace'], { concept: 'SWELLING', sign: 'swellFace' }),
-    done: (s) => signsAnswered(s, 'q09', ['headache', 'vision', 'swellFace']),
-    follow: (s) => signsFollow(s, 'q09', ['headache', 'vision', 'swellFace']),
-    record: (s) => signRecord(s, 'q09', ['headache', 'vision', 'swellFace']),
-  },
-  q10: {
-    danger: true,
-    fill: (c) => fillSigns(c, ['abdPain', 'bleeding', 'leaking']),
-    done: (s) => signsAnswered(s, 'q10', ['abdPain', 'bleeding', 'leaking']),
-    follow: (s) => signsFollow(s, 'q10', ['abdPain', 'bleeding', 'leaking']),
-    record: (s) => signRecord(s, 'q10', ['abdPain', 'bleeding', 'leaking']),
-  },
-  q11: {
-    danger: true,
-    fill: (c) => fillSigns(c, ['fits']),
-    done: (s) => signsAnswered(s, 'q11', ['fits']),
-    record(s) {
-      const r = signRecord(s, 'q11', ['fits']);
-      return s.vagueYes.has('q11') ? { value: 'Yes, fits', danger: true } : r;
-    },
-  },
-  q12: {
+  ifa: adherenceSpec('ifa', ['IRON']),
+  calcium: adherenceSpec('calcium', ['IRON', 'MEDICINE']),
+  ironCalcium: adherenceSpec('ironCalcium', ['IRON', 'MEDICINE']),
+  testsDone: yesNoSpec('testsDone', ['TEST'], 'Yes, done', 'Not yet (check)'),
+  followedAdvice: yesNoSpec('followedAdvice', ['DOCTOR', 'HEALTH_CENTRE'], 'Yes', 'No (check)'),
+  movement: {
     danger: true,
     fill(c) {
       if (!c.current) {
@@ -423,136 +530,85 @@ export const SPECS: Record<string, Spec> = {
       if (reduced === 1) set(c, 'movement', 'reduced');
       else if (mv === -1 || (mv === undefined && c.f.global === 'no' && !c.f.seen.has('NORMAL'))) set(c, 'movement', 'absent');
       else if (mv === 1 || c.f.seen.has('NORMAL') || c.f.global === 'yes' || reduced === -1) set(c, 'movement', 'normal');
-      else if (c.f.global === 'unknown') c.s.unknown.add('q12');
+      else if (c.f.global === 'unknown') c.s.unknown.add('movement');
     },
-    done: (s) => (!!s.movement && s.movement.q === 'q12') || s.unknown.has('q12'),
-    record: (s) =>
-      s.movement?.v === 'normal'
-        ? { value: 'Yes, moving normally', danger: false }
-        : s.movement?.v === 'reduced'
-          ? { value: 'Fewer movements', danger: true }
-          : s.movement?.v === 'absent'
-            ? { value: 'No movements felt', danger: true }
-            : { value: 'Not known (check)', danger: true },
+    done: (s) => (!!s.movement && s.movement.q === 'movement') || s.unknown.has('movement'),
+    record: (s, weeks) => movementRecord(s.movement?.v, s.unknown.has('movement'), weeks),
   },
-  q18: {
-    danger: true,
-    fill: (c) => fillSigns(c, ['fever', 'vomiting', 'breathless']),
-    done: (s) => signsAnswered(s, 'q18', ['fever', 'vomiting', 'breathless']),
-    follow: (s) => signsFollow(s, 'q18', ['fever', 'vomiting', 'breathless']),
-    record: (s) => signRecord(s, 'q18', ['fever', 'vomiting', 'breathless']),
-  },
-  q19: {
+  movementLess: {
+    // Asked only when "moving as usual?" did not settle it (the inverse question: "yes" = fewer).
     danger: false,
     fill(c) {
       if (!c.current) return;
-      const found: string[] = [];
-      if (pol(c, 'DIABETES') === 1) found.push('Diabetes');
-      if (pol(c, 'HTN') === 1) found.push('High BP');
-      if (pol(c, 'THYROID') === 1) found.push('Thyroid');
-      if (pol(c, 'FITS') === 1) found.push('Fits');
-      if (found.length) set(c, 'history', found);
-      else if (c.f.global === 'no' || [...c.f.said.values()].some((p) => p === -1)) set(c, 'history', []);
-      else if (c.f.global === 'yes') set(c, 'history', ['Yes (not named)']);
+      if (pol(c, 'MOVEMENT') === -1 && pol(c, 'REDUCED') !== 1) set(c, 'fewer', 'absent');
+      else if (pol(c, 'REDUCED') === 1 || c.f.global === 'yes') set(c, 'fewer', 'yes');
+      else if (c.f.global === 'no' || c.f.seen.has('NORMAL') || c.f.seen.has('NOTHING')) set(c, 'fewer', 'no');
+      else if (c.f.global === 'unknown') c.s.unknown.add('movementLess');
     },
-    done: (s) => !!s.history,
-    record: (s) => ({ value: s.history?.v.length ? s.history.v.join(', ') : 'No', danger: false }),
+    done: (s) => !!s.fewer || s.unknown.has('movementLess'),
+    notApplicable: (s) => !!s.movement && s.movement.q === 'movement',
+    record(s, weeks) {
+      // Settled by "moving as usual?": that answer carries any flag.
+      if (s.movement && s.movement.q === 'movement' && !s.fewer) return { value: s.movement.v === 'normal' ? 'No decrease' : 'See the previous answer', danger: false };
+      const v = s.fewer?.v;
+      return v === 'no' ? { value: 'No decrease', danger: false } : movementRecord(v === 'absent' ? 'absent' : v === 'yes' ? 'reduced' : undefined, s.unknown.has('movementLess') || !v, weeks);
+    },
   },
-  q20: {
+  deliveryPlace: {
     danger: false,
     fill(c) {
-      if (pol(c, 'ALLERGY') !== undefined) set(c, 'allergy', pol(c, 'ALLERGY') === 1);
       if (!c.current) return;
-      const meds: string[] = [];
-      if (pol(c, 'IRON') === 1) meds.push('Iron');
-      if (/calcium|ಕ್ಯಾಲ್ಸಿ|कैल्शियम/.test(c.f.text)) meds.push('Calcium');
-      if (/folic|ಫೋಲಿಕ್|फोलिक/.test(c.f.text)) meds.push('Folic acid');
-      if (!meds.length && pol(c, 'MEDICINE') === 1) meds.push('Yes (not named)');
-      if (meds.length) set(c, 'meds', meds);
-      else if (c.f.global === 'no' || pol(c, 'MEDICINE') === -1) set(c, 'meds', []);
-      if (c.f.global === 'no' && pol(c, 'ALLERGY') === undefined && !meds.length) set(c, 'allergy', false);
-      // Replies to a follow-up: a plain yes / no is about what it asked.
-      if (c.expect === 'allergy' && pol(c, 'ALLERGY') === undefined && (c.f.global === 'yes' || c.f.global === 'no')) set(c, 'allergy', c.f.global === 'yes');
-      if (c.expect === 'meds' && !meds.length && c.f.global === 'no') set(c, 'meds', []);
+      const place = /brims|ಬ್ರಿಮ್ಸ್|ಬಿಆರ್ಐಎಂಎಸ್|ब्रिम्स/.test(c.f.text)
+        ? 'BRIMS'
+        : /taluk|ತಾಲೂಕು|ತಾಲ್ಲೂಕು|तालुक/.test(c.f.text)
+          ? 'taluk hospital'
+          : /district|ಜಿಲ್ಲಾ|जिला/.test(c.f.text)
+            ? 'district hospital'
+            : /private|ಖಾಸಗಿ|ಪ್ರೈವೇಟ್|प्राइवेट/.test(c.f.text)
+              ? 'private hospital'
+              : pol(c, 'HOME') === 1
+                ? 'home'
+                : pol(c, 'HEALTH_CENTRE') === 1
+                  ? 'health centre'
+                  : null;
+      if (place) set(c, 'deliveryPlace', place);
+      else if (c.f.global === 'yes') set(c, 'deliveryPlace', 'yes');
+      else if (plainNoOf(c) || c.f.global === 'unknown') set(c, 'deliveryPlace', false);
     },
-    done: (s) => !!s.meds && !!s.allergy,
-    follow: (s) => (s.meds && !s.allergy ? { key: 'vAskAllergy', expect: 'allergy' } : s.allergy && !s.meds ? { key: 'vAskMeds', expect: 'meds' } : null),
-    record: (s) => ({
-      value: [s.meds ? (s.meds.v.length ? s.meds.v.join(', ') : 'No medicines') : null, s.allergy ? (s.allergy.v ? 'Allergy: yes (check)' : 'No allergies') : null].filter(Boolean).join('. '),
-      danger: false,
-    }),
-  },
-  q13: {
-    danger: false,
-    fill(c) {
-      const scan = pol(c, 'SCAN');
-      if (scan !== undefined && (c.current || c.f.said.size)) set(c, 'scan', scan === 1);
-      if (c.current) {
-        const place = /brims|ಬ್ರಿಮ್ಸ್|ಬಿಆರ್ಐಎಂಎಸ್|ब्रिम्स/.test(c.f.text) ? 'BRIMS' : /taluk|ತಾಲೂಕು|ತಾಲ್ಲೂಕು|तालुक/.test(c.f.text) ? 'taluk hospital' : /private|ಖಾಸಗಿ|ಪ್ರೈವೇಟ್|प्राइवेट/.test(c.f.text) ? 'private' : null;
-        if (place) {
-          set(c, 'scanPlace', place);
-          set(c, 'scan', true);
-        } else if (scan === undefined && c.f.global) set(c, 'scan', c.f.global === 'yes');
-      }
+    done: (s) => !!s.deliveryPlace,
+    record: (s) => {
+      const v = s.deliveryPlace?.v;
+      return {
+        value: v === 'home' ? 'At home (check: facility delivery advised)' : v === 'yes' ? 'Yes (place not named)' : v ? `Yes, ${v}` : 'Not decided yet (check)',
+        danger: false,
+      };
     },
-    done: (s) => !!s.scan,
-    record: (s) => ({ value: s.scan?.v ? `Yes${s.scanPlace ? `, at ${s.scanPlace.v}` : ''}` : 'Not yet', danger: false }),
   },
-  q14: {
-    danger: false,
-    fill(c) {
-      if (pol(c, 'BOTH') === 1) set(c, 'tt', 2);
-      else if (pol(c, 'ONE_ONLY') === 1) set(c, 'tt', 1);
-      else if (c.current) {
-        const n = bare(c.f).find((x) => x.value <= 2)?.value;
-        if (n !== undefined) set(c, 'tt', n as 0 | 1 | 2);
-        else if (c.f.global === 'yes') set(c, 'tt', 2);
-        else if (c.f.global === 'no') set(c, 'tt', 0);
-      }
-    },
-    done: (s) => !!s.tt,
-    record: (s) => ({ value: s.tt?.v === 2 ? 'Yes, both' : s.tt?.v === 1 ? 'Only one' : 'No', danger: false }),
-  },
-  q26: {
-    danger: false,
-    fill(c) {
-      const hb = numberWith(c.f, ['HB'], 4, 18) ?? (c.current ? c.f.numbers.find((n) => n.value >= 4 && n.value <= 18 && (n.value % 1 !== 0 || !n.unit))?.value : undefined);
-      if (hb !== undefined) set(c, 'hb', hb);
-      const sugar = c.f.numbers.find((n) => (n.unit === 'SUGAR' || n.marker === 'SUGAR') && n.value >= 40 && n.value <= 500)?.value;
-      if (sugar !== undefined) set(c, 'sugar', sugar);
-      else if (c.current && c.f.seen.has('SUGAR') && c.f.seen.has('NORMAL')) set(c, 'sugar', 'normal');
-      // Replies to "and the sugar?" / "and the Hb?": the bare number or "normal".
-      if (c.current && c.expect === 'sugar' && sugar === undefined) {
-        const n = bare(c.f).find((x) => x.value >= 40 && x.value <= 500)?.value;
-        if (n !== undefined) set(c, 'sugar', n);
-        else if (c.f.seen.has('NORMAL')) set(c, 'sugar', 'normal');
-      }
-      if (c.current && c.f.global === 'unknown') c.s.unknown.add('q26');
-    },
-    done: (s) => (!!s.hb && !!s.sugar) || s.unknown.has('q26'),
-    follow: (s) => (s.unknown.has('q26') ? null : s.hb && !s.sugar ? { key: 'vAskSugar', expect: 'sugar' } : s.sugar && !s.hb ? { key: 'vAskHb', expect: 'hb' } : null),
-    record: (s) => ({ value: [s.hb && `Hb ${s.hb.v}`, s.sugar && (s.sugar.v === 'normal' ? 'sugar normal' : `sugar ${s.sugar.v}`)].filter(Boolean).join(', ') || 'Not known', danger: false }),
-  },
-  q15: {
-    danger: false,
-    fill(c) {
-      const v = yesNo(c, ['DOCTOR', 'NURSE']);
-      if (c.current && v !== undefined) set(c, 'staff', v);
-    },
-    done: (s) => !!s.staff,
-    record: (s) => ({ value: s.staff?.v ? 'Yes' : 'No (check the birth plan)', danger: false }),
-  },
-  q16: {
-    danger: false,
-    fill(c) {
-      const v = yesNo(c, ['AMBULANCE']);
-      if (c.current && v !== undefined) set(c, 'ambulance', v);
-    },
-    done: (s) => !!s.ambulance,
-    record: (s) => ({ value: s.ambulance?.v ? 'Yes' : 'No (arrange transport)', danger: false }),
-  },
-  q17: { danger: false, sayOnly: true, fill() {}, done: () => true, record: () => ({ value: 'Summary sent', danger: false }) },
+  support: yesNoSpec('support', ['AMBULANCE'], 'Yes', 'No (arrange transport)'),
+  close: { danger: false, sayOnly: true, fill() {}, done: () => true, record: () => ({ value: 'Summary sent', danger: false }) },
 };
+
+function dangerSigns(q: keyof typeof QUESTION_SIGNS, generic?: { concept: Concept; sign: Sign }): Spec {
+  const signs = QUESTION_SIGNS[q];
+  return {
+    danger: true,
+    fill: (c) => fillSigns(c, signs, generic),
+    done: (s) => signsAnswered(s, q, signs),
+    follow: (s) => signsFollow(s, q, signs),
+    record: (s) => signRecord(s, q, signs),
+  };
+}
+
+/** Baby's movements: reduced / absent is a danger sign from 28 weeks (or when the weeks are not known). */
+function movementRecord(v: 'normal' | 'reduced' | 'absent' | undefined, unknown: boolean, weeks?: number): AnswerRecord {
+  if (v === 'normal') return { value: 'Yes, moving normally', danger: false };
+  const flag = weeks === undefined || weeks >= MOVEMENT_FLAG_WEEKS;
+  if (v === 'reduced' || v === 'absent') {
+    const value = v === 'reduced' ? 'Fewer movements' : 'No movements felt';
+    return flag ? { value, danger: true, signs: ['reducedMovement'] } : { value: `${value} (before ${MOVEMENT_FLAG_WEEKS} weeks: check)`, danger: false };
+  }
+  return unknown ? { value: 'Not known (check)', danger: flag } : { value: 'Not clear', danger: flag };
+}
 
 function titleCase(s: string) {
   return s.replace(/\b[a-z]/g, (m) => m.toUpperCase());
@@ -565,16 +621,35 @@ export type TurnOutcome = {
   record: AnswerRecord;
   /** Later questions this answer completed (they will be skipped). */
   prefilled: string[];
+  /** Danger signs heard in this answer that are not this question's own (raise their alert now). */
+  reported: Sign[];
 };
+
+/** Signs present in an answer (any concept), and reduced movement when it counts. */
+function presentSigns(f: Facts, weeks?: number): Sign[] {
+  const out = (Object.entries(SIGN_OF) as [Concept, Sign][]).filter(([k]) => f.said.get(k) === 1).map(([, sg]) => sg);
+  const lessMovement = f.said.has('MOVEMENT') && (f.said.get('REDUCED') === 1 || f.said.get('MOVEMENT') === -1);
+  if (lessMovement && (weeks === undefined || weeks >= MOVEMENT_FLAG_WEEKS)) out.push('reducedMovement');
+  return out;
+}
 
 /**
  * One check-in's understanding. The engine calls answer() after each
  * transcript and next() to know which question comes now.
  */
 export class Intake {
-  readonly slots: Slots = { signs: {}, unknown: new Set(), vagueYes: new Set() };
+  readonly slots: Slots = { signs: {}, reported: new Map(), unknown: new Set(), vagueYes: new Set() };
+  readonly questions: Question[];
   private attempts = new Map<string, number>();
   private answered = new Set<string>();
+
+  /** `weeks`: her gestation (reduced movement counts from 28 weeks; undefined = not known). */
+  constructor(
+    visit: Visit = 1,
+    private readonly weeks?: number,
+  ) {
+    this.questions = questionsFor(visit);
+  }
 
   /**
    * Feed one transcript for question `qid`. `expect`: the slot a follow-up
@@ -582,15 +657,26 @@ export class Intake {
    */
   answer(qid: string, transcript: string, expect?: Expect): TurnOutcome {
     const f = extract(transcript);
-    const before = new Set(ANTENATAL_QUESTIONS.filter((q) => this.skippable(q.id)).map((q) => q.id));
-    // the asked question reads it fully; every other question takes explicit facts
-    for (const q of ANTENATAL_QUESTIONS) SPECS[q.id]?.fill({ f, s: this.slots, q: q.id, current: q.id === qid, expect: q.id === qid ? expect : undefined });
-    this.attempts.set(qid, (this.attempts.get(qid) ?? 0) + 1);
+    const before = new Set(this.questions.filter((q) => this.skippable(q.id)).map((q) => q.id));
     const spec = SPECS[qid];
+    // the asked question reads it fully; every other question takes explicit
+    // facts (never from a history answer: a past bleed is not a bleed now)
+    for (const q of this.questions) {
+      const current = q.id === qid;
+      if (!current && spec?.history && SPECS[q.id]?.danger) continue;
+      SPECS[q.id]?.fill({ f, s: this.slots, q: q.id, current, expect: current ? expect : undefined, weeks: this.weeks });
+    }
+    // Danger signs said in this answer that this question does not own.
+    if (spec && !spec.history && !spec.sayOnly) {
+      const own = new Set(QUESTION_SIGNS[qid] ?? (qid === 'movement' || qid === 'movementLess' ? ['reducedMovement'] : []));
+      const extra = presentSigns(f, this.weeks).filter((sg) => !own.has(sg));
+      if (extra.length) this.slots.reported.set(qid, [...new Set([...(this.slots.reported.get(qid) ?? []), ...extra])]);
+    }
+    this.attempts.set(qid, (this.attempts.get(qid) ?? 0) + 1);
     const complete = spec ? spec.done(this.slots) : true;
     if (complete) this.answered.add(qid);
-    const prefilled = ANTENATAL_QUESTIONS.filter((q) => q.id !== qid && !before.has(q.id) && !this.answered.has(q.id) && this.skippable(q.id)).map((q) => q.id);
-    return { complete, record: this.record(qid, transcript), prefilled };
+    const prefilled = this.questions.filter((q) => q.id !== qid && !before.has(q.id) && !this.answered.has(q.id) && this.skippable(q.id)).map((q) => q.id);
+    return { complete, record: this.record(qid, transcript), prefilled, reported: this.slots.reported.get(qid) ?? [] };
   }
 
   /** Asked twice and still not filled: record it as it stands and move on. */
@@ -600,15 +686,20 @@ export class Intake {
     const spec = SPECS[qid];
     if (spec && !spec.done(this.slots)) {
       // Part of it was answered: keep that part, say what is missing.
-      if (spec.follow?.(this.slots)) return { value: `${r.value} (part not answered: check)`, danger: spec.danger || r.danger };
+      if (spec.follow?.(this.slots)) return { ...r, value: `${r.value} (part not answered: check)`, danger: spec.danger || r.danger };
       const said = transcript.trim();
-      return { value: said ? `Not clear: "${said}"` : 'No answer', danger: spec.danger };
+      return { ...r, value: said ? `Not clear: "${said}"` : 'No answer', danger: spec.danger || r.danger };
     }
     return r;
   }
 
   attemptsOf(qid: string) {
     return this.attempts.get(qid) ?? 0;
+  }
+
+  /** Was this question answered (its own answer, or given up on)? */
+  isAnswered(qid: string) {
+    return this.answered.has(qid);
   }
 
   /** Can question `qid` be skipped (answered earlier, or not applicable)? Never a danger question. */
@@ -632,10 +723,21 @@ export class Intake {
     return !!SPECS[qid]?.sayOnly;
   }
 
-  /** The record for a question (asked or skipped). */
+  /** The record for a question (asked or skipped), with any danger sign reported in its answer. */
   record(qid: string, transcript = ''): AnswerRecord {
     const spec = SPECS[qid];
     if (!spec) return { value: transcript, danger: false };
-    return spec.record(this.slots);
+    const r = spec.record(this.slots, this.weeks);
+    const extra = this.slots.reported.get(qid);
+    if (!extra?.length) return r;
+    const signs = [...new Set([...(r.signs ?? []), ...extra])];
+    return {
+      value: `${r.value} · Reported: ${extra.map((sg) => SIGN_LABEL[sg]).join(', ')}`,
+      danger: r.danger || extra.some((sg) => !WATCH_SIGNS.has(sg)),
+      signs,
+    };
   }
 }
+
+/** Is this an urgent sign (the questionnaire stops for the ASHA)? */
+export const isUrgent = (sg: Sign) => URGENT_SIGNS.has(sg);

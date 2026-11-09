@@ -15,6 +15,7 @@ import { Icon } from '@/components/system/icon';
 import { AppText } from '@/components/ui/app-text';
 import { Brand } from '@/constants/brand';
 import { Haptic } from '@/lib/haptics';
+import { useT } from '@/features/onboarding/context';
 
 // One visit in My history, compact. A mother needs four things at a glance:
 //   what it was, who and where, when, and when to come back. Plus the paper.
@@ -64,9 +65,11 @@ function useDownload(share: () => Promise<void>) {
   return [state, run] as const;
 }
 
-const dlLabel = (s: DlState, idle: string) => (s === 'busy' ? 'Preparing…' : s === 'done' ? 'Saved' : s === 'error' ? 'Retry' : idle);
+type T = ReturnType<typeof useT>;
+const dlLabel = (s: DlState, idle: string, t: T) => (s === 'busy' ? t('vcPreparing') : s === 'done' ? t('vcSaved') : s === 'error' ? t('vcRetry') : idle);
 
 function DownloadPill({ state, label, onPress, chevron }: { state: DlState; label: string; onPress: () => void; chevron?: object }) {
+  const t = useT();
   return (
     <Pressable
       accessibilityRole="button"
@@ -78,7 +81,7 @@ function DownloadPill({ state, label, onPress, chevron }: { state: DlState; labe
     >
       <Icon name={state === 'done' ? 'check' : 'download'} size={15} color={Brand.onCherry} weight="bold" />
       <AppText variant="buttonSmall" color={Brand.onCherry}>
-        {dlLabel(state, chevron ? 'Papers' : 'PDF')}
+        {dlLabel(state, chevron ? t('vcPapers') : 'PDF', t)}
       </AppText>
       {chevron && (
         <Animated.View style={chevron}>
@@ -90,6 +93,7 @@ function DownloadPill({ state, label, onPress, chevron }: { state: DlState; labe
 }
 
 function DocRow({ doc }: { doc: VisitDoc }) {
+  const tr = useT();
   const [state, run] = useDownload(doc.share);
   return (
     <View style={styles.doc}>
@@ -99,13 +103,14 @@ function DocRow({ doc }: { doc: VisitDoc }) {
           {doc.meta}
         </AppText>
       </View>
-      <DownloadPill state={state} label={`Download ${doc.title}`} onPress={run} />
+      <DownloadPill state={state} label={tr('vcDownload', { name: doc.title })} onPress={run} />
     </View>
   );
 }
 
 export const VisitCard = memo(function VisitCard({ title, who, day, month, tone, next, docs, index }: Props) {
   const reduceMotion = useReducedMotion();
+  const tr = useT();
   const [open, setOpen] = useState(false);
   const single = docs.length === 1 ? docs[0] : null;
   const [state, run] = useDownload(single?.share ?? (async () => {}));
@@ -122,7 +127,7 @@ export const VisitCard = memo(function VisitCard({ title, who, day, month, tone,
       layout={reduceMotion ? undefined : LinearTransition.springify().stiffness(250).damping(25)}
       style={styles.card}
     >
-      <View style={styles.top} accessible accessibilityLabel={`${title}, ${who}, ${day} ${month}${next ? `. Next visit ${next}` : ''}`}>
+      <View style={styles.top} accessible accessibilityLabel={`${title}, ${who}, ${day} ${month}${next ? `. ${tr('vcNext', { when: next })}` : ''}`}>
         <View style={[styles.date, { backgroundColor: t.bg }]}>
           <AppText style={[styles.day, { color: t.fg }]}>{day}</AppText>
           <AppText variant="overline" color={t.fg}>
@@ -144,7 +149,7 @@ export const VisitCard = memo(function VisitCard({ title, who, day, month, tone,
           <View style={styles.next}>
             <Icon name="calendar" size={14} color={Brand.plum} />
             <AppText variant="caption" color={Brand.ink} numberOfLines={1}>
-              {`Next visit · ${next}`}
+              {tr('vcNext', { when: next })}
             </AppText>
           </View>
         ) : (

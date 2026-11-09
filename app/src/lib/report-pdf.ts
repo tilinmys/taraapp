@@ -2,7 +2,8 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { Platform } from 'react-native';
 
-import { ANTENATAL_QUESTIONS, RULES, type RuleCode } from '@/data/mockScreening';
+import { CLINICAL_GROUPS, CLINICAL_TESTS } from '@/data/clinical';
+import { reportQuestions, RULES, type RuleCode } from '@/data/mockScreening';
 import { REPORT_LOGO_DATA_URI } from '@/data/report-logo';
 import type { CheckInReport, MotherRecord } from '@/data/store';
 
@@ -13,7 +14,8 @@ import type { CheckInReport, MotherRecord } from '@/data/store';
 //   2 mother details in a 4-column grid
 //   3 risk banner + the rules that fired (with their deterministic logic)
 //   4 vitals: latest BP / Hb / sugar / weight and the previous visit
-//   5 all 24 answers by section, danger answers marked
+//   5 her answers by section (her visit's questionnaire), danger answers
+//     marked; then the measurements and tests the health worker entered
 //   6 conversation transcript (compact)
 //   7 signatures: ASHA (captured at completion) and reviewing doctor
 
@@ -41,23 +43,68 @@ function vitalRows(m: MotherRecord) {
     .join('');
 }
 
+const STATUS = { done: 'Done', pending: 'Pending', unavailable: 'Not available', not_indicated: 'Not needed' } as const;
+
+/** Her latest clinical entry: every measured / examined value with where it came from. */
+function clinicalRows(m: MotherRecord) {
+  const e = m.clinical?.[0];
+  if (!e || !Object.keys(e.fields).length) return '<p class="muted">Not entered yet: BP and weight are needed for the risk check.</p>';
+  const fields = CLINICAL_GROUPS.flatMap((g) => g.fields)
+    .filter((f) => e.fields[f.id])
+    .map((f) => {
+      const v = e.fields[f.id];
+      const shown = f.kind === 'yesno' ? (v.value === 'yes' ? 'Yes' : 'No') : f.kind === 'choice' ? (f.options.find((o) => o.id === v.value)?.label.en ?? v.value) : `${v.value}${f.kind === 'number' ? ` ${f.unit}` : f.kind === 'bp' ? ' mmHg' : ''}`;
+      return `<tr><td>${esc(f.label.en)}</td><td>${esc(shown)}</td><td class="muted">${esc(v.source)}</td></tr>`;
+    })
+    .join('');
+  const when = new Date(e.at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  return `<table><tr><th>Item</th><th>Value</th><th>Source</th></tr>${fields}</table><p class="muted">Entered ${esc(when)} by ${esc(e.by)}</p>`;
+}
+
+/**
+ * Her Lab report (the same entry's tests): each test with its status, and
+ * its result with the unit (a choice shown by its name). A test that is not
+ * Done says so: a missing result is never read as normal.
+ */
+function labRows(m: MotherRecord) {
+  const e = m.clinical?.[0];
+  const rows = CLINICAL_TESTS.filter((t) => e?.tests[t.id]);
+  // The reports the ASHA uploaded (photos / files kept on her phone), newest first.
+  const uploads = (m.labReports ?? [])
+    .map((u) => `<tr><td>${esc(u.name)}</td><td>${u.kind === 'image' ? 'Photo' : u.kind === 'pdf' ? 'PDF' : 'File'}</td><td class="muted">${esc(new Date(u.at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }))} · ${esc(u.by)}</td></tr>`)
+    .join('');
+  const uploaded = uploads ? `<p class="muted">Reports uploaded by the ASHA</p><table><tr><th>Report</th><th>Type</th><th>Uploaded</th></tr>${uploads}</table>` : '';
+  if (!e || !rows.length) return `${uploaded}${uploaded ? '' : '<p class="muted">No lab reports or results yet.</p>'}`;
+  const body = rows
+    .map((t) => {
+      const x = e.tests[t.id];
+      const k = t.result;
+      const res = !x.result ? '' : k?.kind === 'choice' ? (k.options.find((o) => o.id === x.result)?.label.en ?? x.result) : k?.kind === 'number' ? `${x.result} ${k.unit}` : x.result;
+      const when = new Date(x.at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+      return `<tr${x.status === 'pending' ? ' class="muted"' : ''}><td>${esc(t.label.en)}</td><td>${x.status === 'done' && res ? `<b>${esc(res)}</b>` : esc(STATUS[x.status])}</td><td class="muted">${esc(when)} · ${esc(x.by)}</td></tr>`;
+    })
+    .join('');
+  return `${uploaded}<table><tr><th>Test</th><th>Result</th><th>Entered</th></tr>${body}</table>`;
+}
+
 /** Short, readable reference for a report id ("lakshmi-1792536039868" -> "TR-039868"). */
 export const reportRef = (id: string) => `TR-${id.replace(/[^a-z0-9]/gi, '').slice(-6).toUpperCase()}`;
 
 export function buildReportHtml(m: MotherRecord, r: CheckInReport, generatedAt = new Date()) {
   const date = generatedAt.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   const rules = r.rules as RuleCode[];
-  const sections = [...new Set(ANTENATAL_QUESTIONS.map((q) => q.section))];
+  const questions = reportQuestions(r.answers, r.visit).filter((q) => q.id !== 'close');
+  const sections = [...new Set(questions.map((q) => q.section))];
   const answerRows = sections
     .map((s) => {
-      const qs = ANTENATAL_QUESTIONS.filter((q) => q.section === s);
+      const qs = questions.filter((q) => q.section === s);
       return (
         `<tr class="sec"><td colspan="3">${esc(s)}</td></tr>` +
         qs
-          .map((q, i) => {
+          .map((q) => {
             const a = r.answers[q.id];
-            const n = ANTENATAL_QUESTIONS.indexOf(q) + 1;
-            return `<tr${a?.danger ? ' class="danger"' : ''}><td class="num muted">${n}</td><td>${esc(q.en)}</td><td>${a ? `${a.danger ? '⚠ ' : ''}${esc(a.value)}` : '<span class="muted">Not asked</span>'}</td></tr>`;
+            const n = questions.indexOf(q) + 1;
+            return `<tr${a?.danger ? ' class="danger"' : ''}><td class="num muted">${n}</td><td>${esc(q.en)}</td><td>${a ? `${a.danger ? '⚠ ' : ''}${esc(a.value)}${a.corrected ? ' <span class="muted">(corrected by the ASHA)</span>' : ''}` : '<span class="muted">Not asked</span>'}</td></tr>`;
           })
           .join('')
       );
@@ -135,8 +182,14 @@ export function buildReportHtml(m: MotherRecord, r: CheckInReport, generatedAt =
   </div>
 </div>
 
-<h2>24-question summary</h2>
+<h2>Reported by her (voice${r.visit ? `, visit ${r.visit}` : ''})</h2>
 <table><tr><th>#</th><th>Question</th><th>Answer</th></tr>${answerRows}</table>
+
+<h2>Measurements (entered by the health worker)</h2>
+${clinicalRows(m)}
+
+<h2>Lab report</h2>
+${labRows(m)}
 
 <div class="sign">
   <div><div class="sig">${esc(r.asha)}</div><div class="ln">ASHA worker · ${esc(r.asha)}<br/><span class="muted">Recorded by voice with Sakhi</span></div></div>

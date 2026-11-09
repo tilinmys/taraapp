@@ -18,10 +18,12 @@ export type Concept =
   | 'NEG' | 'NEG_PRE' | 'AFF' | 'AFF_PRE' | 'NOTHING' | 'UNKNOWN' | 'NORMAL' | 'REDUCED' | 'DAILY' | 'SOMETIMES'
   // danger symptoms
   | 'HEADACHE' | 'VISION' | 'SWELL_FACE' | 'SWELL_FEET' | 'SWELLING' | 'PALLOR' | 'ABD_PAIN' | 'BLEEDING' | 'LEAKING'
-  | 'FITS' | 'MOVEMENT' | 'FEVER' | 'VOMITING' | 'BREATHLESS'
+  | 'FITS' | 'MOVEMENT' | 'FEVER' | 'VOMITING' | 'BREATHLESS' | 'DISCHARGE' | 'TIRED' | 'PALPITATIONS'
   // history / care
   | 'CSECTION' | 'NATURAL' | 'IVF' | 'IRON' | 'SCAN' | 'PLACE' | 'TT' | 'BOTH' | 'ONE_ONLY' | 'DIABETES' | 'HTN' | 'THYROID'
   | 'MEDICINE' | 'ALLERGY' | 'DOCTOR' | 'NURSE' | 'AMBULANCE'
+  | 'MISCARRIAGE' | 'ABORTION' | 'STILLBIRTH' | 'TB' | 'HEART' | 'ASTHMA' | 'TRANSFUSION' | 'TOBACCO' | 'ALCOHOL'
+  | 'TEST' | 'PREG_TEST' | 'HEALTH_CENTRE' | 'HOME'
   // markers for numbers
   | 'MONTH' | 'WEEK' | 'YEAR' | 'KG' | 'HB' | 'SUGAR' | 'FHR' | 'CHILD' | 'PREGNANCY' | 'NAME' | 'AGE' | 'BP';
 
@@ -41,14 +43,14 @@ export const LEXICON: Entry[] = [
   { concept: 'SOMETIMES', forms: ['ಕೆಲವೊಮ್ಮೆ', 'ಆಗಾಗ', 'ಒಮ್ಮೊಮ್ಮೆ', 'ಮರೆತು', 'ಮರೆಯುತ್ತಾಳೆ', 'कभी कभी', 'कभी', 'भूल जाती', 'sometimes', 'irregular', 'irregularly', 'missed', 'occasionally', 'forgets'] },
 
   // ---- danger symptoms --------------------------------------------------------
-  { concept: 'HEADACHE', forms: ['ತಲೆನೋವ', 'ತಲೆ ನೋವ', 'ತಲೆನೋ', 'ತಲೆ ಸಿಡಿತ', 'ತಲೆ ಸುತ್ತ', 'सिरदर्द', 'सिर दर्द', 'सर दर्द', 'सरदर्द', 'सिर में दर्द', 'सर में दर्द', 'headache', 'head ache', 'head pain', 'talenovu', 'sirdard', 'sar dard'] },
-  { concept: 'VISION', forms: ['ಮಂಜಾಗ', 'ಕಣ್ಣು ಮಂಜ', 'ಕಣ್ಣುಮಂಜ', 'ಮಸುಕ', 'ದೃಷ್ಟಿ ಮಂಜ', 'ಕಣ್ಣು ಮಬ್ಬ', 'ಮಬ್ಬಾಗ', 'धुंधला', 'धुंधल', 'धुंधलापन', 'blurred', 'blurry', 'blur', 'blurring', 'vision problem', 'eyesight', 'spots in eyes'] },
+  { concept: 'HEADACHE', forms: ['ತಲೆನೋವ', 'ತಲೆ ನೋವ', 'ತಲೆನೋ', 'ತಲೆ ಸಿಡಿತ', 'ತಲೆ ಸುತ್ತ', 'ತಲೆ ಬೇನೆ', 'ತಲೆಬೇನೆ', 'सिरदर्द', 'सिर दर्द', 'सर दर्द', 'सरदर्द', 'सिर में दर्द', 'सर में दर्द', 'सर में बहुत भारीपन', 'सर में भारीपन', 'headache', 'head ache', 'head pain', 'talenovu', 'sirdard', 'sar dard'] },
+  { concept: 'VISION', forms: ['ಮಂಜಾಗ', 'ಕಣ್ಣು ಮಂಜ', 'ಕಣ್ಣುಮಂಜ', 'ಮಸುಕ', 'ದೃಷ್ಟಿ ಮಂಜ', 'ಕಣ್ಣು ಮಬ್ಬ', 'ಮಬ್ಬಾಗ', 'ಕಣ್ಣು ಕತ್ತಲ', 'ಕತ್ತಲೆ ಬರ', 'ಕತ್ತಲೆ ಆಗ್ತ', 'ಕತ್ತಲೆ ಆಗುತ್ತ', 'धुंधला', 'धुंधल', 'धुंधलापन', 'आँखों के आगे अंधेरा', 'आंखों के आगे अंधेरा', 'अंधेरा छा', 'blurred', 'blurry', 'blur', 'blurring', 'vision problem', 'eyesight', 'spots in eyes'] },
   { concept: 'VISION', fixed: 1, forms: ['ಕಣ್ಣು ಸರಿಯಾಗಿ ಕಾಣಿಸುತ್ತಿಲ್ಲ', 'ಸರಿಯಾಗಿ ಕಾಣಿಸುತ್ತಿಲ್ಲ', 'ಕಣ್ಣು ಕಾಣಿಸುತ್ತಿಲ್ಲ', 'ಕಾಣಿಸ್ತಿಲ್ಲ', 'साफ नहीं दिख', 'ठीक से नहीं दिख', 'नहीं दिख रहा', 'नहीं दिखता', 'cannot see clearly', "can't see clearly", 'not seeing clearly', 'not able to see'] },
   { concept: 'SWELL_FACE', forms: ['ಮುಖ ಊದ', 'ಮುಖದಲ್ಲಿ ಊತ', 'ಮುಖ ಊತ', 'ಕೈ ಊದ', 'ಕೈಗಳಲ್ಲಿ ಊತ', 'ಕೈಕಾಲು ಊದ', 'ಕೈ ಕಾಲು ಊದ', 'ಕೈಕಾಲುಗಳಲ್ಲಿ ಊತ', 'चेहरे पर सूजन', 'चेहरा सूज', 'चेहरे में सूजन', 'मुंह सूज', 'हाथ सूज', 'हाथों में सूजन', 'हाथ पैर सूज', 'face swelling', 'swollen face', 'puffy face', 'face swollen', 'hands swollen', 'swollen hands', 'hand swelling'] },
   { concept: 'SWELL_FEET', forms: ['ಕಾಲು ಊದ', 'ಕಾಲುಗಳು ಊದ', 'ಕಾಲಲ್ಲಿ ಊತ', 'ಕಾಲು ಊತ', 'ಪಾದ ಊದ', 'ಪಾದಗಳಲ್ಲಿ ಊತ', 'ಪಾದದಲ್ಲಿ ಊತ', 'ಪಾದ ಊತ', 'ಕಾಲು ಬಾವು', 'पैर सूज', 'पैरों में सूजन', 'पैर में सूजन', 'पांव सूज', 'पांव में सूजन', 'feet swollen', 'swollen feet', 'foot swelling', 'leg swelling', 'legs swollen', 'swollen legs', 'ankle swelling', 'pedal edema', 'pedal oedema'] },
   { concept: 'SWELLING', forms: ['ಊತ', 'ಊದಿಕೊ', 'ಊದಿದೆ', 'ಬಾವು', 'सूजन', 'सूज', 'swelling', 'swollen', 'edema', 'oedema', 'puffy'] },
-  { concept: 'PALLOR', forms: ['ಬಿಳುಪ', 'ಬಿಳಿಚ', 'ಬಿಳಿಯಾಗ', 'ರಕ್ತಹೀನ', 'ರಕ್ತ ಕಡಿಮೆ', 'ರಕ್ತ ಕಮ್ಮಿ', 'ಅನೀಮಿಯ', 'पीलापन', 'पीली', 'पीला', 'खून की कमी', 'खून कम', 'एनीमिया', 'सफेद', 'pale', 'pallor', 'paleness', 'anaemia', 'anemia', 'anaemic', 'anemic'] },
-  { concept: 'ABD_PAIN', forms: ['ಹೊಟ್ಟೆ ನೋವ', 'ಹೊಟ್ಟೆನೋವ', 'ಹೊಟ್ಟೆ ಹಿಂಡ', 'ಹೊಟ್ಟೆ ಸೆಳೆತ', 'ಹೊಟ್ಟೆಯಲ್ಲಿ ನೋವ', 'पेट दर्द', 'पेट में दर्द', 'पेटदर्द', 'पेट में ऐंठन', 'stomach pain', 'abdominal pain', 'tummy pain', 'belly pain', 'pain in stomach', 'stomach ache', 'stomachache', 'cramps'] },
+  { concept: 'PALLOR', forms: ['ಬಿಳುಪ', 'ಬಿಳಿಚ', 'ಬಿಳಿಯಾಗ', 'ರಕ್ತಹೀನ', 'ರಕ್ತ ಕಡಿಮೆ', 'ರಕ್ತ ಕಮ್ಮಿ', 'ರಕ್ತ ಕಡಿಮಿ', 'ಅನೀಮಿಯ', 'पीलापन', 'पीली', 'पीला', 'खून की कमी', 'खून कम', 'एनीमिया', 'सफेद', 'pale', 'pallor', 'paleness', 'anaemia', 'anemia', 'anaemic', 'anemic'] },
+  { concept: 'ABD_PAIN', forms: ['ಹೊಟ್ಟೆ ನೋವ', 'ಹೊಟ್ಟೆನೋವ', 'ಹೊಟ್ಟೆ ಹಿಂಡ', 'ಹೊಟ್ಟೆ ಸೆಳೆತ', 'ಹೊಟ್ಟೆಯಲ್ಲಿ ನೋವ', 'ಹೊಟ್ಟೆ ಬೇನೆ', 'ಹೊಟ್ಟೆಬೇನೆ', 'पेट दर्द', 'पेट में दर्द', 'पेटदर्द', 'पेट में ऐंठन', 'stomach pain', 'abdominal pain', 'tummy pain', 'belly pain', 'pain in stomach', 'stomach ache', 'stomachache', 'cramps'] },
   { concept: 'BLEEDING', forms: ['ರಕ್ತಸ್ರಾವ', 'ರಕ್ತ ಸ್ರಾವ', 'ರಕ್ತ ಹೋಗ', 'ರಕ್ತ ಬರ', 'ರಕ್ತ ಬಂದ', 'ರಕ್ತ ಕಾಣ', 'ಸ್ಪಾಟಿಂಗ್', 'ಬ್ಲೀಡಿಂಗ್', 'रक्तस्राव', 'खून आ', 'खून बह', 'खून जा', 'खून गिर', 'ब्लीडिंग', 'धब्बे', 'bleeding', 'spotting', 'blood loss', 'blood coming', 'bleed'] },
   { concept: 'LEAKING', forms: ['ನೀರು ಹೋಗ', 'ನೀರಿನಂಶ ಹೋಗ', 'ನೀರು ಸೋರ', 'ನೀರು ಬರ', 'ಸೋರಿಕೆ', 'ನೀರು ಒಡೆ', 'पानी जा', 'पानी आ रहा', 'पानी गिर', 'पानी निकल', 'पानी बह', 'leaking', 'leak', 'water breaking', 'water broke', 'water leaking', 'fluid leaking'] },
   { concept: 'FITS', forms: ['ಫಿಟ್ಸ್', 'ಫಿಟ್ಸ', 'ಫಿಟ್', 'ಸೆಳೆತ', 'ಮೂರ್ಛೆ', 'ಅಪಸ್ಮಾರ', 'ಕೈಕಾಲು ಎಳೆ', 'दौरा', 'दौरे', 'झटके', 'झटका', 'मिर्गी', 'बेहोश', 'fit', 'fits', 'seizure', 'seizures', 'convulsion', 'convulsions', 'fainted', 'faint', 'epilepsy'] },
@@ -57,6 +59,9 @@ export const LEXICON: Entry[] = [
   { concept: 'VOMITING', forms: ['ವಾಂತಿ', 'ವಾಕರಿಕೆ', 'उल्टी', 'उल्टियां', 'उलटी', 'उबकाई', 'vomit', 'vomits', 'vomiting', 'throwing up', 'nausea'] },
   { concept: 'BREATHLESS', forms: ['ಉಸಿರಾಟದ ತೊಂದರೆ', 'ಉಸಿರಾಟ ತೊಂದರೆ', 'ಉಸಿರು ಕಟ್ಟ', 'ಉಸಿರಾಡಲು ಕಷ್ಟ', 'ಉಸಿರು ಬಿಡಲು ಕಷ್ಟ', 'ದಮ್ಮು', 'ಏದುಸಿರು', 'सांस फूल', 'सांस लेने में तकलीफ', 'सांस की तकलीफ', 'सांस लेने में दिक्कत', 'दम फूल', 'breathless', 'breathlessness', 'breathing difficulty', 'difficulty breathing', 'difficulty in breathing', 'short of breath', 'shortness of breath'] },
   { concept: 'BREATHLESS', fixed: 1, forms: ['ಉಸಿರಾಡಲು ಆಗುತ್ತಿಲ್ಲ', 'ಉಸಿರಾಡೋಕೆ ಆಗ್ತಿಲ್ಲ', 'सांस नहीं ले पा', 'सांस नहीं आ', 'cannot breathe', "can't breathe", 'not able to breathe'] },
+  { concept: 'DISCHARGE', forms: ['ಬಿಳಿ ಮುಟ್ಟ', 'ಬಿಳಿಮುಟ್ಟ', 'ಬಿಳಿ ಸೆರಗ', 'ಬಿಳಿ ಹೋಗ', 'ಸ್ರಾವ', 'ಡಿಸ್ಚಾರ್ಜ್', 'सफेद पानी', 'सफ़ेद पानी', 'स्राव', 'डिस्चार्ज', 'discharge', 'white discharge'] },
+  { concept: 'TIRED', forms: ['ಸುಸ್ತ', 'ಆಯಾಸ', 'ದಣಿವ', 'ನಿಶ್ಶಕ್ತ', 'ಶಕ್ತಿ ಇಲ್ಲ', 'थकान', 'थकावट', 'कमजोरी', 'कमज़ोरी', 'थक', 'tired', 'tiredness', 'fatigue', 'weakness', 'exhausted'] },
+  { concept: 'PALPITATIONS', forms: ['ಎದೆ ಡವಡವ', 'ಡವಡವ', 'ಎದೆ ಬಡಿತ ಜಾಸ್ತಿ', 'ಎದೆ ಬಡಿತ ಹೆಚ್ಚ', 'ಎದೆ ಹೊಡೆದುಕೊ', 'दिल की धड़कन तेज', 'धड़कन तेज', 'दिल तेज', 'घबराहट', 'palpitation', 'palpitations', 'heart racing', 'heart pounding', 'racing heart'] },
 
   // ---- history and care ---------------------------------------------------------
   { concept: 'CSECTION', forms: ['ಸಿ ಸೆಕ್ಷನ್', 'ಸಿ-ಸೆಕ್ಷನ್', 'ಸಿಸೆಕ್ಷನ್', 'ಸಿಜೇರಿಯನ್', 'ಸಿಸೇರಿಯನ್', 'ಆಪರೇಷನ್', 'ಆಪರೇಶನ್', 'सी सेक्शन', 'सी-सेक्शन', 'सिजेरियन', 'सीजेरियन', 'ऑपरेशन', 'आपरेशन', 'c section', 'c-section', 'csection', 'caesarean', 'cesarean', 'caesarian', 'operation', 'lscs'] },
@@ -75,6 +80,19 @@ export const LEXICON: Entry[] = [
   { concept: 'ALLERGY', forms: ['ಅಲರ್ಜಿ', 'एलर्जी', 'allergy', 'allergic', 'allergies'] },
   { concept: 'DOCTOR', forms: ['ಡಾಕ್ಟರ್', 'ಡಾಕ್ಟರು', 'ವೈದ್ಯ', 'डॉक्टर', 'डाक्टर', 'चिकित्सक', 'doctor', 'doctors'] },
   { concept: 'NURSE', forms: ['ನರ್ಸ್', 'ನರ್ಸು', 'ದಾದಿ', 'नर्स', 'सिस्टर', 'nurse', 'nurses', 'sister'] },
+  { concept: 'MISCARRIAGE', forms: ['ಗರ್ಭಪಾತ', 'ಗರ್ಭ ಪಾತ', 'ಗರ್ಭ ಹೋಗ', 'ಗರ್ಭ ಜಾರ', 'ಮಿಸ್ಕ್ಯಾರೇಜ್', 'गर्भपात', 'गर्भ गिर', 'बच्चा गिर', 'मिसकैरेज', 'miscarriage', 'miscarriages', 'miscarried'] },
+  { concept: 'ABORTION', forms: ['ಗರ್ಭ ತೆಗೆಸ', 'ಗರ್ಭ ತೆಗೆದ', 'ಅಬಾರ್ಷನ್', 'ಅಬಾರ್ಶನ್', 'गर्भ गिरवा', 'अबॉर्शन', 'एबॉर्शन', 'abortion', 'abortions', 'mtp'] },
+  { concept: 'STILLBIRTH', forms: ['ಸತ್ತ ಮಗು', 'ಸತ್ತು ಹುಟ್ಟ', 'ಮಗು ಸತ್ತ', 'ಹುಟ್ಟುವಾಗಲೇ ಸತ್ತ', 'मरा हुआ बच्चा', 'मृत बच्चा', 'मृत जन्म', 'बच्चा मरा', 'stillbirth', 'still birth', 'stillborn', 'dead baby'] },
+  { concept: 'TB', forms: ['ಟಿಬಿ', 'ಟಿ ಬಿ', 'ಕ್ಷಯ', 'टीबी', 'टी बी', 'तपेदिक', 'क्षय', 'tb', 't b', 'tuberculosis'] },
+  { concept: 'HEART', forms: ['ಹೃದಯ', 'ಹಾರ್ಟ್', 'दिल', 'हृदय', 'हार्ट', 'heart', 'cardiac'] },
+  { concept: 'ASTHMA', forms: ['ಅಸ್ತಮಾ', 'ಅಸ್ತಮ', 'ಉಬ್ಬಸ', 'दमा', 'अस्थमा', 'asthma', 'wheezing'] },
+  { concept: 'TRANSFUSION', forms: ['ರಕ್ತ ಹಾಕ', 'ರಕ್ತ ಕೊಟ್ಟ', 'ರಕ್ತ ವರ್ಗಾವಣೆ', 'ಬ್ಲಡ್ ಹಾಕ', 'ರಕ್ತ ಏರಿಸ', 'खून चढ़', 'खून चढा', 'ब्लड चढ़', 'transfusion', 'blood transfusion', 'blood given'] },
+  { concept: 'TOBACCO', forms: ['ತಂಬಾಕ', 'ಗುಟ್ಕಾ', 'ಗುಟಕಾ', 'ಬೀಡಿ', 'ಸಿಗರೇಟ', 'ಸಿಗರೆಟ', 'ಹೊಗೆಸೊಪ್ಪ', 'ಧೂಮಪಾನ', 'तंबाकू', 'तम्बाकू', 'गुटखा', 'बीड़ी', 'बीडी', 'सिगरेट', 'खैनी', 'धूम्रपान', 'tobacco', 'gutka', 'gutkha', 'beedi', 'bidi', 'cigarette', 'cigarettes', 'smoke', 'smoking', 'khaini'] },
+  { concept: 'ALCOHOL', forms: ['ಮದ್ಯ', 'ಸಾರಾಯಿ', 'ಸರಾಯಿ', 'ಕುಡಿತ', 'शराब', 'दारू', 'alcohol', 'liquor', 'drinking'] },
+  { concept: 'PREG_TEST', forms: ['ಗರ್ಭ ಪರೀಕ್ಷೆ', 'ಪ್ರೆಗ್ನೆನ್ಸಿ ಟೆಸ್ಟ್', 'ಪ್ರೆಗ್ನೆನ್ಸಿ ಕಿಟ್', 'ಕಿಟ್', 'गर्भ जांच', 'गर्भ की जांच', 'प्रेगनेंसी टेस्ट', 'प्रेग्नेंसी टेस्ट', 'किट', 'pregnancy test', 'kit'] },
+  { concept: 'TEST', forms: ['ಪರೀಕ್ಷೆ', 'ಟೆಸ್ಟ್', 'ಮೂತ್ರ', 'ರಕ್ತ ಪರೀಕ್ಷೆ', 'जांच', 'जाँच', 'टेस्ट', 'पेशाब', 'test', 'tests', 'urine', 'blood test'] },
+  { concept: 'HEALTH_CENTRE', forms: ['ಆರೋಗ್ಯ ಕೇಂದ್ರ', 'ಆಸ್ಪತ್ರೆ', 'ಪಿಎಚ್‌ಸಿ', 'ಪಿಎಚ್ಸಿ', 'ಪಿ ಎಚ್ ಸಿ', 'ಸರ್ಕಾರಿ ಆಸ್ಪತ್ರೆ', 'स्वास्थ्य केंद्र', 'अस्पताल', 'पीएचसी', 'पी एच सी', 'सरकारी अस्पताल', 'phc', 'p h c', 'chc', 'hospital', 'health centre', 'health center', 'clinic'] },
+  { concept: 'HOME', forms: ['ಮನೆಯಲ್ಲಿ', 'ಮನೆಯಲ್ಲೇ', 'ಮನೇಲಿ', 'ಮನೆಲಿ', 'घर पर', 'घर में', 'घर पे', 'home', 'at home'] },
   { concept: 'AMBULANCE', forms: ['108', 'ಆಂಬ್ಯುಲೆನ್ಸ್', 'ಆಂಬುಲೆನ್ಸ್', 'ಗಾಡಿ', 'ವಾಹನ', 'ನೂರನೆಂಟು', 'एम्बुलेंस', 'एंबुलेंस', 'गाड़ी', 'गाडी', 'वाहन', 'एक सौ आठ', 'ambulance', 'vehicle'] },
 
   // ---- markers that give numbers their meaning -------------------------------------

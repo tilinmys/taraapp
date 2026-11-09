@@ -2,15 +2,15 @@
 
     python scripts/prerecord_sakhi.py [--voice Kaveri] [--force]
 
-Why: the check-in's lines never change (a greeting, the 24 questions, the
+Why: the check-in's lines never change (a greeting, every visit's questions, the
 re-ask, the "please say it again", the danger warning, the closing). Making
 them with TTS on every check-in costs provider requests and adds network
 waits. Recorded once, they ship inside the app and play instantly, offline,
 with zero TTS calls at run time.
 
 The texts are read from the app's own sources, never retyped here:
-  app/src/data/mockScreening.ts  the 24 questions (questionKn / questionHi)
-                                 and SAKHI_REPLIES (danger, done)
+  app/src/data/mockScreening.ts  the question bank (questionKn / questionHi)
+                                 and SAKHI_REPLIES (danger, urgent, done)
   app/src/i18n/strings.ts        vGreetingVoice, vReask, vReprompt,
                                  vAskName, vAskAge, vAskDiastolic (micro-prompts)
 so a recording always matches what the screen shows. Output:
@@ -64,36 +64,42 @@ def string_key(block: str, key: str) -> str:
 # question's signs, in the question's order, joined with vOr into
 # vAlsoSigns. voice/__tests__/prerecorded.test.ts fails if the two drift.
 QUESTION_SIGNS = {
-    "q09": ["headache", "vision", "swellFace"],
-    "q10": ["abdPain", "bleeding", "leaking"],
-    "q18": ["fever", "vomiting", "breathless"],
-    "q24": ["pallor", "swellFeet"],
+    "bleedDischarge": ["bleeding", "discharge"],
+    "feverPain": ["fever", "vomiting", "abdPain"],
+    "bleedFluid": ["bleeding", "leaking"],
+    "bleedLeak": ["bleeding", "leaking"],
+    "warning": ["headache", "vision", "swellFace"],
+    "breathing": ["breathless", "tired", "palpitations"],
 }
 
 
 def sign_followups(block: str) -> list[tuple[str, str]]:
     template, joiner = string_key(block, "vAlsoSigns"), string_key(block, "vOr")
-    out = []
-    for qid, signs in QUESTION_SIGNS.items():
+    out, seen = [], set()
+    for signs in QUESTION_SIGNS.values():
         for mask in range(1, (1 << len(signs)) - 1):
             rest = [sg for i, sg in enumerate(signs) if mask & (1 << i)]
             words = joiner.join(string_key(block, "sg" + sg[0].upper() + sg[1:]) for sg in rest)
-            out.append((f"also_{qid}_{'_'.join(rest)}", template.replace("{signs}", words)))
+            line = template.replace("{signs}", words)
+            if line in seen:  # two questions asking the same signs: one recording
+                continue
+            seen.add(line)
+            out.append((f"also_{'_'.join(rest)}", line))
     return out
 
 
 def collect() -> dict[str, list[tuple[str, str]]]:
     screening = (APP / "src" / "data" / "mockScreening.ts").read_text(encoding="utf-8")
     strings = (APP / "src" / "i18n" / "strings.ts").read_text(encoding="utf-8")
-    questions = re.findall(r"\{ id: '(q\d+)'.*?questionKn: '((?:[^'\\]|\\.)*)', questionHi: '((?:[^'\\]|\\.)*)'", screening)
-    if len(questions) != 24:
-        raise SystemExit(f"expected 24 questions in mockScreening.ts, found {len(questions)}")
+    questions = re.findall(r"\{ id: '([A-Za-z0-9]+)'.*?questionKn: '((?:[^'\\]|\\.)*)', questionHi: '((?:[^'\\]|\\.)*)'", screening)
+    if len(questions) < 30:
+        raise SystemExit(f"expected the question bank in mockScreening.ts, found {len(questions)} questions")
     replies = {}
     for lang in LANGS:
-        m = re.search(rf"\n  {lang}: \{{\n    ok: '((?:[^'\\]|\\.)*)',\n    danger: '((?:[^'\\]|\\.)*)',\n    done: '((?:[^'\\]|\\.)*)',", screening)
+        m = re.search(rf"\n  {lang}: \{{\n    ok: '((?:[^'\\]|\\.)*)',\n    danger: '((?:[^'\\]|\\.)*)',\n    done: '((?:[^'\\]|\\.)*)',\n    urgent: '((?:[^'\\]|\\.)*)',", screening)
         if not m:
             raise SystemExit(f"SAKHI_REPLIES.{lang} not found")
-        replies[lang] = {"danger": ts_unquote(m.group(2)), "done": ts_unquote(m.group(3))}
+        replies[lang] = {"ok": ts_unquote(m.group(1)), "danger": ts_unquote(m.group(2)), "done": ts_unquote(m.group(3)), "urgent": ts_unquote(m.group(4))}
     lines: dict[str, list[tuple[str, str]]] = {}
     for lang in LANGS:
         block = string_block(strings, lang)
@@ -101,17 +107,13 @@ def collect() -> dict[str, list[tuple[str, str]]]:
             ("greeting", string_key(block, "vGreetingVoice")),
             ("reask", string_key(block, "vReask")),
             ("reprompt", string_key(block, "vReprompt")),
-            ("ask_name", string_key(block, "vAskName")),
-            ("ask_age", string_key(block, "vAskAge")),
-            ("ask_diastolic", string_key(block, "vAskDiastolic")),
-            ("ask_para", string_key(block, "vAskPara")),
-            ("ask_allergy", string_key(block, "vAskAllergy")),
-            ("ask_meds", string_key(block, "vAskMeds")),
-            ("ask_hb", string_key(block, "vAskHb")),
-            ("ask_sugar", string_key(block, "vAskSugar")),
+            ("ask_how_many", string_key(block, "vAskHowMany")),
+            ("ask_date", string_key(block, "vAskDate")),
             ("waiting", string_key(block, "vWaiting")),
             ("away", string_key(block, "vAway")),
+            ("ok", replies[lang]["ok"]),
             ("danger", replies[lang]["danger"]),
+            ("urgent", replies[lang]["urgent"]),
             ("done", replies[lang]["done"]),
         ]
         out += [(qid, ts_unquote(kn if lang == "kn" else hi)) for qid, kn, hi in questions]

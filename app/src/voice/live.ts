@@ -123,8 +123,11 @@ type Pending = {
   said: boolean;
 };
 
+/** A session that has done nothing yet (also what a screen shows when there is no live session). */
+export const LIVE_IDLE: LiveSnapshot = { stage: 'idle', available: null, me: 0, muted: false, needsTap: false, reconnecting: false, rttMs: null, error: null };
+
 export class LiveSession implements RemoteVoice {
-  private snap: LiveSnapshot = { stage: 'idle', available: null, me: 0, muted: false, needsTap: false, reconnecting: false, rttMs: null, error: null };
+  private snap: LiveSnapshot = LIVE_IDLE;
   private listeners = new Set<() => void>();
   private send: ((c: LiveCmd) => void) | null = null;
   private pageReady = false;

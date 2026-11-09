@@ -4,11 +4,10 @@ import { StyleSheet, View } from 'react-native';
 
 import { goBack } from '@/lib/nav';
 import { MissingMother } from '@/components/mother/missing-mother';
-import type { AppIconName } from '@/components/system/app-icon';
 import { NavCard } from '@/components/system/nav-card';
 import { Screen } from '@/components/system/screen';
 import { StateView } from '@/components/system/state-view';
-import { fmtTime, inbox, network, useNetwork, type Notice } from '@/data/care-network';
+import { NOTICE_ICONS, fmtTime, inbox, network, useNetwork, type Notice } from '@/data/care-network';
 import { useMother } from '@/data/store';
 import { useOnboarding, useT } from '@/features/onboarding/context';
 import { dayLabel } from '@/lib/day-label';
@@ -18,20 +17,6 @@ import { noticeText } from '@/lib/notice-text';
 // for her, newest first, in HER language: a visit booked or cancelled, a
 // reminder, "Sunita will visit you today", a changed checklist. New ones are
 // highlighted until she leaves. One tap opens the matching page.
-
-const ICON: Record<Notice['kind'], AppIconName> = {
-  booking_confirmed: 'calendar',
-  booking_cancelled: 'calendar',
-  visit_reminder: 'calendar',
-  visit_today: 'ashaWorker',
-  checklist_updated: 'checklist',
-  appointment_update: 'calendar',
-  advice_sent: 'checklist',
-  sos: 'ambulance',
-  slots_published: 'calendar',
-  visit_comment: 'talk',
-  high_risk_flag: 'alert',
-};
 
 export default function MotherNotifications() {
   const t = useT();
@@ -68,7 +53,7 @@ export default function MotherNotifications() {
             return (
               <NavCard
                 key={n.id}
-                icon={ICON[n.kind]}
+                icon={NOTICE_ICONS[n.kind]}
                 title={x.title}
                 line={`${x.body}\n${dayLabel(n.at, language)}, ${fmtTime(n.at)}`}
                 titleLines={2}

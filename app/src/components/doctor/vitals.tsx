@@ -51,7 +51,7 @@ function VitalTile({ v }: { v: Tile }) {
         {v.note}
       </AppText>
       <View style={styles.spark}>
-        <Spark data={v.data} color={Colors.inkMuted} width={110} height={26} warnAbove={v.warnAbove} warnBelow={v.warnBelow} />
+        <Spark data={v.data} color={v.flag ? Colors.cherry : Colors.plum} height={44} warnAbove={v.warnAbove} warnBelow={v.warnBelow} />
       </View>
     </View>
   );
@@ -114,5 +114,5 @@ const styles = StyleSheet.create({
   top: { minHeight: 22, flexDirection: 'row', alignItems: 'center', gap: 6 },
   flag: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: Colors.cherry },
   valueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
-  spark: { height: 26, marginTop: 4 },
+  spark: { height: 44, marginTop: 4, alignSelf: 'stretch' },
 });

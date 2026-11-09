@@ -2,7 +2,6 @@ import { Asset } from 'expo-asset';
 import { createAudioPlayer, type AudioPlayer, type AudioStatus } from 'expo-audio';
 import { Directory, File, Paths } from 'expo-file-system';
 import * as Speech from 'expo-speech';
-import { Platform } from 'react-native';
 
 import { LANGUAGES, type Lang } from '@/i18n/strings';
 
@@ -29,14 +28,15 @@ const MAX_FILES = 120;
 const NET_WAIT_MS = 6000;
 /**
  * How long the player may take to start before the backup voice is used.
- * iOS needs more after the mic was on (audio route change): 2.5 s was too
- * short on an iPhone and brought in the backup voice for a line that would
- * have played.
+ * Android and iOS both need up to 5s on budget hardware or in Expo Go.
  */
-const START_MS = Platform.OS === 'ios' ? 5000 : 3000;
+const START_MS = 5000;
 const SAFETY_MS = 30_000;
 /** How long a recorded line may take to reach the phone before the next-best audio is used. */
-const ASSET_WAIT_MS = 4000;
+const ASSET_WAIT_MS = 6000;
+
+/** In-flight asset download promises so concurrent calls share the single request. */
+const assetDownloads = new Map<number, Promise<string | null>>();
 
 /**
  * A recorded line as a file ON THE PHONE. In a release build it is inside
@@ -50,10 +50,17 @@ const ASSET_WAIT_MS = 4000;
 function localAsset(asset: number): Promise<string | null> {
   const a = Asset.fromModule(asset);
   if (a.downloaded && a.localUri) return Promise.resolve(a.localUri);
-  return a.downloadAsync().then(
-    (x) => x.localUri,
-    () => null,
-  );
+  const pending = assetDownloads.get(asset);
+  if (pending) return pending;
+  const p = a
+    .downloadAsync()
+    .then(
+      (x) => x.localUri,
+      () => null,
+    )
+    .finally(() => assetDownloads.delete(asset));
+  assetDownloads.set(asset, p);
+  return p;
 }
 
 export type VoiceSource = 'sakhi' | 'backup';
@@ -273,6 +280,12 @@ export class Speaker {
         } catch {
           // ignore
         }
+        try {
+          this.player?.remove();
+          this.player = null;
+        } catch {
+          // ignore
+        }
         reject(new Error(`no sound within ${START_MS} ms`));
       }, START_MS);
       this.done = stopped;
@@ -284,6 +297,8 @@ export class Speaker {
         } else {
           player.replace(source);
           this.playerUri = key;
+          // Android ExoPlayer: reset position so a player reaching STATE_ENDED restarts cleanly
+          player.seekTo(0).catch(() => {});
         }
         player.play();
       } catch (e) {

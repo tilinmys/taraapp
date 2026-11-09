@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { ANTENATAL_QUESTIONS, questionText, SAKHI_REPLIES } from '@/data/mockScreening';
+import { QUESTION_BANK, questionText, SAKHI_REPLIES } from '@/data/mockScreening';
 import { STRINGS } from '@/i18n/strings';
 
 import { allFollowUps } from '../nlu/followup';
@@ -14,16 +14,18 @@ import { PRERECORDED } from '../prerecorded.generated';
 
 describe('prerecorded lines', () => {
   for (const lang of ['kn', 'hi'] as const) {
-    it(`${lang}: all 24 questions and every fixed line are recorded`, () => {
+    it(`${lang}: every question of every visit and every fixed line are recorded`, () => {
       const lines = [
         STRINGS[lang].vGreetingVoice,
         STRINGS[lang].vReask,
         STRINGS[lang].vReprompt,
         STRINGS[lang].vWaiting,
         ...allFollowUps(lang),
+        SAKHI_REPLIES[lang].ok,
         SAKHI_REPLIES[lang].danger,
+        SAKHI_REPLIES[lang].urgent,
         SAKHI_REPLIES[lang].done,
-        ...ANTENATAL_QUESTIONS.map((q) => questionText(q, lang)),
+        ...QUESTION_BANK.map((q) => questionText(q, lang)),
       ];
       const missing = lines.filter((t) => !prerecorded(lang, t));
       expect(missing).toEqual([]);
@@ -37,7 +39,7 @@ describe('prerecorded lines', () => {
   }
 
   it('English has no recordings: it falls back to TTS, never to the wrong words', () => {
-    expect(prerecorded('en', ANTENATAL_QUESTIONS[0].en)).toBeNull();
+    expect(prerecorded('en', QUESTION_BANK[0].en)).toBeNull();
     expect(prerecorded('kn', 'a line that was never recorded')).toBeNull();
   });
 });
