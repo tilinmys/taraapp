@@ -176,9 +176,7 @@ Every tool returns a JSON block containing the decided `risk_level`, the
 ---
 
 ## 3. How it was refined
-
-This repository began as a **clinic appointment-booking receptionist**. The
-refactor routed it to a maternal-health co-pilot. Full log in
+It is a maternal-health co-pilot. Full log in
 [`changed.md`](changed.md); OOP analysis in [`oops.md`](oops.md).
 
 ### 3.1 The starting point
